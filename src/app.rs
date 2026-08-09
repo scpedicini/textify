@@ -455,6 +455,7 @@ pub struct Workspace {
     pending_definitions: HashSet<u64>,
     recovery_pending: HashMap<u64, Instant>,
     recovery_in_flight: HashSet<u64>,
+    close_after_save: HashSet<u64>,
     quitting: bool,
     _ide_subscriptions: Vec<Subscription>,
 }
@@ -538,6 +539,7 @@ impl Workspace {
             pending_definitions: HashSet::new(),
             recovery_pending: HashMap::new(),
             recovery_in_flight: HashSet::new(),
+            close_after_save: HashSet::new(),
             quitting: false,
             _ide_subscriptions,
         };
@@ -2586,12 +2588,18 @@ impl Workspace {
         let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
 
         cx.spawn_in(window, async move |workspace, window| {
-            let path = receiver.await.ok().into_iter().flatten().flatten().next()?;
+            let path = receiver.await.ok().into_iter().flatten().flatten().next();
             workspace
-                .update_in(window, |workspace, window, cx| {
-                    workspace.start_save(id, path, window, cx)
+                .update_in(window, |workspace, window, cx| match path {
+                    Some(path) => workspace.start_save(id, path, window, cx),
+                    None => {
+                        workspace.close_after_save.remove(&id);
+                        workspace.status_message = Some("Close canceled".to_owned());
+                        cx.notify();
+                    }
                 })
-                .ok()
+                .ok()?;
+            Some(())
         })
         .detach();
     }
@@ -2658,11 +2666,22 @@ impl Workspace {
                         if saved_clean {
                             workspace.clear_recovery(id, cx);
                         }
+                        let close_after_save = workspace.close_after_save.remove(&id);
+                        if close_after_save && saved_clean {
+                            workspace.remove_document(id, window, cx);
+                            return;
+                        }
+                        if close_after_save {
+                            workspace.status_message = Some(
+                                "The document changed while saving; close canceled".to_owned(),
+                            );
+                        }
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
                         cx.notify();
                     }
                     Err(error) => {
+                        workspace.close_after_save.remove(&id);
                         if let Some(index) = workspace.document_index(id) {
                             workspace.documents[index].saving = false;
                         }
@@ -2701,24 +2720,56 @@ impl Workspace {
         let name = self.documents[index].display_name(cx);
         let workspace = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
-            let workspace = workspace.clone();
+            let save_workspace = workspace.clone();
             dialog
-                .title(format!("Discard changes to {name}?"))
-                .child("Your unsaved changes cannot be recovered.")
+                .title(format!("Save changes to {name}?"))
+                .child("Your changes will be lost if you close without saving.")
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Discard")
-                        .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("Keep Editing"),
+                        .ok_text("Save")
+                        .cancel_text("Cancel"),
                 )
-                .confirm()
+                .footer({
+                    let discard_workspace = workspace.clone();
+                    move |save, cancel, window, cx| {
+                        let discard_workspace = discard_workspace.clone();
+                        vec![
+                            Button::new(("discard-close", id))
+                                .label("Don't Save")
+                                .with_variant(ButtonVariant::Danger)
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    discard_workspace.update(cx, |workspace, cx| {
+                                        workspace.remove_document(id, window, cx)
+                                    });
+                                })
+                                .into_any_element(),
+                            cancel(window, cx),
+                            save(window, cx),
+                        ]
+                    }
+                })
+                .overlay_closable(false)
+                .close_button(false)
                 .on_ok(move |_, window, cx| {
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.remove_document(id, window, cx)
+                    save_workspace.update(cx, |workspace, cx| {
+                        workspace.save_before_close(id, window, cx);
                     });
                     true
                 })
         });
+    }
+
+    fn save_before_close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        self.close_after_save.insert(id);
+        if let Some(path) = self.documents[index].metadata.path.clone() {
+            self.start_save(id, path, window, cx);
+        } else {
+            self.prompt_save_as(id, window, cx);
+        }
     }
 
     fn remove_document(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -2726,6 +2777,7 @@ impl Workspace {
             return;
         };
         let removed = self.documents.remove(index);
+        self.close_after_save.remove(&id);
         self.recovery_pending.remove(&id);
         if let Some(path) = removed.recovery_path.clone() {
             cx.background_spawn(async move {
@@ -4260,6 +4312,86 @@ mod tests {
             workspace.documents[0].dirty = true;
             assert_eq!(workspace.documents[0].title(cx), "Untitled 1 •");
         });
+    }
+
+    #[gpui::test]
+    fn command_w_closes_a_clean_temporary_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-w", CloseDocument, None)]));
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let original_id = workspace.update(cx, |workspace, _| workspace.active_id());
+        workspace.update(cx, |workspace, _| {
+            workspace.session_path = directory.path().join("session.json")
+        });
+
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-w");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_ne!(workspace.active_id(), original_id);
+            assert_eq!(workspace.documents.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn command_w_prompts_and_save_closes_a_dirty_named_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-w", CloseDocument, None)]));
+        let directory = tempfile::tempdir().expect("document directory");
+        let path = directory.path().join("draft.txt");
+        fs::write(&path, "before").expect("fixture");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let original_id = workspace.update(cx, |workspace, _| workspace.active_id());
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                let document = workspace.active_document_mut();
+                document.metadata.path = Some(path.clone());
+                document.disk_revision = optional_disk_revision(&path).expect("disk revision");
+                document.editor.set_text("after".to_owned(), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-w");
+        cx.run_until_parked();
+        cx.update(|window, cx| assert!(window.has_active_dialog(cx)));
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.active_id(), original_id);
+            assert!(workspace.active_document().dirty);
+        });
+
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.save_before_close(original_id, window, cx)
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_ne!(workspace.active_id(), original_id);
+            assert!(!workspace.close_after_save.contains(&original_id));
+        });
+        assert_eq!(fs::read_to_string(path).expect("saved document"), "after");
     }
 
     #[test]
