@@ -3,10 +3,11 @@
 Textify is a fast, focused native text editor for macOS, built in Rust with GPUI and
 GPUI Component.
 
-Textify currently provides safe file handling, Markdown and JSON highlighting, multiple tabs,
-external-change detection, session restore, measured large-file behavior, and a bounded-memory
-viewer for files at or above 512 MiB. Project, command, search, keymap, Git, and language-server
-workflows are tracked in the remaining milestones.
+Textify provides safe file handling, Markdown and JSON highlighting, multiple tabs, external-change
+detection, session restore, multicursor editing, measured large-file behavior, and a bounded-memory
+viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, quick-open,
+command palette, cancellable workspace search, live settings/keymap reload, lazy Git decorations,
+and optional language-server diagnostics and go-to-definition.
 
 ## Huge files
 
@@ -25,6 +26,18 @@ rope.
   at every selection.
 - A multicursor edit is one undo step. Starting an IME composition keeps the primary selection and
   intentionally collapses secondary selections because macOS exposes one marked-text range.
+
+## IDE workflows
+
+Open a folder with Command-Shift-O. Textify indexes it in the background, restores it with the next
+session, and shows the virtualized explorer. `target`, `.git`, `node_modules`, symlinks,
+and over-budget entries are excluded. Command-P quick-opens indexed files; Command-Shift-F streams
+workspace matches without blocking the UI; Command-Shift-P opens the command palette.
+
+Textify creates `settings.json` and `keymap.json` under `~/Library/Application Support/Textify` (or
+`TEXTIFY_DATA_DIR`) after first paint. Both files reload when saved. Git decorations are lazy and can
+be disabled. Language-server support is opt-in; configure an executable and extensions before using
+F12 for go-to-definition. See [docs/ide-workflows.md](docs/ide-workflows.md) for the full schema.
 
 ## Run it
 
@@ -65,6 +78,12 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Close tab | Command-W |
 | Next tab | Control-Tab |
 | Previous tab | Control-Shift-Tab |
+| Open folder | Command-Shift-O |
+| Toggle explorer | Command-B |
+| Command palette | Command-Shift-P |
+| Quick open | Command-P |
+| Workspace search | Command-Shift-F |
+| Go to definition | F12 |
 
 See [docs/plan.md](docs/plan.md) for the build plan and [docs/research.md](docs/research.md) for
 the technology evaluation.

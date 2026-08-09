@@ -1,6 +1,8 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -8,8 +10,9 @@ use anyhow::Context as _;
 
 use gpui::{
     App, AppContext as _, Application, Context, Entity, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, Styled, Subscription, Timer, Window, WindowBounds,
-    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
+    KeyBinding, ParentElement as _, Render, StatefulInteractiveElement as _, Styled, Subscription,
+    Timer, Window, WindowBounds, WindowOptions, actions, div, prelude::FluentBuilder as _, px,
+    size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
@@ -17,7 +20,7 @@ use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
-    input::{InputEvent, RopeExt as _},
+    input::{Input, InputEvent, InputState, RopeExt as _},
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -32,8 +35,12 @@ use crate::{
     },
     huge_file::{HugeFile, MAX_EDIT_RANGE_BYTES},
     huge_viewer::{HugeFileView, HugeViewerEvent},
+    lsp::{DefinitionLocation, LspClient, LspEvent, parse_definition_locations},
+    project::{
+        ProjectIndex, SearchSummary, WorkspaceMatch, load_git_status, stream_workspace_search,
+    },
     session::{SessionState, load_session, save_session},
-    settings::{TextifySettings, textify_data_dir},
+    settings::{TextifyKeymap, TextifySettings, ensure_config_files, textify_data_dir},
     watcher::FileWatcher,
 };
 
@@ -46,7 +53,14 @@ actions!(
         SaveDocumentAs,
         CloseDocument,
         NextDocument,
-        PreviousDocument
+        PreviousDocument,
+        OpenFolder,
+        ToggleSidebar,
+        ShowCommandPalette,
+        ShowQuickOpen,
+        ShowWorkspaceSearch,
+        GoToDefinition,
+        DismissOverlay
     ]
 );
 
@@ -104,6 +118,59 @@ enum OpenedFile {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayMode {
+    Commands,
+    QuickOpen,
+    WorkspaceSearch,
+}
+
+#[derive(Debug, Clone)]
+enum IdeCommand {
+    NewFile,
+    OpenFile,
+    OpenFolder,
+    QuickOpen,
+    WorkspaceSearch,
+    ToggleSidebar,
+    RefreshProject,
+    OpenSettings,
+    OpenKeymap,
+    GoToDefinition,
+}
+
+#[derive(Debug, Clone)]
+enum OverlayTarget {
+    Command(IdeCommand),
+    File(PathBuf),
+    Search(WorkspaceMatch),
+}
+
+#[derive(Debug, Clone)]
+struct OverlayItem {
+    title: String,
+    subtitle: String,
+    target: OverlayTarget,
+}
+
+enum WorkspaceSearchEvent {
+    Match(WorkspaceMatch),
+    Finished(SearchSummary),
+}
+
+struct WorkspaceSearchStream {
+    cancel: crate::huge_file::CancellationToken,
+    receiver: mpsc::Receiver<WorkspaceSearchEvent>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextLocation {
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+}
+
 impl EditorDocument {
     fn display_name(&self) -> String {
         self.label_override
@@ -133,6 +200,26 @@ pub struct Workspace {
     external_scan_in_progress: bool,
     created_at: Instant,
     first_paint_logged: bool,
+    data_dir: PathBuf,
+    keymap: TextifyKeymap,
+    config_reload_in_progress: bool,
+    project: Option<ProjectIndex>,
+    workspace_root: Option<PathBuf>,
+    project_loading: bool,
+    sidebar_visible: bool,
+    git_status: HashMap<PathBuf, String>,
+    git_loading: bool,
+    overlay_mode: Option<OverlayMode>,
+    overlay_input: Entity<InputState>,
+    overlay_items: Vec<OverlayItem>,
+    workspace_search: Option<WorkspaceSearchStream>,
+    status_message: Option<String>,
+    lsp: Option<LspClient>,
+    lsp_starting: bool,
+    lsp_opened: HashSet<PathBuf>,
+    lsp_dirty: HashMap<u64, Instant>,
+    pending_definitions: HashSet<u64>,
+    _ide_subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -143,6 +230,25 @@ impl Workspace {
                 tracing::warn!(%error, "using default settings");
                 TextifySettings::default()
             });
+        let keymap = TextifyKeymap::load(&data_dir.join("keymap.json")).unwrap_or_else(|error| {
+            tracing::warn!(%error, "using default keymap");
+            TextifyKeymap::default()
+        });
+        let overlay_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Type a command")
+                .clean_on_escape()
+        });
+        let _ide_subscriptions =
+            vec![
+                cx.subscribe_in(&overlay_input, window, |workspace, _, event, window, cx| {
+                    match event {
+                        InputEvent::Change => workspace.refresh_overlay(window, cx),
+                        InputEvent::PressEnter { .. } => workspace.accept_overlay(0, window, cx),
+                        _ => {}
+                    }
+                }),
+            ];
         let watcher = FileWatcher::new()
             .map_err(|error| {
                 tracing::warn!(%error, "external-change watching unavailable");
@@ -162,6 +268,26 @@ impl Workspace {
             external_scan_in_progress: false,
             created_at: Instant::now(),
             first_paint_logged: false,
+            data_dir,
+            keymap,
+            config_reload_in_progress: false,
+            project: None,
+            workspace_root: None,
+            project_loading: false,
+            sidebar_visible: false,
+            git_status: HashMap::new(),
+            git_loading: false,
+            overlay_mode: None,
+            overlay_input,
+            overlay_items: Vec::new(),
+            workspace_search: None,
+            status_message: None,
+            lsp: None,
+            lsp_starting: false,
+            lsp_opened: HashSet::new(),
+            lsp_dirty: HashMap::new(),
+            pending_definitions: HashSet::new(),
+            _ide_subscriptions,
         };
         workspace.add_untitled(window, cx);
         workspace
@@ -314,6 +440,7 @@ impl Workspace {
                 {
                     document.dirty = true;
                     document.revision = document.revision.wrapping_add(1);
+                    workspace.lsp_dirty.insert(id, Instant::now());
                 }
                 cx.notify();
             }
@@ -379,7 +506,8 @@ impl Workspace {
         let active_index = active_path
             .and_then(|active| open_paths.iter().position(|path| path == active))
             .unwrap_or(0);
-        let state = SessionState::new(active_index, open_paths);
+        let workspace_root = self.workspace_root.clone();
+        let state = SessionState::new(active_index, open_paths).with_workspace_root(workspace_root);
         let path = self.session_path.clone();
         cx.background_spawn(async move {
             if let Err(error) = save_session(&path, &state) {
@@ -390,8 +518,55 @@ impl Workspace {
     }
 
     fn start_background_services(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        bind_ide_keymap(cx, &self.keymap);
+        self.prepare_config_files(window, cx);
         self.restore_session(window, cx);
         self.poll_watcher(window, cx);
+        self.poll_lazy_services(window, cx);
+    }
+
+    fn prepare_config_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let data_dir = self.data_dir.clone();
+        let task = cx.background_spawn(async move { ensure_config_files(&data_dir) });
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, _, _cx| match result {
+                    Ok(()) => {
+                        if let Some(watcher) = &mut workspace.watcher {
+                            for path in [
+                                workspace.data_dir.join("settings.json"),
+                                workspace.data_dir.join("keymap.json"),
+                            ] {
+                                if let Err(error) = watcher.watch_file(&path) {
+                                    tracing::warn!(%error, "could not watch Textify configuration");
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "could not prepare configuration files"),
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn poll_lazy_services(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |workspace, window| {
+            loop {
+                Timer::after(Duration::from_millis(100)).await;
+                if workspace
+                    .update_in(window, |workspace, window, cx| {
+                        workspace.poll_workspace_search(cx);
+                        workspace.poll_lsp(window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -401,12 +576,13 @@ impl Workspace {
         let task = cx.background_spawn(async move {
             let session = load_session(&path)?;
             let active_index = session.active_index;
+            let workspace_root = session.workspace_root;
             let loaded = session
                 .open_paths
                 .into_iter()
                 .map(|path| open_file(&path, policy).map_err(|error| (path, error)))
                 .collect::<Vec<_>>();
-            Ok::<_, anyhow::Error>((active_index, loaded))
+            Ok::<_, anyhow::Error>((active_index, loaded, workspace_root))
         });
 
         cx.spawn_in(window, async move |workspace, window| {
@@ -415,7 +591,7 @@ impl Workspace {
                 .update_in(window, |workspace, window, cx| {
                     workspace.restoring_session = false;
                     match restored {
-                        Ok((active_index, loaded)) => {
+                        Ok((active_index, loaded, workspace_root)) => {
                             let had_paths = loaded.iter().any(Result::is_ok);
                             if had_paths
                                 && workspace.documents.len() == 1
@@ -443,6 +619,9 @@ impl Workspace {
                                     window,
                                     cx,
                                 );
+                            }
+                            if let Some(root) = workspace_root {
+                                workspace.start_project_index(root, window, cx);
                             }
                         }
                         Err(error) => tracing::warn!(%error, "could not restore session"),
@@ -481,6 +660,9 @@ impl Workspace {
         let directories = watcher.drain_changed_directories();
         if directories.is_empty() {
             return;
+        }
+        if directories.contains(&self.data_dir) {
+            self.reload_configuration(window, cx);
         }
 
         let targets = self
@@ -644,6 +826,7 @@ impl Workspace {
                         document.revision = document.revision.wrapping_add(1);
                         workspace.update_window_title(window);
                         workspace.persist_session(cx);
+                        workspace.refresh_git(window, cx);
                         cx.notify();
                     }
                     Err(error) => Self::show_error("Could not reload file", error, window, cx),
@@ -746,6 +929,708 @@ impl Workspace {
                 .ok()
         })
         .detach();
+    }
+
+    fn on_open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open Folder in Textify".into()),
+        });
+        cx.spawn_in(window, async move |workspace, window| {
+            let path = receiver.await.ok()?.ok()??.into_iter().next()?;
+            workspace
+                .update_in(window, |workspace, window, cx| {
+                    workspace.start_project_index(path, window, cx)
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn start_project_index(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_loading {
+            return;
+        }
+        self.workspace_root = Some(root.clone());
+        self.project_loading = true;
+        self.status_message = Some(format!("Indexing {}…", root.display()));
+        let max_entries = self.settings.workspace.max_entries;
+        let task = cx.background_spawn(async move { ProjectIndex::build(&root, max_entries) });
+        cx.notify();
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| {
+                    workspace.project_loading = false;
+                    match result {
+                        Ok(index) => {
+                            let count = index.files.len();
+                            let truncated = index.truncated;
+                            workspace.workspace_root = Some(index.root.clone());
+                            workspace.project = Some(index);
+                            workspace.sidebar_visible = true;
+                            workspace.status_message = Some(if truncated {
+                                format!("Indexed {count} files (entry limit reached)")
+                            } else {
+                                format!("Indexed {count} files")
+                            });
+                            workspace.refresh_git(window, cx);
+                            workspace.restart_lsp(window, cx);
+                            workspace.refresh_overlay(window, cx);
+                            workspace.persist_session(cx);
+                        }
+                        Err(error) => {
+                            workspace.workspace_root = workspace
+                                .project
+                                .as_ref()
+                                .map(|project| project.root.clone());
+                            workspace.status_message = Some(error.to_string());
+                            Self::show_error("Could not open folder", error, window, cx);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn refresh_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(root) = self.project.as_ref().map(|project| project.root.clone()) {
+            self.project = None;
+            self.git_status.clear();
+            self.start_project_index(root, window, cx);
+        }
+    }
+
+    fn refresh_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings.workspace.git_enabled || self.git_loading {
+            return;
+        }
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            return;
+        };
+        self.git_loading = true;
+        let task = cx.background_spawn(async move { load_git_status(&root) });
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, _, cx| {
+                    workspace.git_loading = false;
+                    match result {
+                        Ok(status) => workspace.git_status = status,
+                        Err(error) => tracing::warn!(%error, "could not refresh Git status"),
+                    }
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn open_path_at(
+        &mut self,
+        path: PathBuf,
+        location: Option<TextLocation>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.metadata.path.as_deref() == Some(path.as_path()))
+        {
+            self.set_active_index(index, window, cx);
+            if let Some(location) = location
+                && self.documents[index].huge_viewer.is_none()
+            {
+                self.documents[index].editor.select_position(
+                    location.line,
+                    location.column,
+                    location.end_line,
+                    location.end_column,
+                    window,
+                    cx,
+                );
+            }
+            return;
+        }
+        let policy = self.policy;
+        let load_path = path.clone();
+        let task = cx.background_spawn(async move { open_file(&load_path, policy) });
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| match result {
+                    Ok(opened) => {
+                        workspace.push_opened(opened, window, cx);
+                        if let Some(location) = location
+                            && workspace.active_document().huge_viewer.is_none()
+                        {
+                            workspace.active_document().editor.select_position(
+                                location.line,
+                                location.column,
+                                location.end_line,
+                                location.end_column,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                    Err(error) => Self::show_error("Could not open file", error, window, cx),
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn show_overlay(&mut self, mode: OverlayMode, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(search) = self.workspace_search.take() {
+            search.cancel.cancel();
+        }
+        self.overlay_mode = Some(mode);
+        self.overlay_items.clear();
+        let placeholder = match mode {
+            OverlayMode::Commands => "Type a command",
+            OverlayMode::QuickOpen => "Quick open a project file",
+            OverlayMode::WorkspaceSearch => "Search text in the workspace",
+        };
+        self.overlay_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(placeholder, window, cx);
+            input.focus(window, cx);
+        });
+        self.refresh_overlay(window, cx);
+        cx.notify();
+    }
+
+    fn hide_overlay(&mut self, cx: &mut Context<Self>) {
+        if let Some(search) = self.workspace_search.take() {
+            search.cancel.cancel();
+        }
+        self.overlay_mode = None;
+        self.overlay_items.clear();
+        cx.notify();
+    }
+
+    fn refresh_overlay(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(mode) = self.overlay_mode else {
+            return;
+        };
+        let query = self.overlay_input.read(cx).value().trim().to_lowercase();
+        match mode {
+            OverlayMode::Commands => {
+                self.overlay_items = command_items()
+                    .into_iter()
+                    .filter(|item| {
+                        query.is_empty()
+                            || item.title.to_lowercase().contains(&query)
+                            || item.subtitle.to_lowercase().contains(&query)
+                    })
+                    .collect();
+            }
+            OverlayMode::QuickOpen => {
+                self.overlay_items = self
+                    .project
+                    .as_ref()
+                    .map(|project| {
+                        project
+                            .quick_open(&query, self.settings.workspace.quick_open_results)
+                            .into_iter()
+                            .map(|path| OverlayItem {
+                                title: path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("File")
+                                    .to_owned(),
+                                subtitle: path
+                                    .strip_prefix(&project.root)
+                                    .unwrap_or(&path)
+                                    .display()
+                                    .to_string(),
+                                target: OverlayTarget::File(path),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            OverlayMode::WorkspaceSearch => self.start_workspace_search(query, cx),
+        }
+        cx.notify();
+    }
+
+    fn start_workspace_search(&mut self, query: String, cx: &mut Context<Self>) {
+        if let Some(search) = self.workspace_search.take() {
+            search.cancel.cancel();
+        }
+        self.overlay_items.clear();
+        let Some(project) = &self.project else {
+            self.status_message = Some("Open a folder before searching the workspace".to_owned());
+            return;
+        };
+        if query.is_empty() {
+            self.status_message = Some("Type to search the workspace".to_owned());
+            return;
+        }
+        let files = project.files.clone();
+        let max_file_bytes = self.settings.workspace.search_max_file_bytes;
+        let max_matches = self.settings.workspace.search_max_matches;
+        let cancel = crate::huge_file::CancellationToken::default();
+        let worker_cancel = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.workspace_search = Some(WorkspaceSearchStream { cancel, receiver });
+        self.status_message = Some(format!("Searching for “{query}”…"));
+        cx.background_spawn(async move {
+            let summary = stream_workspace_search(
+                &files,
+                &query,
+                max_file_bytes,
+                max_matches,
+                &worker_cancel,
+                |item| sender.send(WorkspaceSearchEvent::Match(item)).is_ok(),
+            );
+            let _ = sender.send(WorkspaceSearchEvent::Finished(summary));
+        })
+        .detach();
+    }
+
+    fn poll_workspace_search(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = &self.workspace_search else {
+            return;
+        };
+        let events = search.receiver.try_iter().collect::<Vec<_>>();
+        let mut finished = false;
+        for event in events {
+            match event {
+                WorkspaceSearchEvent::Match(item) => {
+                    let subtitle = format!(
+                        "{}:{}:{}",
+                        item.path.display(),
+                        item.line + 1,
+                        item.column + 1
+                    );
+                    self.overlay_items.push(OverlayItem {
+                        title: item.preview.clone(),
+                        subtitle,
+                        target: OverlayTarget::Search(item),
+                    });
+                }
+                WorkspaceSearchEvent::Finished(summary) => {
+                    finished = true;
+                    self.status_message = Some(if summary.completed {
+                        format!(
+                            "{} matches across {} files",
+                            summary.matches, summary.files_scanned
+                        )
+                    } else {
+                        format!("Search stopped after {} matches", summary.matches)
+                    });
+                }
+            }
+        }
+        if finished {
+            self.workspace_search = None;
+        }
+        if !self.overlay_items.is_empty() || finished {
+            cx.notify();
+        }
+    }
+
+    fn accept_overlay(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.overlay_items.get(index).cloned() else {
+            return;
+        };
+        let search_len = self.overlay_input.read(cx).value().trim().chars().count();
+        self.hide_overlay(cx);
+        match item.target {
+            OverlayTarget::Command(command) => self.run_ide_command(command, window, cx),
+            OverlayTarget::File(path) => self.open_path_at(path, None, window, cx),
+            OverlayTarget::Search(item) => self.open_path_at(
+                item.path,
+                Some(TextLocation {
+                    line: item.line,
+                    column: item.column,
+                    end_line: item.line,
+                    end_column: item.column + search_len,
+                }),
+                window,
+                cx,
+            ),
+        }
+    }
+
+    fn run_ide_command(
+        &mut self,
+        command: IdeCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            IdeCommand::NewFile => self.add_untitled(window, cx),
+            IdeCommand::OpenFile => self.on_open(&OpenDocument, window, cx),
+            IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
+            IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
+            IdeCommand::WorkspaceSearch => {
+                self.on_workspace_search(&ShowWorkspaceSearch, window, cx)
+            }
+            IdeCommand::ToggleSidebar => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
+            IdeCommand::RefreshProject => self.refresh_project(window, cx),
+            IdeCommand::OpenSettings => self.open_config_file("settings.json", window, cx),
+            IdeCommand::OpenKeymap => self.open_config_file("keymap.json", window, cx),
+            IdeCommand::GoToDefinition => self.on_go_to_definition(&GoToDefinition, window, cx),
+        }
+    }
+
+    fn open_config_file(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = ensure_config_files(&self.data_dir) {
+            Self::show_error("Could not prepare Textify settings", error, window, cx);
+            return;
+        }
+        self.open_path_at(self.data_dir.join(name), None, window, cx);
+    }
+
+    fn on_command_palette(
+        &mut self,
+        _: &ShowCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_overlay(OverlayMode::Commands, window, cx);
+    }
+
+    fn on_quick_open(&mut self, _: &ShowQuickOpen, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_overlay(OverlayMode::QuickOpen, window, cx);
+    }
+
+    fn on_workspace_search(
+        &mut self,
+        _: &ShowWorkspaceSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_overlay(OverlayMode::WorkspaceSearch, window, cx);
+    }
+
+    fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
+    }
+
+    fn on_dismiss_overlay(&mut self, _: &DismissOverlay, _: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay_mode.is_some() {
+            self.hide_overlay(cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn reload_configuration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.config_reload_in_progress {
+            return;
+        }
+        self.config_reload_in_progress = true;
+        let settings_path = self.data_dir.join("settings.json");
+        let keymap_path = self.data_dir.join("keymap.json");
+        let task = cx.background_spawn(async move {
+            (
+                TextifySettings::load(&settings_path),
+                TextifyKeymap::load(&keymap_path),
+            )
+        });
+        cx.spawn_in(window, async move |workspace, window| {
+            let (settings, keymap) = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| {
+                    workspace.config_reload_in_progress = false;
+                    let mut changed = false;
+                    match settings {
+                        Ok(settings) => {
+                            let lsp_changed = workspace.settings.lsp != settings.lsp;
+                            workspace.settings = settings;
+                            for document in &workspace.documents {
+                                document.editor.set_budgets(
+                                    workspace.settings.editor,
+                                    document.metadata.mode,
+                                    cx,
+                                );
+                            }
+                            if lsp_changed {
+                                workspace.restart_lsp(window, cx);
+                            }
+                            changed = true;
+                        }
+                        Err(error) => {
+                            workspace.status_message = Some(error.to_string());
+                            tracing::warn!(%error, "settings reload failed");
+                        }
+                    }
+                    match keymap {
+                        Ok(keymap) => {
+                            workspace.keymap = keymap;
+                            bind_ide_keymap(cx, &workspace.keymap);
+                            changed = true;
+                        }
+                        Err(error) => {
+                            workspace.status_message = Some(error.to_string());
+                            tracing::warn!(%error, "keymap reload failed");
+                        }
+                    }
+                    if changed {
+                        workspace.status_message = Some("Settings and keymap reloaded".to_owned());
+                    }
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn restart_lsp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.lsp = None;
+        self.lsp_opened.clear();
+        self.pending_definitions.clear();
+        self.lsp_dirty.clear();
+        if !self.settings.lsp.enabled || self.settings.lsp.command.is_empty() || self.lsp_starting {
+            return;
+        }
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            return;
+        };
+        let command = self.settings.lsp.command.clone();
+        self.lsp_starting = true;
+        self.status_message = Some("Starting language server…".to_owned());
+        let task = cx.background_spawn(async move { LspClient::start(&command, &root) });
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, _, cx| {
+                    workspace.lsp_starting = false;
+                    match result {
+                        Ok(client) => {
+                            workspace.lsp = Some(client);
+                            workspace.status_message =
+                                Some("Language server initializing…".to_owned());
+                        }
+                        Err(error) => {
+                            workspace.status_message = Some(error.to_string());
+                            tracing::warn!(%error, "language server failed to start");
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn lsp_accepts(&self, document: &EditorDocument) -> bool {
+        if document.huge_viewer.is_some()
+            || document.metadata.analysis.bytes > self.settings.lsp.max_document_bytes
+        {
+            return false;
+        }
+        document
+            .metadata
+            .path
+            .as_ref()
+            .and_then(|path| path.extension())
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                self.settings
+                    .lsp
+                    .file_extensions
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+            })
+    }
+
+    fn poll_lsp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let events = self
+            .lsp
+            .as_ref()
+            .map(|client| client.drain_events().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut failed = false;
+        for event in events {
+            match event {
+                LspEvent::Diagnostics { path, items } => {
+                    if let Some(document) = self
+                        .documents
+                        .iter()
+                        .find(|document| document.metadata.path.as_deref() == Some(path.as_path()))
+                    {
+                        document.editor.set_diagnostics(items, cx);
+                    }
+                }
+                LspEvent::Response { id, result } => {
+                    let initialize = self.lsp.as_ref().is_some_and(|client| {
+                        id == client.initialize_id() && !client.is_initialized()
+                    });
+                    if initialize {
+                        if let Some(client) = &mut self.lsp {
+                            match client.finish_initialize() {
+                                Ok(()) => {
+                                    self.status_message = Some("Language server ready".to_owned())
+                                }
+                                Err(error) => {
+                                    self.status_message = Some(error.to_string());
+                                    failed = true;
+                                }
+                            }
+                        }
+                    } else if self.pending_definitions.remove(&id) {
+                        if let Some(location) =
+                            parse_definition_locations(&result).into_iter().next()
+                        {
+                            self.open_definition(location, window, cx);
+                        } else {
+                            self.status_message = Some("No definition found".to_owned());
+                        }
+                    }
+                }
+                LspEvent::ServerRequest { id, method, params } => {
+                    let result = if method == "workspace/configuration" {
+                        let count = params
+                            .get("items")
+                            .and_then(serde_json::Value::as_array)
+                            .map_or(0, Vec::len);
+                        serde_json::Value::Array(vec![serde_json::Value::Null; count])
+                    } else if method == "workspace/workspaceFolders" {
+                        serde_json::Value::Array(Vec::new())
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    if let Some(client) = &self.lsp
+                        && let Err(error) = client.respond(id, result)
+                    {
+                        tracing::warn!(%error, %method, "could not answer language-server request");
+                    }
+                }
+                LspEvent::Failed(message) => {
+                    self.status_message = Some(message);
+                    failed = true;
+                }
+            }
+        }
+        if failed {
+            self.lsp = None;
+            self.lsp_opened.clear();
+            return;
+        }
+        self.sync_lsp_documents(cx);
+    }
+
+    fn sync_lsp_documents(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.lsp.as_ref().filter(|client| client.is_initialized()) else {
+            return;
+        };
+        let new_documents = self
+            .documents
+            .iter()
+            .filter(|document| self.lsp_accepts(document))
+            .filter_map(|document| {
+                let path = document.metadata.path.clone()?;
+                (!self.lsp_opened.contains(&path)).then(|| {
+                    let rope = document.editor.rope(cx);
+                    let text = (rope.len() as u64 <= self.settings.lsp.max_document_bytes)
+                        .then(|| rope.to_string());
+                    let language = path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .unwrap_or("plaintext")
+                        .to_owned();
+                    (path, language, document.revision, text)
+                })
+            })
+            .filter_map(|(path, language, version, text)| {
+                text.map(|text| (path, language, version, text))
+            })
+            .collect::<Vec<_>>();
+        for (path, language, version, text) in new_documents {
+            match client.did_open(&path, &language, version, &text) {
+                Ok(()) => {
+                    self.lsp_opened.insert(path);
+                }
+                Err(error) => tracing::warn!(%error, "could not notify LSP of open document"),
+            }
+        }
+
+        let ready = self
+            .lsp_dirty
+            .iter()
+            .filter(|(_, changed_at)| changed_at.elapsed() >= Duration::from_millis(300))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in ready {
+            self.lsp_dirty.remove(&id);
+            let Some(document) = self.documents.iter().find(|document| document.id == id) else {
+                continue;
+            };
+            if !self.lsp_accepts(document) {
+                continue;
+            }
+            let Some(path) = document.metadata.path.as_ref() else {
+                continue;
+            };
+            let rope = document.editor.rope(cx);
+            if rope.len() as u64 > self.settings.lsp.max_document_bytes {
+                continue;
+            }
+            let text = rope.to_string();
+            if let Err(error) = client.did_change(path, document.revision, &text) {
+                tracing::warn!(%error, "could not notify LSP of document change");
+            }
+        }
+    }
+
+    fn on_go_to_definition(&mut self, _: &GoToDefinition, _: &mut Window, cx: &mut Context<Self>) {
+        let document = self.active_document();
+        let Some(path) = document.metadata.path.clone() else {
+            self.status_message =
+                Some("Save the document before requesting a definition".to_owned());
+            cx.notify();
+            return;
+        };
+        let cursor = document.editor.state().read(cx).cursor_position();
+        let Some(client) = &mut self.lsp else {
+            self.status_message = Some("No language server is configured".to_owned());
+            cx.notify();
+            return;
+        };
+        if !client.is_initialized() {
+            self.status_message = Some("Language server is still initializing".to_owned());
+            cx.notify();
+            return;
+        }
+        match client.definition(&path, cursor.line as usize, cursor.character as usize) {
+            Ok(id) => {
+                self.pending_definitions.insert(id);
+                self.status_message = Some("Finding definition…".to_owned());
+            }
+            Err(error) => self.status_message = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn open_definition(
+        &mut self,
+        location: DefinitionLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_path_at(
+            location.path,
+            Some(TextLocation {
+                line: location.start_line,
+                column: location.start_character,
+                end_line: location.end_line,
+                end_column: location.end_character,
+            }),
+            window,
+            cx,
+        );
     }
 
     fn on_new(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -904,6 +1789,7 @@ impl Workspace {
                         );
                         workspace.update_window_title(window);
                         workspace.persist_session(cx);
+                        workspace.refresh_git(window, cx);
                         cx.notify();
                     }
                     Err(error) => {
@@ -969,7 +1855,14 @@ impl Workspace {
         let Some(index) = self.document_index(id) else {
             return;
         };
-        self.documents.remove(index);
+        let removed = self.documents.remove(index);
+        if let Some(path) = removed.metadata.path
+            && self.lsp_opened.remove(&path)
+            && let Some(client) = &self.lsp
+            && let Err(error) = client.did_close(&path)
+        {
+            tracing::warn!(%error, "could not notify LSP of closed document");
+        }
 
         if self.documents.is_empty() {
             self.active_index = 0;
@@ -1072,6 +1965,26 @@ impl Workspace {
                             .on_click(cx.listener(|workspace, _, window, cx| {
                                 workspace.on_open(&OpenDocument, window, cx)
                             })),
+                    )
+                    .child(
+                        Button::new("open-folder")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Folder)
+                            .tooltip_with_action("Open folder", &OpenFolder, None)
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_open_folder(&OpenFolder, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("quick-open")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Search)
+                            .tooltip_with_action("Quick open", &ShowQuickOpen, None)
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_quick_open(&ShowQuickOpen, window, cx)
+                            })),
                     ),
             )
             .children(tabs)
@@ -1124,6 +2037,12 @@ impl Workspace {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "Unsaved document".to_owned());
 
+        let project_status = self
+            .project
+            .as_ref()
+            .and_then(|project| project.root.file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| format!("Folder: {name}"));
         h_flex()
             .h_7()
             .px_3()
@@ -1180,9 +2099,204 @@ impl Workspace {
                     .gap_4()
                     .child(line_summary)
                     .child(position_summary)
+                    .children(project_status)
+                    .children(self.status_message.clone())
                     .child("UTF-8")
                     .child(document.metadata.analysis.line_ending.label())
                     .child(document.metadata.language.label()),
+            )
+    }
+
+    fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self
+            .project
+            .as_ref()
+            .map(|project| project.entries.len())
+            .unwrap_or(0);
+        let root_label = self
+            .project
+            .as_ref()
+            .map(|project| project.root.display().to_string())
+            .unwrap_or_else(|| {
+                if self.project_loading {
+                    "Indexing folder…".to_owned()
+                } else {
+                    "No folder open".to_owned()
+                }
+            });
+        v_flex()
+            .w_64()
+            .h_full()
+            .flex_none()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(
+                h_flex()
+                    .h_9()
+                    .px_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .font_semibold()
+                            .truncate()
+                            .child(root_label),
+                    )
+                    .child(
+                        Button::new("project-refresh")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Redo)
+                            .tooltip("Refresh project and Git status")
+                            .disabled(self.project.is_none() || self.project_loading)
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.refresh_project(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("project-open-folder")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::FolderOpen)
+                            .tooltip("Open Folder")
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_open_folder(&OpenFolder, window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                uniform_list(
+                    "project-explorer",
+                    count,
+                    cx.processor(|workspace, range: std::ops::Range<usize>, _, cx| {
+                        range
+                            .filter_map(|index| {
+                                let project = workspace.project.as_ref()?;
+                                let entry = project.entries.get(index)?.clone();
+                                let relative = entry.relative.clone();
+                                let status = workspace.git_status.get(&relative).cloned();
+                                let name = entry
+                                    .path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("File")
+                                    .to_owned();
+                                let path = entry.path.clone();
+                                Some(
+                                    h_flex()
+                                        .id(("project-entry", index))
+                                        .h_6()
+                                        .px_2()
+                                        .gap_1()
+                                        .cursor_pointer()
+                                        .hover(|row| row.bg(cx.theme().list_hover))
+                                        .on_click(cx.listener(move |workspace, _, window, cx| {
+                                            if !entry.is_directory {
+                                                workspace.open_path_at(
+                                                    path.clone(),
+                                                    None,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        }))
+                                        .child(div().w(px((entry.depth * 12) as f32)))
+                                        .child(if entry.is_directory { "▾" } else { "·" })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_sm()
+                                                .child(name),
+                                        )
+                                        .children(status.map(|status| {
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().warning)
+                                                .child(status)
+                                        })),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1()
+                .min_h_0(),
+            )
+    }
+
+    fn render_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.overlay_items.len();
+        let title = match self.overlay_mode {
+            Some(OverlayMode::Commands) => "COMMAND PALETTE",
+            Some(OverlayMode::QuickOpen) => "QUICK OPEN",
+            Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
+            None => "",
+        };
+        v_flex()
+            .absolute()
+            .top(px(72.))
+            .left(px(180.))
+            .right(px(180.))
+            .max_h(px(520.))
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .shadow_lg()
+            .child(
+                h_flex()
+                    .h_8()
+                    .px_3()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(title)
+                    .child("Enter opens first result · Esc closes"),
+            )
+            .child(div().px_2().pb_2().child(Input::new(&self.overlay_input)))
+            .child(
+                uniform_list(
+                    "ide-overlay-results",
+                    count,
+                    cx.processor(|workspace, range: std::ops::Range<usize>, _, cx| {
+                        range
+                            .filter_map(|index| {
+                                let item = workspace.overlay_items.get(index)?.clone();
+                                Some(
+                                    v_flex()
+                                        .id(("overlay-item", index))
+                                        .min_h_10()
+                                        .px_3()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .border_t_1()
+                                        .border_color(cx.theme().border.opacity(0.55))
+                                        .hover(|row| row.bg(cx.theme().list_hover))
+                                        .on_click(cx.listener(move |workspace, _, window, cx| {
+                                            workspace.accept_overlay(index, window, cx)
+                                        }))
+                                        .child(div().text_sm().child(item.title))
+                                        .when(!item.subtitle.is_empty(), |row| {
+                                            row.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(item.subtitle),
+                                            )
+                                        }),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .max_h(px(430.)),
             )
     }
 }
@@ -1204,7 +2318,7 @@ impl Render for Workspace {
             .map(|viewer| viewer.into_any_element())
             .unwrap_or_else(|| editor.render(cx).size_full().into_any_element());
 
-        v_flex()
+        let workspace = v_flex()
             .id("textify-workspace")
             .size_full()
             .bg(cx.theme().background)
@@ -1216,6 +2330,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_previous))
+            .on_action(cx.listener(Self::on_open_folder))
+            .on_action(cx.listener(Self::on_toggle_sidebar))
+            .on_action(cx.listener(Self::on_command_palette))
+            .on_action(cx.listener(Self::on_quick_open))
+            .on_action(cx.listener(Self::on_workspace_search))
+            .on_action(cx.listener(Self::on_go_to_definition))
+            .on_action(cx.listener(Self::on_dismiss_overlay))
             .child(
                 TitleBar::new().child(
                     h_flex()
@@ -1246,16 +2367,110 @@ impl Render for Workspace {
             )
             .child(self.render_tabs(cx))
             .child(
-                div()
-                    .id("editor-surface")
+                h_flex()
                     .flex_1()
                     .min_h_0()
-                    .overflow_hidden()
-                    .bg(cx.theme().background)
-                    .child(content),
+                    .when(self.sidebar_visible, |body| {
+                        body.child(self.render_project_sidebar(cx))
+                    })
+                    .child(
+                        div()
+                            .id("editor-surface")
+                            .flex_1()
+                            .h_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .bg(cx.theme().background)
+                            .child(content),
+                    ),
             )
-            .child(self.render_status(cx))
+            .child(self.render_status(cx));
+
+        div()
+            .relative()
+            .size_full()
+            .child(workspace)
+            .when(self.overlay_mode.is_some(), |root| {
+                root.child(self.render_overlay(cx))
+            })
     }
+}
+
+fn command_items() -> Vec<OverlayItem> {
+    [
+        ("New File", "Create an untitled editor", IdeCommand::NewFile),
+        ("Open File…", "Open a file from disk", IdeCommand::OpenFile),
+        (
+            "Open Folder…",
+            "Index a project lazily",
+            IdeCommand::OpenFolder,
+        ),
+        (
+            "Quick Open",
+            "Find an indexed project file",
+            IdeCommand::QuickOpen,
+        ),
+        (
+            "Search Workspace",
+            "Stream text matches from project files",
+            IdeCommand::WorkspaceSearch,
+        ),
+        (
+            "Toggle File Explorer",
+            "Show or hide the project sidebar",
+            IdeCommand::ToggleSidebar,
+        ),
+        (
+            "Refresh Project",
+            "Rescan files and Git decorations",
+            IdeCommand::RefreshProject,
+        ),
+        (
+            "Open Settings",
+            "Edit settings.json (reloads on save)",
+            IdeCommand::OpenSettings,
+        ),
+        (
+            "Open Keymap",
+            "Edit keymap.json (reloads on save)",
+            IdeCommand::OpenKeymap,
+        ),
+        (
+            "Go to Definition",
+            "Ask the configured language server",
+            IdeCommand::GoToDefinition,
+        ),
+    ]
+    .into_iter()
+    .map(|(title, subtitle, command)| OverlayItem {
+        title: title.to_owned(),
+        subtitle: subtitle.to_owned(),
+        target: OverlayTarget::Command(command),
+    })
+    .collect()
+}
+
+fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &str, action: A) {
+    if !shortcut.trim().is_empty()
+        && shortcut
+            .split_whitespace()
+            .all(|keystroke| gpui::Keystroke::parse(keystroke).is_ok())
+    {
+        bindings.push(KeyBinding::new(shortcut, action, None));
+    } else {
+        tracing::warn!(shortcut, "ignoring invalid Textify key binding");
+    }
+}
+
+fn bind_ide_keymap(cx: &mut App, keymap: &TextifyKeymap) {
+    let mut bindings = Vec::new();
+    push_key_binding(&mut bindings, &keymap.command_palette, ShowCommandPalette);
+    push_key_binding(&mut bindings, &keymap.quick_open, ShowQuickOpen);
+    push_key_binding(&mut bindings, &keymap.workspace_search, ShowWorkspaceSearch);
+    push_key_binding(&mut bindings, &keymap.open_folder, OpenFolder);
+    push_key_binding(&mut bindings, &keymap.toggle_sidebar, ToggleSidebar);
+    push_key_binding(&mut bindings, &keymap.go_to_definition, GoToDefinition);
+    cx.bind_keys(bindings);
 }
 
 pub fn run() {
@@ -1278,6 +2493,7 @@ pub fn run() {
             KeyBinding::new("cmd-w", CloseDocument, None),
             KeyBinding::new("ctrl-tab", NextDocument, None),
             KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
+            KeyBinding::new("escape", DismissOverlay, None),
         ]);
 
         let options = WindowOptions {
@@ -1311,6 +2527,42 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn workspace_renders_lazy_ide_shell(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.documents.len(), 1);
+            assert!(workspace.project.is_none());
+            assert!(workspace.lsp.is_none());
+        });
+
+        let directory = tempfile::tempdir().expect("project");
+        fs::write(directory.path().join("main.rs"), "fn main() {}\n").expect("fixture");
+        let project = ProjectIndex::build(directory.path(), 100).expect("index");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.project = Some(project);
+                workspace.sidebar_visible = true;
+                workspace.show_overlay(OverlayMode::Commands, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert!(!workspace.overlay_items.is_empty());
+            assert_eq!(workspace.project.as_ref().unwrap().files.len(), 1);
+        });
+    }
 
     #[test]
     fn open_file_routes_at_the_huge_file_threshold() {

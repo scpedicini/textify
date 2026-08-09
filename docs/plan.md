@@ -116,6 +116,8 @@ remains unchanged.
 
 ## Milestone 5 — IDE workflows
 
+Status: implemented and headless-native smoke tested on 2026-08-08.
+
 - Open Folder and a virtualized file explorer.
 - Command palette and quick-open.
 - Workspace search with cancellable streaming results.
@@ -125,3 +127,19 @@ remains unchanged.
 
 These services must initialize lazily. None may delay the first window or parse/index files that
 the user has not opened without an explicit workspace action.
+
+Implementation notes:
+
+- Open Folder builds a capped project index on the background executor. The explorer and all
+  palette/search result surfaces use virtualized lists.
+- Quick-open scores the existing project index. Workspace search streams bounded, cancellable
+  matches and skips binary or over-budget files.
+- `settings.json` and `keymap.json` are created in Textify's data directory and watched for live
+  reload. Runtime editor budgets are applied to existing tabs.
+- Git porcelain status runs only after a folder is opened or explicitly refreshed.
+- LSP is disabled by default. A configured server is spawned only for an open workspace; document
+  synchronization is debounced and capped, diagnostics decorate the editor, and F12 requests a
+  definition. The client implements standard Content-Length framing and common server requests.
+- The restored session now includes the workspace root. None of these services is constructed in
+  the first-window path; the headless native render test asserts that the initial shell has no
+  project or language-server state.

@@ -15,6 +15,8 @@ pub struct SessionState {
     pub version: u32,
     pub active_index: usize,
     pub open_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl Default for SessionState {
@@ -23,6 +25,7 @@ impl Default for SessionState {
             version: SESSION_VERSION,
             active_index: 0,
             open_paths: Vec::new(),
+            workspace_root: None,
         }
     }
 }
@@ -35,6 +38,11 @@ impl SessionState {
             open_paths,
             ..Self::default()
         }
+    }
+
+    pub fn with_workspace_root(mut self, workspace_root: Option<PathBuf>) -> Self {
+        self.workspace_root = workspace_root;
+        self
     }
 }
 
@@ -53,7 +61,8 @@ pub fn load_session(path: &Path) -> Result<SessionState> {
     if state.version != SESSION_VERSION {
         return Ok(SessionState::default());
     }
-    Ok(SessionState::new(state.active_index, state.open_paths))
+    let workspace_root = state.workspace_root;
+    Ok(SessionState::new(state.active_index, state.open_paths).with_workspace_root(workspace_root))
 }
 
 pub fn save_session(path: &Path, state: &SessionState) -> Result<()> {
@@ -69,13 +78,15 @@ mod tests {
     fn session_round_trip_clamps_active_tab() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("session.json");
-        let state = SessionState::new(99, vec![PathBuf::from("one.md"), PathBuf::from("two.json")]);
+        let state = SessionState::new(99, vec![PathBuf::from("one.md"), PathBuf::from("two.json")])
+            .with_workspace_root(Some(PathBuf::from("project")));
 
         save_session(&path, &state).expect("save");
         let restored = load_session(&path).expect("load");
 
         assert_eq!(restored.active_index, 1);
         assert_eq!(restored.open_paths, state.open_paths);
+        assert_eq!(restored.workspace_root, state.workspace_root);
     }
 
     #[test]

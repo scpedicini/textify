@@ -493,6 +493,19 @@ impl InputState {
         self
     }
 
+    /// Update undo and search budgets for a live editor.
+    pub fn set_resource_budgets(
+        &mut self,
+        undo_max_bytes: usize,
+        search_max_matches: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.set_max_bytes(undo_max_bytes);
+        self.search_max_matches = search_max_matches;
+        self.search_panel = None;
+        cx.notify();
+    }
+
     /// Set placeholder
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();

@@ -70,6 +70,26 @@ where
         self
     }
 
+    /// Update the history byte budget and immediately prune complete oldest undo groups.
+    pub fn set_max_bytes(&mut self, max_bytes: usize) {
+        self.max_bytes = max_bytes;
+        while self
+            .undos
+            .iter()
+            .map(HistoryItem::estimated_bytes)
+            .sum::<usize>()
+            > self.max_bytes
+        {
+            let Some(oldest_version) = self.undos.first().map(HistoryItem::version) else {
+                break;
+            };
+            if self.undos.last().map(HistoryItem::version) == Some(oldest_version) {
+                break;
+            }
+            self.undos.retain(|item| item.version() != oldest_version);
+        }
+    }
+
     /// Set the history to be unique, defaults to false.
     /// If set to true, the history will only keep unique changes.
     pub fn unique(mut self) -> Self {
@@ -351,6 +371,16 @@ mod tests {
         history.push(0.into());
         history.push(1.into());
 
+        assert_eq!(history.undos().len(), 1);
+        assert_eq!(history.undos()[0].tab_index, 1);
+    }
+
+    #[test]
+    fn runtime_byte_budget_prunes_old_groups() {
+        let mut history: History<TabIndex> = History::new();
+        history.push(0.into());
+        history.push(1.into());
+        history.set_max_bytes(std::mem::size_of::<TabIndex>());
         assert_eq!(history.undos().len(), 1);
         assert_eq!(history.undos()[0].tab_index, 1);
     }
