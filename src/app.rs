@@ -11,9 +11,9 @@ use anyhow::Context as _;
 use gpui::{
     App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
     IntoElement, KeyBinding, Menu, MenuItem, OsAction, ParentElement as _, Render, ScrollDelta,
-    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
-    Window, WindowBounds, WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
-    uniform_list,
+    ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription,
+    SystemMenuType, Timer, Window, WindowBounds, WindowOptions, actions, div,
+    prelude::FluentBuilder as _, px, size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
@@ -65,6 +65,7 @@ actions!(
         OpenFolder,
         ToggleSidebar,
         ShowCommandPalette,
+        ShowOpenTabs,
         ShowQuickOpen,
         ShowWorkspaceSearch,
         ShowSettings,
@@ -322,6 +323,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayMode {
     Commands,
+    OpenTabs,
     QuickOpen,
     WorkspaceSearch,
 }
@@ -335,6 +337,7 @@ enum IdeCommand {
     CloseFile,
     NextTab,
     PreviousTab,
+    OpenTabs,
     ToggleWordWrap,
     OpenFolder,
     QuickOpen,
@@ -349,6 +352,7 @@ enum IdeCommand {
 #[derive(Debug, Clone)]
 enum OverlayTarget {
     Command(IdeCommand),
+    Tab(u64),
     File(PathBuf),
     Search(WorkspaceMatch),
 }
@@ -429,6 +433,7 @@ pub struct Workspace {
     sidebar_visible: bool,
     git_status: HashMap<PathBuf, String>,
     git_loading: bool,
+    tab_scroll_handle: ScrollHandle,
     overlay_mode: Option<OverlayMode>,
     overlay_input: Entity<InputState>,
     overlay_items: Vec<OverlayItem>,
@@ -508,6 +513,7 @@ impl Workspace {
             sidebar_visible: false,
             git_status: HashMap::new(),
             git_loading: false,
+            tab_scroll_handle: ScrollHandle::new(),
             overlay_mode: None,
             overlay_input,
             overlay_items: Vec::new(),
@@ -736,6 +742,7 @@ impl Workspace {
             word_wrap,
         });
         self.active_index = self.documents.len() - 1;
+        self.tab_scroll_handle.scroll_to_item(self.active_index);
         self.update_window_title(window, cx);
 
         if focus_editor {
@@ -750,6 +757,7 @@ impl Workspace {
         }
 
         self.active_index = index;
+        self.tab_scroll_handle.scroll_to_item(index);
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
         }
@@ -1567,6 +1575,7 @@ impl Workspace {
         self.overlay_items.clear();
         let placeholder = match mode {
             OverlayMode::Commands => "Type a command",
+            OverlayMode::OpenTabs => "Find an open tab",
             OverlayMode::QuickOpen => "Quick open a project file",
             OverlayMode::WorkspaceSearch => "Search text in the workspace",
         };
@@ -1596,6 +1605,28 @@ impl Workspace {
         match mode {
             OverlayMode::Commands => {
                 self.overlay_items = matching_command_items(&query);
+            }
+            OverlayMode::OpenTabs => {
+                let items = self
+                    .documents
+                    .iter()
+                    .map(|document| {
+                        let title = document.title(cx);
+                        let subtitle = document
+                            .metadata
+                            .path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "Unsaved document".to_owned());
+                        OverlayItem {
+                            search_text: format!("{title} {subtitle}").to_lowercase(),
+                            title,
+                            subtitle,
+                            target: OverlayTarget::Tab(document.id),
+                        }
+                    })
+                    .collect();
+                self.overlay_items = matching_open_tab_items(items, &query);
             }
             OverlayMode::QuickOpen => {
                 self.overlay_items = self
@@ -1714,6 +1745,11 @@ impl Workspace {
         self.hide_overlay(cx);
         match item.target {
             OverlayTarget::Command(command) => self.run_ide_command(command, window, cx),
+            OverlayTarget::Tab(id) => {
+                if let Some(index) = self.document_index(id) {
+                    self.set_active_index(index, window, cx);
+                }
+            }
             OverlayTarget::File(path) => self.open_path_at(path, None, window, cx),
             OverlayTarget::Search(item) => self.open_path_at(
                 item.path,
@@ -1743,6 +1779,7 @@ impl Workspace {
             IdeCommand::CloseFile => self.on_close(&CloseDocument, window, cx),
             IdeCommand::NextTab => self.on_next(&NextDocument, window, cx),
             IdeCommand::PreviousTab => self.on_previous(&PreviousDocument, window, cx),
+            IdeCommand::OpenTabs => self.on_open_tabs(&ShowOpenTabs, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
@@ -1917,6 +1954,10 @@ impl Workspace {
 
     fn on_quick_open(&mut self, _: &ShowQuickOpen, window: &mut Window, cx: &mut Context<Self>) {
         self.show_overlay(OverlayMode::QuickOpen, window, cx);
+    }
+
+    fn on_open_tabs(&mut self, _: &ShowOpenTabs, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_overlay(OverlayMode::OpenTabs, window, cx);
     }
 
     fn on_workspace_search(
@@ -2653,6 +2694,7 @@ impl Workspace {
         } else if index == self.active_index {
             self.active_index = self.active_index.min(self.documents.len() - 1);
         }
+        self.tab_scroll_handle.scroll_to_item(self.active_index);
 
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
@@ -2749,6 +2791,8 @@ impl Workspace {
 
         TabBar::new("document-tabs")
             .outline()
+            .menu(true)
+            .track_scroll(&self.tab_scroll_handle)
             .w_full()
             .bg(cx.theme().tab_bar)
             .border_b_1()
@@ -3069,6 +3113,7 @@ impl Workspace {
         let count = self.overlay_items.len();
         let title = match self.overlay_mode {
             Some(OverlayMode::Commands) => "COMMAND PALETTE",
+            Some(OverlayMode::OpenTabs) => "OPEN TABS",
             Some(OverlayMode::QuickOpen) => "QUICK OPEN",
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
@@ -3438,6 +3483,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_folder))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_command_palette))
+            .on_action(cx.listener(Self::on_open_tabs))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
@@ -3556,6 +3602,12 @@ fn command_items() -> Vec<OverlayItem> {
             IdeCommand::PreviousTab,
         ),
         (
+            "Show Open Tabs",
+            "Search and activate an open document",
+            "show every list find fuzzy wildcard switch focus reveal open tabs files documents",
+            IdeCommand::OpenTabs,
+        ),
+        (
             "Toggle Word Wrap",
             "Wrap long lines in the current tab",
             "toggle turn on off enable disable word wrap long lines current tab",
@@ -3659,6 +3711,68 @@ fn matching_command_items(query: &str) -> Vec<OverlayItem> {
     matches.into_iter().map(|(_, _, item)| item).collect()
 }
 
+fn matching_open_tab_items(items: Vec<OverlayItem>, query: &str) -> Vec<OverlayItem> {
+    let query = query.trim().to_lowercase();
+    if query.contains('*') {
+        let mut matches = items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                wildcard_score(&item.search_text, &query).map(|score| (score, index, item))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(
+            |(left_score, left_index, _), (right_score, right_index, _)| {
+                right_score
+                    .cmp(left_score)
+                    .then_with(|| left_index.cmp(right_index))
+            },
+        );
+        return matches.into_iter().map(|(_, _, item)| item).collect();
+    }
+
+    let tokens = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return items;
+    }
+
+    let mut matches = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let mut score = 0;
+            for token in &tokens {
+                score += fuzzy_command_token_score(&item.search_text, token)?;
+            }
+            Some((score, index, item))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(
+        |(left_score, left_index, _), (right_score, right_index, _)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_index.cmp(right_index))
+        },
+    );
+    matches.into_iter().map(|(_, _, item)| item).collect()
+}
+
+fn wildcard_score(candidate: &str, query: &str) -> Option<i64> {
+    let mut cursor = 0;
+    let mut score = 0;
+    let mut matched_any = false;
+    for fragment in query.split('*').filter(|fragment| !fragment.is_empty()) {
+        let relative = candidate[cursor..].find(fragment)?;
+        matched_any = true;
+        score += 100 - relative as i64;
+        cursor += relative + fragment.len();
+    }
+    matched_any.then_some(score)
+}
+
 fn fuzzy_command_token_score(candidate: &str, token: &str) -> Option<i64> {
     if let Some(index) = candidate.find(token) {
         return Some(120 - (index as i64 / 8));
@@ -3736,6 +3850,8 @@ fn native_menus() -> Vec<Menu> {
         Menu {
             name: "Window".into(),
             items: vec![
+                MenuItem::action("Show Open Tabs…", ShowOpenTabs),
+                MenuItem::separator(),
                 MenuItem::action("Next Tab", NextDocument),
                 MenuItem::action("Previous Tab", PreviousDocument),
             ],
@@ -3789,6 +3905,7 @@ pub fn run() {
             KeyBinding::new("alt-z", ToggleWordWrap, None),
             KeyBinding::new("ctrl-tab", NextDocument, None),
             KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
+            KeyBinding::new("cmd-alt-p", ShowOpenTabs, None),
             KeyBinding::new("escape", DismissOverlay, None),
             KeyBinding::new("cmd-q", QuitTextify, None),
         ]);
@@ -4087,6 +4204,81 @@ mod tests {
             first_command("preferences for font"),
             Some(IdeCommand::OpenSettings)
         );
+        assert_eq!(
+            first_command("show me every open file"),
+            Some(IdeCommand::OpenTabs)
+        );
+    }
+
+    #[test]
+    fn open_tab_search_supports_fuzzy_wildcard_fragments() {
+        let item = |id, title: &str, path: &str| OverlayItem {
+            title: title.to_owned(),
+            subtitle: path.to_owned(),
+            search_text: format!("{title} {path}").to_lowercase(),
+            target: OverlayTarget::Tab(id),
+        };
+        let matches = matching_open_tab_items(
+            vec![
+                item(1, "notes.txt", "/work/notes.txt"),
+                item(2, "main.rs", "/work/src/main.rs"),
+                item(3, "manual.md", "/work/docs/manual.md"),
+            ],
+            "ma*rs",
+        );
+
+        assert_eq!(matches.len(), 1);
+        assert!(matches!(matches[0].target, OverlayTarget::Tab(2)));
+    }
+
+    #[gpui::test]
+    fn activating_an_overflowed_tab_reveals_it(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                for index in 1..18 {
+                    workspace.add_untitled(window, cx);
+                    workspace.documents[index].label_override =
+                        Some(format!("document-{index}.txt"));
+                }
+                workspace.documents[17].label_override = Some("overflow-target.rs".to_owned());
+                workspace.show_overlay(OverlayMode::OpenTabs, window, cx);
+                workspace.overlay_input.update(cx, |input, cx| {
+                    input.set_value("target", window, cx);
+                });
+                workspace.refresh_overlay(window, cx);
+                workspace.accept_overlay(0, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.active_index, 17);
+            assert_eq!(
+                workspace.active_document().display_name(cx),
+                "overflow-target.rs"
+            );
+            let viewport = workspace.tab_scroll_handle.bounds();
+            let tab = workspace
+                .tab_scroll_handle
+                .bounds_for_item(17)
+                .expect("overflow tab bounds");
+            let offset = workspace.tab_scroll_handle.offset();
+            assert!(tab.left() + offset.x >= viewport.left());
+            assert!(tab.right() + offset.x <= viewport.right());
+        });
     }
 
     #[test]
