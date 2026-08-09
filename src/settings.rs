@@ -85,6 +85,7 @@ impl TextifySettings {
 pub struct AppearanceSettings {
     pub font_family: String,
     pub font_size: u16,
+    pub show_title_bar: bool,
 }
 
 impl Default for AppearanceSettings {
@@ -92,6 +93,7 @@ impl Default for AppearanceSettings {
         Self {
             font_family: "SFMono-Regular".to_owned(),
             font_size: 14,
+            show_title_bar: true,
         }
     }
 }
@@ -291,6 +293,7 @@ mod tests {
         let mut appearance = AppearanceSettings {
             font_family: "   ".to_owned(),
             font_size: 200,
+            ..AppearanceSettings::default()
         };
         appearance.normalize();
         assert_eq!(appearance.font_family, "SFMono-Regular");

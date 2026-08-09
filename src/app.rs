@@ -72,6 +72,7 @@ actions!(
         ShowWorkspaceSearch,
         ShowSettings,
         ToggleWordWrap,
+        ToggleTitleBar,
         GoToDefinition,
         DismissOverlay,
         QuitTextify
@@ -341,6 +342,7 @@ enum IdeCommand {
     PreviousTab,
     OpenTabs,
     ToggleWordWrap,
+    ToggleTitleBar,
     OpenFolder,
     QuickOpen,
     WorkspaceSearch,
@@ -1793,6 +1795,7 @@ impl Workspace {
             IdeCommand::PreviousTab => self.on_previous(&PreviousDocument, window, cx),
             IdeCommand::OpenTabs => self.on_open_tabs(&ShowOpenTabs, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
+            IdeCommand::ToggleTitleBar => self.on_toggle_title_bar(&ToggleTitleBar, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
             IdeCommand::WorkspaceSearch => {
@@ -1906,10 +1909,8 @@ impl Workspace {
             };
 
         let mut settings = self.settings.clone();
-        settings.appearance = AppearanceSettings {
-            font_family,
-            font_size: draft.font_size,
-        };
+        settings.appearance.font_family = font_family;
+        settings.appearance.font_size = draft.font_size;
         settings.appearance.normalize();
         settings.recovery = draft.recovery;
         let path = self.data_dir.join("settings.json");
@@ -2015,6 +2016,34 @@ impl Workspace {
         });
         self.persist_session(cx);
         cx.notify();
+    }
+
+    fn on_toggle_title_bar(&mut self, _: &ToggleTitleBar, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings.appearance.show_title_bar = !self.settings.appearance.show_title_bar;
+        self.status_message = Some(if self.settings.appearance.show_title_bar {
+            "Title bar shown".to_owned()
+        } else {
+            "Title bar hidden".to_owned()
+        });
+        self.persist_settings_silently(cx);
+        cx.notify();
+    }
+
+    fn persist_settings_silently(&self, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let path = self.data_dir.join("settings.json");
+        cx.background_spawn(async move {
+            if let Some(parent) = path.parent()
+                && let Err(error) = fs::create_dir_all(parent)
+            {
+                tracing::warn!(%error, "could not prepare settings directory");
+                return;
+            }
+            if let Err(error) = settings.save(&path) {
+                tracing::warn!(%error, "could not persist settings");
+            }
+        })
+        .detach();
     }
 
     fn on_quit_textify(&mut self, _: &QuitTextify, window: &mut Window, cx: &mut Context<Self>) {
@@ -3537,40 +3566,44 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
+            .on_action(cx.listener(Self::on_toggle_title_bar))
             .on_action(cx.listener(Self::on_quit_textify))
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
             .on_drop(cx.listener(|workspace, paths: &ExternalPaths, window, cx| {
                 workspace.open_dropped_paths(paths.paths().to_vec(), window, cx)
             }))
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .pr_3()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(div().size_2().rounded_full().bg(cx.theme().primary))
-                                .child(div().text_sm().font_semibold().child("TEXTIFY"))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("IDE"),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("A fast place for text"),
-                        ),
-                ),
-            )
+            .when(self.settings.appearance.show_title_bar, |workspace| {
+                workspace.child(
+                    TitleBar::new().child(
+                        h_flex()
+                            .id("textify-title-bar-content")
+                            .w_full()
+                            .pr_3()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(div().size_2().rounded_full().bg(cx.theme().primary))
+                                    .child(div().text_sm().font_semibold().child("TEXTIFY"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("IDE"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("A fast place for text"),
+                            ),
+                    ),
+                )
+            })
             .child(self.render_tabs(cx))
             .child(
                 h_flex()
@@ -3685,6 +3718,12 @@ fn command_items() -> Vec<OverlayItem> {
             "Wrap long lines in the current tab",
             "toggle turn on off enable disable word wrap long lines current tab",
             IdeCommand::ToggleWordWrap,
+        ),
+        (
+            "Toggle Title Bar",
+            "Show or hide the Textify heading",
+            "toggle show hide top title bar header textify heading chrome",
+            IdeCommand::ToggleTitleBar,
         ),
         (
             "Open Folder…",
@@ -3917,6 +3956,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Search Workspace…", ShowWorkspaceSearch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
+                MenuItem::action("Toggle Title Bar", ToggleTitleBar),
                 MenuItem::action("Toggle File Explorer", ToggleSidebar),
             ],
         },
@@ -4308,6 +4348,10 @@ mod tests {
             first_command("show me every open file"),
             Some(IdeCommand::OpenTabs)
         );
+        assert_eq!(
+            first_command("hide the top title bar"),
+            Some(IdeCommand::ToggleTitleBar)
+        );
     }
 
     #[test]
@@ -4446,7 +4490,38 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(actions.contains(&"Toggle Word Wrap"));
+        assert!(actions.contains(&"Toggle Title Bar"));
         assert!(actions.contains(&"Command Palette…"));
+    }
+
+    #[gpui::test]
+    fn title_bar_toggle_is_persisted(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                assert!(workspace.settings.appearance.show_title_bar);
+                workspace.on_toggle_title_bar(&ToggleTitleBar, window, cx);
+                assert!(!workspace.settings.appearance.show_title_bar);
+            });
+        });
+        cx.run_until_parked();
+
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(!saved.appearance.show_title_bar);
     }
 
     #[gpui::test]
