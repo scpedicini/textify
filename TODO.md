@@ -72,3 +72,5 @@ Initial settings for a proper full-featured text editor:
 - [x] Hiding the Textify title row reserves the macOS traffic-light area ahead of the tab toolbar.
 - [x] The project explorer and cancellable folder-wide Workspace Search remain separate from
   open-tab navigation and content search.
+- [x] Session and recent-history writes no longer masquerade as settings/keymap reloads; genuine
+  configuration reload notices name what changed and every bottom-bar status message is dismissible.

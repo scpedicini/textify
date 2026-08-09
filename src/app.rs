@@ -100,6 +100,23 @@ fn tab_toolbar_leading_inset(show_title_bar: bool) -> f32 {
     0.
 }
 
+fn configuration_paths_changed(changed_paths: &HashSet<PathBuf>, data_dir: &Path) -> bool {
+    changed_paths.contains(&data_dir.join("settings.json"))
+        || changed_paths.contains(&data_dir.join("keymap.json"))
+}
+
+fn configuration_reload_message(
+    settings_changed: bool,
+    keymap_changed: bool,
+) -> Option<&'static str> {
+    match (settings_changed, keymap_changed) {
+        (true, true) => Some("Settings and keymap reloaded"),
+        (true, false) => Some("Settings reloaded"),
+        (false, true) => Some("Keymap reloaded"),
+        (false, false) => None,
+    }
+}
+
 fn new_recovery_key(id: u64) -> u128 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1204,13 +1221,18 @@ impl Workspace {
         let Some(watcher) = &self.watcher else {
             return;
         };
-        let directories = watcher.drain_changed_directories();
-        if directories.is_empty() {
+        let changed_paths = watcher.drain_changed_paths();
+        if changed_paths.is_empty() {
             return;
         }
-        if directories.contains(&self.data_dir) {
+        if configuration_paths_changed(&changed_paths, &self.data_dir) {
             self.reload_configuration(window, cx);
         }
+
+        let directories = changed_paths
+            .iter()
+            .filter_map(|path| path.parent().map(Path::to_path_buf))
+            .collect::<HashSet<_>>();
 
         let targets = self
             .documents
@@ -2451,6 +2473,11 @@ impl Workspace {
         }
     }
 
+    fn dismiss_status_message(&mut self, cx: &mut Context<Self>) {
+        self.status_message = None;
+        cx.notify();
+    }
+
     fn reload_configuration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.config_reload_in_progress {
             return;
@@ -2469,23 +2496,26 @@ impl Workspace {
             workspace
                 .update_in(window, |workspace, window, cx| {
                     workspace.config_reload_in_progress = false;
-                    let mut changed = false;
+                    let mut settings_changed = false;
+                    let mut keymap_changed = false;
                     match settings {
                         Ok(settings) => {
-                            let lsp_changed = workspace.settings.lsp != settings.lsp;
-                            workspace.settings = settings;
-                            for document in &workspace.documents {
-                                document.editor.set_budgets(
-                                    workspace.settings.editor,
-                                    document.metadata.mode,
-                                    cx,
-                                );
+                            settings_changed = workspace.settings != settings;
+                            if settings_changed {
+                                let lsp_changed = workspace.settings.lsp != settings.lsp;
+                                workspace.settings = settings;
+                                for document in &workspace.documents {
+                                    document.editor.set_budgets(
+                                        workspace.settings.editor,
+                                        document.metadata.mode,
+                                        cx,
+                                    );
+                                }
+                                workspace.apply_recent_file_settings(cx);
+                                if lsp_changed {
+                                    workspace.restart_lsp(window, cx);
+                                }
                             }
-                            workspace.apply_recent_file_settings(cx);
-                            if lsp_changed {
-                                workspace.restart_lsp(window, cx);
-                            }
-                            changed = true;
                         }
                         Err(error) => {
                             workspace.status_message = Some(error.to_string());
@@ -2494,17 +2524,21 @@ impl Workspace {
                     }
                     match keymap {
                         Ok(keymap) => {
-                            workspace.keymap = keymap;
-                            bind_ide_keymap(cx, &workspace.keymap);
-                            changed = true;
+                            keymap_changed = workspace.keymap != keymap;
+                            if keymap_changed {
+                                workspace.keymap = keymap;
+                                bind_ide_keymap(cx, &workspace.keymap);
+                            }
                         }
                         Err(error) => {
                             workspace.status_message = Some(error.to_string());
                             tracing::warn!(%error, "keymap reload failed");
                         }
                     }
-                    if changed {
-                        workspace.status_message = Some("Settings and keymap reloaded".to_owned());
+                    if let Some(message) =
+                        configuration_reload_message(settings_changed, keymap_changed)
+                    {
+                        workspace.status_message = Some(message.to_owned());
                     }
                     cx.notify();
                 })
@@ -3344,6 +3378,16 @@ impl Workspace {
             .and_then(|project| project.root.file_name())
             .and_then(|name| name.to_str())
             .map(|name| format!("Folder: {name}"));
+        let status_message = self.status_message.clone().map(|message| {
+            Button::new("dismiss-status-message")
+                .ghost()
+                .xsmall()
+                .compact()
+                .label(message)
+                .icon(IconName::Close)
+                .tooltip("Dismiss status message")
+                .on_click(cx.listener(|workspace, _, _, cx| workspace.dismiss_status_message(cx)))
+        });
         h_flex()
             .h_7()
             .px_3()
@@ -3412,7 +3456,7 @@ impl Workspace {
                     .child(line_summary)
                     .child(position_summary)
                     .children(project_status)
-                    .children(self.status_message.clone())
+                    .children(status_message)
                     .child(
                         if document.word_wrap && document.metadata.mode == FileMode::Normal {
                             "WRAP"
@@ -4748,6 +4792,91 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_exact_configuration_paths_request_a_reload() {
+        let data_dir = PathBuf::from("/tmp/textify-config");
+        let session_change = HashSet::from([data_dir.join("session.json")]);
+        let recent_change = HashSet::from([data_dir.join("recent-files.json")]);
+        let settings_change = HashSet::from([data_dir.join("settings.json")]);
+        let keymap_change = HashSet::from([data_dir.join("keymap.json")]);
+
+        assert!(!configuration_paths_changed(&session_change, &data_dir));
+        assert!(!configuration_paths_changed(&recent_change, &data_dir));
+        assert!(configuration_paths_changed(&settings_change, &data_dir));
+        assert!(configuration_paths_changed(&keymap_change, &data_dir));
+    }
+
+    #[test]
+    fn configuration_reload_message_names_only_real_changes() {
+        assert_eq!(configuration_reload_message(false, false), None);
+        assert_eq!(
+            configuration_reload_message(true, false),
+            Some("Settings reloaded")
+        );
+        assert_eq!(
+            configuration_reload_message(false, true),
+            Some("Keymap reloaded")
+        );
+        assert_eq!(
+            configuration_reload_message(true, true),
+            Some("Settings and keymap reloaded")
+        );
+    }
+
+    #[gpui::test]
+    fn no_op_configuration_reload_is_silent_and_status_is_dismissible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("configuration directory");
+        ensure_config_files(directory.path()).expect("configuration fixtures");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.settings = TextifySettings::default();
+                workspace.keymap = TextifyKeymap::default();
+                workspace.status_message = None;
+                workspace.reload_configuration(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.status_message, None);
+        });
+
+        let mut changed_settings = TextifySettings::default();
+        changed_settings.appearance.show_tagline = false;
+        changed_settings
+            .save(&directory.path().join("settings.json"))
+            .expect("changed settings");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.reload_configuration(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Settings reloaded")
+            );
+            workspace.dismiss_status_message(cx);
+            assert_eq!(workspace.status_message, None);
+        });
+    }
 
     #[gpui::test]
     fn workspace_renders_lazy_ide_shell(cx: &mut gpui::TestAppContext) {

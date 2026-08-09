@@ -18,8 +18,8 @@ impl FileWatcher {
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if let Ok(event) = event {
-                for directory in event_directories(&event.paths) {
-                    let _ = sender.send(directory);
+                for path in event_paths(&event.paths) {
+                    let _ = sender.send(path);
                 }
             }
         })
@@ -43,20 +43,13 @@ impl FileWatcher {
         Ok(())
     }
 
-    pub fn drain_changed_directories(&self) -> HashSet<PathBuf> {
+    pub fn drain_changed_paths(&self) -> HashSet<PathBuf> {
         self.receiver.try_iter().collect()
     }
 }
 
-fn event_directories(paths: &[PathBuf]) -> HashSet<PathBuf> {
-    paths
-        .iter()
-        .map(|path| {
-            path.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf()
-        })
-        .collect()
+fn event_paths(paths: &[PathBuf]) -> HashSet<PathBuf> {
+    paths.iter().cloned().collect()
 }
 
 #[cfg(test)]
@@ -64,15 +57,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn event_paths_are_deduplicated_by_parent() {
+    fn event_paths_are_deduplicated_without_losing_the_changed_file() {
         let paths = vec![
             PathBuf::from("/tmp/project/a.txt"),
-            PathBuf::from("/tmp/project/b.txt"),
+            PathBuf::from("/tmp/project/a.txt"),
             PathBuf::from("/tmp/other/c.txt"),
         ];
-        let directories = event_directories(&paths);
-        assert_eq!(directories.len(), 2);
-        assert!(directories.contains(Path::new("/tmp/project")));
-        assert!(directories.contains(Path::new("/tmp/other")));
+        let paths = event_paths(&paths);
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(Path::new("/tmp/project/a.txt")));
+        assert!(paths.contains(Path::new("/tmp/other/c.txt")));
     }
 }

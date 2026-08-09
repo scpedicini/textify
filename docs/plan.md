@@ -212,7 +212,7 @@ Status: implemented and regression tested on 2026-08-08.
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
 
-- 70 Textify tests and 113 pinned-fork tests pass.
+- 73 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.
