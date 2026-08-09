@@ -68,6 +68,7 @@ actions!(
         NextDocument,
         PreviousDocument,
         OpenFolder,
+        CloseFolder,
         ToggleSidebar,
         ShowCommandPalette,
         ShowOpenTabs,
@@ -380,6 +381,7 @@ enum IdeCommand {
     ToggleWordWrap,
     ToggleTitleBar,
     OpenFolder,
+    CloseFolder,
     SearchOpenTabs,
     WorkspaceSearch,
     ToggleSidebar,
@@ -499,6 +501,7 @@ pub struct Workspace {
     project: Option<ProjectIndex>,
     workspace_root: Option<PathBuf>,
     project_loading: bool,
+    project_revision: u64,
     sidebar_visible: bool,
     git_status: HashMap<PathBuf, String>,
     git_loading: bool,
@@ -599,6 +602,7 @@ impl Workspace {
             project: None,
             workspace_root: None,
             project_loading: false,
+            project_revision: 0,
             sidebar_visible: false,
             git_status: HashMap::new(),
             git_loading: false,
@@ -1533,6 +1537,8 @@ impl Workspace {
         if self.project_loading {
             return;
         }
+        self.project_revision = self.project_revision.wrapping_add(1);
+        let project_revision = self.project_revision;
         self.workspace_root = Some(root.clone());
         self.project_loading = true;
         self.status_message = Some(format!("Indexing {}…", root.display()));
@@ -1543,6 +1549,9 @@ impl Workspace {
             let result = task.await;
             workspace
                 .update_in(window, |workspace, window, cx| {
+                    if workspace.project_revision != project_revision {
+                        return;
+                    }
                     workspace.project_loading = false;
                     match result {
                         Ok(index) => {
@@ -1577,6 +1586,38 @@ impl Workspace {
         .detach();
     }
 
+    fn on_close_folder(&mut self, _: &CloseFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_folder(window, cx);
+    }
+
+    fn close_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace_root.is_none() && self.project.is_none() && !self.project_loading {
+            self.status_message = Some("No folder is open".to_owned());
+            cx.notify();
+            return;
+        }
+
+        self.project_revision = self.project_revision.wrapping_add(1);
+        self.project_loading = false;
+        self.project = None;
+        self.workspace_root = None;
+        self.sidebar_visible = false;
+        self.git_status.clear();
+        self.git_loading = false;
+        if let Some(search) = self.workspace_search.take() {
+            search.cancel.cancel();
+        }
+        self.lsp = None;
+        self.lsp_starting = false;
+        self.lsp_opened.clear();
+        self.lsp_dirty.clear();
+        self.pending_definitions.clear();
+        self.status_message = Some("Folder closed".to_owned());
+        self.refresh_overlay(window, cx);
+        self.persist_session(cx);
+        cx.notify();
+    }
+
     fn refresh_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(root) = self.project.as_ref().map(|project| project.root.clone()) {
             self.project = None;
@@ -1593,11 +1634,15 @@ impl Workspace {
             return;
         };
         self.git_loading = true;
-        let task = cx.background_spawn(async move { load_git_status(&root) });
+        let task_root = root.clone();
+        let task = cx.background_spawn(async move { load_git_status(&task_root) });
         cx.spawn_in(window, async move |workspace, window| {
             let result = task.await;
             workspace
                 .update_in(window, |workspace, _, cx| {
+                    if workspace.workspace_root.as_deref() != Some(root.as_path()) {
+                        return;
+                    }
                     workspace.git_loading = false;
                     match result {
                         Ok(status) => workspace.git_status = status,
@@ -2047,6 +2092,7 @@ impl Workspace {
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
             IdeCommand::ToggleTitleBar => self.on_toggle_title_bar(&ToggleTitleBar, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
+            IdeCommand::CloseFolder => self.on_close_folder(&CloseFolder, window, cx),
             IdeCommand::SearchOpenTabs => self.on_search_open_tabs(&SearchOpenTabs, window, cx),
             IdeCommand::WorkspaceSearch => {
                 self.on_workspace_search(&ShowWorkspaceSearch, window, cx)
@@ -2561,11 +2607,15 @@ impl Workspace {
         let command = self.settings.lsp.command.clone();
         self.lsp_starting = true;
         self.status_message = Some("Starting language server…".to_owned());
-        let task = cx.background_spawn(async move { LspClient::start(&command, &root) });
+        let task_root = root.clone();
+        let task = cx.background_spawn(async move { LspClient::start(&command, &task_root) });
         cx.spawn_in(window, async move |workspace, window| {
             let result = task.await;
             workspace
                 .update_in(window, |workspace, _, cx| {
+                    if workspace.workspace_root.as_deref() != Some(root.as_path()) {
+                        return;
+                    }
                     workspace.lsp_starting = false;
                     match result {
                         Ok(client) => {
@@ -3528,6 +3578,21 @@ impl Workspace {
                             })),
                     )
                     .child(
+                        Button::new("project-close-folder")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip("Close Folder")
+                            .disabled(
+                                self.workspace_root.is_none()
+                                    && self.project.is_none()
+                                    && !self.project_loading,
+                            )
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_close_folder(&CloseFolder, window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("project-open-folder")
                             .ghost()
                             .xsmall()
@@ -4172,6 +4237,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_previous))
             .on_action(cx.listener(Self::on_open_folder))
+            .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_open_tabs))
@@ -4473,6 +4539,12 @@ fn command_items() -> Vec<OverlayItem> {
             IdeCommand::OpenFolder,
         ),
         (
+            "Close Folder",
+            "Stop project services and hide the explorer",
+            "close remove dismiss folder directory project workspace explorer",
+            IdeCommand::CloseFolder,
+        ),
+        (
             "Search Open Tabs",
             "Find text in every open document",
             "search find text content across all open tabs documents unsaved",
@@ -4672,6 +4744,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Open Recent…", ShowRecentFiles),
                 MenuItem::action("Clear Recent Files", ClearRecentFiles),
                 MenuItem::action("Open Folder…", OpenFolder),
+                MenuItem::action("Close Folder", CloseFolder),
                 MenuItem::separator(),
                 MenuItem::action("Save", SaveDocument),
                 MenuItem::action("Save As…", SaveDocumentAs),
@@ -4918,6 +4991,60 @@ mod tests {
             assert!(!workspace.overlay_items.is_empty());
             assert_eq!(workspace.project.as_ref().unwrap().files.len(), 1);
         });
+    }
+
+    #[gpui::test]
+    fn close_folder_cancels_indexing_clears_services_and_keeps_tabs(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("project directory");
+        fs::write(directory.path().join("notes.txt"), "hello\n").expect("project file");
+        let session_path = directory.path().join("textify-session.json");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let document_id = workspace.update(&mut cx.cx, |workspace, _| workspace.active_id());
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = session_path.clone();
+                workspace.start_project_index(directory.path().to_path_buf(), window, cx);
+                assert!(workspace.project_loading);
+                workspace
+                    .git_status
+                    .insert(PathBuf::from("notes.txt"), " M".to_owned());
+                workspace.close_folder(window, cx);
+                assert!(!workspace.project_loading);
+                assert!(workspace.project.is_none());
+                assert!(workspace.workspace_root.is_none());
+                assert!(!workspace.sidebar_visible);
+                assert!(workspace.git_status.is_empty());
+                assert_eq!(workspace.active_id(), document_id);
+                assert_eq!(workspace.status_message.as_deref(), Some("Folder closed"));
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.project.is_none());
+            assert!(workspace.workspace_root.is_none());
+            assert_eq!(workspace.documents.len(), 1);
+        });
+        let session = load_session(&session_path).expect("persisted session");
+        assert!(session.workspace_root.is_none());
+        assert!(command_items().iter().any(|item| {
+            item.title == "Close Folder"
+                && matches!(
+                    &item.target,
+                    OverlayTarget::Command(IdeCommand::CloseFolder)
+                )
+        }));
     }
 
     #[test]
