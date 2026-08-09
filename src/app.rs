@@ -390,6 +390,7 @@ struct TextLocation {
 #[derive(Debug, Clone)]
 struct SettingsDraft {
     font_size: u16,
+    show_tagline: bool,
     recovery: RecoverySettings,
 }
 
@@ -1835,6 +1836,7 @@ impl Workspace {
         self.settings_visible = true;
         self.settings_draft = Some(SettingsDraft {
             font_size: self.settings.appearance.font_size,
+            show_tagline: self.settings.appearance.show_tagline,
             recovery: self.settings.recovery.clone(),
         });
         let font_family = self.settings.appearance.font_family.clone();
@@ -1911,6 +1913,7 @@ impl Workspace {
         let mut settings = self.settings.clone();
         settings.appearance.font_family = font_family;
         settings.appearance.font_size = draft.font_size;
+        settings.appearance.show_tagline = draft.show_tagline;
         settings.appearance.normalize();
         settings.recovery = draft.recovery;
         let path = self.data_dir.join("settings.json");
@@ -3256,12 +3259,15 @@ impl Workspace {
     fn render_settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let draft = self.settings_draft.clone().unwrap_or(SettingsDraft {
             font_size: self.settings.appearance.font_size,
+            show_tagline: self.settings.appearance.show_tagline,
             recovery: self.settings.recovery.clone(),
         });
         let temporary_enabled = draft.recovery.save_temporary_files;
         let unsaved_enabled = draft.recovery.keep_unsaved_changes;
+        let tagline_enabled = draft.show_tagline;
         let temporary_workspace = cx.entity();
         let unsaved_workspace = cx.entity();
+        let tagline_workspace = cx.entity();
 
         div()
             .absolute()
@@ -3322,6 +3328,42 @@ impl Workspace {
                                         Select::new(&self.settings_font_select)
                                             .search_placeholder("Search installed fonts…")
                                             .w_full(),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Show Tagline"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(
+                                                        "Show “A fast place for text” in the title bar.",
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-show-tagline")
+                                            .checked(tagline_enabled)
+                                            .on_click(move |checked, _, cx| {
+                                                tagline_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.show_tagline = *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }),
                                     ),
                             )
                             .child(
@@ -3595,12 +3637,15 @@ impl Render for Workspace {
                                             .child("IDE"),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("A fast place for text"),
-                            ),
+                            .when(self.settings.appearance.show_tagline, |title| {
+                                title.child(
+                                    div()
+                                        .id("textify-tagline")
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("A fast place for text"),
+                                )
+                            }),
                     ),
                 )
             })
@@ -4207,6 +4252,10 @@ mod tests {
             );
             let draft = workspace.settings_draft.as_ref().expect("draft");
             assert_eq!(draft.font_size, workspace.settings.appearance.font_size);
+            assert_eq!(
+                draft.show_tagline,
+                workspace.settings.appearance.show_tagline
+            );
             assert_eq!(draft.recovery, workspace.settings.recovery);
             workspace.documents[0].dirty = true;
             assert_eq!(workspace.documents[0].title(cx), "Untitled 1 •");
@@ -4522,6 +4571,44 @@ mod tests {
         let saved =
             TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
         assert!(!saved.appearance.show_title_bar);
+    }
+
+    #[gpui::test]
+    fn tagline_setting_is_staged_saved_and_applied(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.show_settings(window, cx);
+                workspace
+                    .settings_draft
+                    .as_mut()
+                    .expect("settings draft")
+                    .show_tagline = false;
+                workspace.save_settings_window(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert!(!workspace.settings.appearance.show_tagline);
+            assert!(!workspace.settings_visible);
+        });
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(!saved.appearance.show_tagline);
     }
 
     #[gpui::test]

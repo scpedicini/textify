@@ -86,6 +86,7 @@ pub struct AppearanceSettings {
     pub font_family: String,
     pub font_size: u16,
     pub show_title_bar: bool,
+    pub show_tagline: bool,
 }
 
 impl Default for AppearanceSettings {
@@ -94,6 +95,7 @@ impl Default for AppearanceSettings {
             font_family: "SFMono-Regular".to_owned(),
             font_size: 14,
             show_title_bar: true,
+            show_tagline: true,
         }
     }
 }
@@ -306,6 +308,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         let mut settings = TextifySettings::default();
         settings.appearance.font_size = 18;
+        settings.appearance.show_tagline = false;
         settings.recovery.keep_unsaved_changes = false;
 
         settings.save(&path).expect("save");
