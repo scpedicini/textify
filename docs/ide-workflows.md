@@ -26,6 +26,15 @@ Default `settings.json`:
 
 ```json
 {
+  "appearance": {
+    "font_family": "SFMono-Regular",
+    "font_size": 14
+  },
+  "recovery": {
+    "save_temporary_files": true,
+    "keep_unsaved_changes": true,
+    "temporary_files_location": null
+  },
   "editor": {
     "normal_undo_bytes": 67108864,
     "large_undo_bytes": 8388608,
@@ -50,6 +59,19 @@ Default `settings.json`:
 
 Changing editor budgets updates existing tabs as well as future ones. Reducing the undo budget
 prunes complete oldest history groups immediately.
+
+Command-, opens the native-styled Settings panel. Appearance changes apply to tabs that have not
+been individually zoomed. Recovery copies are revisioned, atomic, and stored under `Backups/` when
+no custom location is selected. Untitled recovery and unsaved changes to named files can be enabled
+independently. Saving or discarding a tab removes its active recovery copy; Command-Q writes a final
+snapshot before exiting. See [privacy.md](privacy.md) for the complete local-data boundary.
+
+## Native menus and editor gestures
+
+Textify installs Textify, File, Edit, View, and Window menus in the macOS menu bar. The View menu and
+Command-Shift-P palette expose per-tab word wrap; Option-Z is its direct shortcut. Large and huge
+files always remain unwrapped. Command-scroll adjusts only the hovered active tab's size, while
+Command-T creates a new tab. Dropped files follow the same validation and large-file policy as Open.
 
 Default `keymap.json`:
 

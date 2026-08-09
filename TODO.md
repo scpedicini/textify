@@ -1,38 +1,47 @@
 # Settings Window
 
+Status: complete.
+
 Shortcut: Cmd + ,
 
 Initial settings for a proper full-featured text editor:
 
-- Font, Size
-- Save Temporary Files --> If this is on then ALL temporarily files (even Untitled ones) are AUTO-saved even if you KILL -9 the app / Ctrl-Q / etc. and restored when next launched
-- Keep Unsaved Changes --> this is slightly different as it applies to existing files that have been modified but not saved. If this is on then the app will remember the unsaved changes and restore them when next launched
-- Temporary Files Location --> pick a location for this maybe default to some kind of tmp folder
+- [x] Font and size.
+- [x] Save Temporary Files continuously snapshots Untitled tabs and restores them after restart.
+- [x] Keep Unsaved Changes independently snapshots edits to named files without overwriting them.
+- [x] Temporary Files Location defaults to Textify's private `Backups` folder and is configurable.
+- [x] Graceful Command-Q flushes the newest snapshots before exit; snapshots are atomic for crash and
+  force-quit recovery.
 
 # Additional Shortcuts
 
-Cmd + T: Open new tab
+- [x] Cmd + T: Open new tab.
 
-Cmd + Scrollwheel: Change text size (for this particular tab NOT EVERY FILE)
+- [x] Cmd + Scrollwheel: Change text size for the active tab only.
 
 # File Name
 
-Says Untitled but it should be overriden by the first row' text (ellipses if too long obv)
+- [x] Untitled tabs use a bounded, whitespace-normalized first-line title with an ellipsis when
+  needed.
 
 # Drag and Drop
 
-Drag and drop a file into the app to open it in a new tab.
+- [x] Drag and drop one or more files into the app to open them in tabs.
 
 # Command Palette
 
-We need a shortcut that brings up a centered command palette that lets us easily type in natural language to access all the various features of the app.
+- [x] Command-Shift-P opens the centered palette; ranked natural-language matching covers document
+  and IDE commands.
 
 # Word Wrap
 
-Needs a toggle for word wrap on/off (goes in a Mac Top Menu Tray so we don't clutter the interface ) which speaking of we need to add a Mac TOp Menu Tray (whatever this is called) so when you are focusd on teh app the menu bar appeaers at the top of the MacOS and doesn't clutter the regular app window itself.
+- [x] Word wrap is a per-tab toggle in the native macOS View menu and command palette. Large-file
+  policy always keeps it off.
+- [x] Native Textify, File, Edit, View, and Window menus live in the macOS menu bar.
 
 # More stuff
 
-We should show a "dot" or soemthing when a file has been modified but not saved
+- [x] Unsaved documents show a dot in their tab and window title plus an `UNSAVED` status badge.
 
-Remove any telemetry / analytics stuff (assuming there is any) and make sure the app is fully offline and private
+- [x] Textify installs no network client and contains no telemetry, analytics, crash uploader, or
+  update checker. The boundary is documented and regression tested in `docs/privacy.md`.

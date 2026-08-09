@@ -7,7 +7,8 @@ Textify provides safe file handling, Markdown and JSON highlighting, multiple ta
 detection, session restore, multicursor editing, measured large-file behavior, and a bounded-memory
 viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, quick-open,
 command palette, cancellable workspace search, live settings/keymap reload, lazy Git decorations,
-and optional language-server diagnostics and go-to-definition.
+optional language-server diagnostics and go-to-definition, native macOS menus, crash recovery,
+per-tab zoom and wrapping, natural-language commands, and file drag-and-drop.
 
 All milestones in the current build plan are implemented. The feature-complete verification record
 and optimized measurements are in [docs/plan.md](docs/plan.md) and
@@ -42,6 +43,8 @@ Textify creates `settings.json` and `keymap.json` under `~/Library/Application S
 `TEXTIFY_DATA_DIR`) after first paint. Both files reload when saved. Git decorations are lazy and can
 be disabled. Language-server support is opt-in; configure an executable and extensions before using
 F12 for go-to-definition. See [docs/ide-workflows.md](docs/ide-workflows.md) for the full schema.
+Textify installs no application network client or telemetry; see [docs/privacy.md](docs/privacy.md)
+for local storage and the explicit optional-LSP boundary.
 
 ## Run it
 
@@ -59,7 +62,7 @@ precompile Metal shaders.
 
 ```sh
 cargo fmt --all -- --check
-cargo test --all-targets
+cargo test --workspace --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
@@ -76,6 +79,7 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Command | Shortcut |
 | --- | --- |
 | New file | Command-N |
+| New tab | Command-T |
 | Open file | Command-O |
 | Save | Command-S |
 | Save As | Command-Shift-S |
@@ -85,6 +89,9 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Open folder | Command-Shift-O |
 | Toggle explorer | Command-B |
 | Command palette | Command-Shift-P |
+| Settings | Command-, |
+| Toggle word wrap | Option-Z |
+| Zoom active tab | Command-Scroll |
 | Quick open | Command-P |
 | Workspace search | Command-Shift-F |
 | Go to definition | F12 |

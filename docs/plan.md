@@ -144,13 +144,43 @@ Implementation notes:
   the first-window path; the headless native render test asserts that the initial shell has no
   project or language-server state.
 
+## Milestone 6 — native editor polish and recovery
+
+Status: implemented, regression tested, and committed on 2026-08-08.
+
+- A native settings panel (`Command-,`) controls font, default size, independent Untitled/named-file
+  recovery policies, and the local recovery directory.
+- Atomic revisioned snapshots continuously protect eligible dirty buffers. Session version 2
+  restores their content, tab order, active tab, per-tab zoom, and word-wrap state. Graceful quit
+  waits for a final snapshot and session manifest.
+- Command-T opens a tab. Command-scroll changes only that tab's text size, with bounded trackpad
+  accumulation and safe size limits.
+- Untitled labels follow a bounded, normalized prefix of the first line. Saved filenames and
+  explicit labels remain authoritative.
+- OS file drops use the same asynchronous UTF-8 and large/huge-file policy as every other open path.
+- Command-Shift-P provides ranked natural-language command matching over document and IDE actions.
+- Textify installs native macOS application/File/Edit/View/Window menus. Word wrap is per-tab and
+  cannot override large-file safety.
+- Dirty state is visible in tabs, the native window title, and the status bar.
+- Textify uses GPUI's null HTTP client and has no telemetry, analytics, crash uploads, or update
+  checker. A source/dependency regression test enforces the offline application boundary; optional
+  local language servers retain their own separate privacy responsibility.
+
+Exit criteria:
+
+- Every item in `TODO.md` is checked and backed by a focused test.
+- The full workspace suite passes with 52 Textify tests and 111 pinned-fork tests.
+- Formatting, all-target compilation, and Clippy with warnings denied are clean.
+- Native shell, settings, menu, wrap, palette, zoom, and recovery tests run headlessly.
+
 ## Feature-complete verification
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
 
-- 34 Textify tests and 111 pinned-fork tests pass.
+- 52 Textify tests and 111 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.
-- Native UI construction, project explorer virtualization, and command overlay rendering pass in a
-  headless GPUI window, so verification does not create duplicate on-screen application instances.
+- Native UI construction, project explorer virtualization, settings, menus, command overlay,
+  per-tab wrap/zoom, and recovery behavior pass in headless GPUI tests, so verification does not
+  create duplicate on-screen application instances.
