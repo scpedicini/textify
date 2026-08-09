@@ -2,6 +2,7 @@
 name = "textify"
 version = "0.1.0"
 edition = "2024"
+default-run = "textify"
 description = "A fast, focused native text editor for macOS"
 license = "MIT"
 
