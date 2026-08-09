@@ -8,8 +8,11 @@ opened or the corresponding command is invoked.
 
 Use **Open Folder** (Command-Shift-O) to build a bounded background index. The sidebar renders its
 flattened tree through a virtualized list; directory rows are always expanded in this initial IDE
-workflow. Refresh from the sidebar to rescan files and Git state. The folder is persisted with the
-tab session.
+workflow. It lists recognized text, configuration, and source files while omitting media, archives,
+binary files, `.DS_Store`, and build/dependency directories. Refresh from the sidebar to rescan
+files and Git state. File → Close Folder, the command palette, or the sidebar close button stops the
+folder's index, Git, search, and language-server services without closing open document tabs. The
+folder is persisted with the tab session until it is closed.
 
 Search Open Tabs (Command-P or the magnifying-glass button) searches the live ropes of every editable
 tab, including unsaved documents. Exact phrases rank ahead of lines containing all query words;
@@ -40,6 +43,10 @@ Default `settings.json`:
     "font_size": 14,
     "show_title_bar": true,
     "show_tagline": true
+  },
+  "indentation": {
+    "tab_width": 4,
+    "hard_tabs": false
   },
   "recovery": {
     "save_temporary_files": true,
@@ -72,8 +79,9 @@ Default `settings.json`:
 }
 ```
 
-Changing editor budgets updates existing tabs as well as future ones. Reducing the undo budget
-prunes complete oldest history groups immediately.
+Changing editor budgets or indentation updates existing tabs as well as future ones. Reducing the
+undo budget prunes complete oldest history groups immediately. By default Tab inserts four spaces;
+enable Use Tab Characters to insert literal tab characters, and choose a width from 1 through 8.
 
 Command-, opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
 from installed system families; a configured family remains selectable if it is temporarily
@@ -98,7 +106,9 @@ query supports fuzzy text and ordered `*` wildcard fragments. Every overlay show
 selection and supports Up, Down, Enter, and Escape. Dirty tabs close through a modal Save / Don't
 Save / Cancel decision, and Save closes only after a successful write. Dropped files follow the same
 validation and large-file policy as Open. The editor omits generic textbox chrome. When the Textify
-title row is hidden, macOS traffic-light space remains reserved ahead of the tab toolbar.
+title row is hidden, macOS traffic-light space remains reserved ahead of the tab toolbar. The status
+bar's WRAP / NO WRAP label is clickable and always reflects the active tab; its other metadata
+progressively collapses at narrow window widths so paths and counters cannot overlap.
 
 Default `keymap.json`:
 

@@ -22,10 +22,8 @@ Each tab owns one editor entity. Switching tabs therefore retains selections, sc
 folds, search state, and undo history. Only `editor.rs` configures GPUI Component, keeping its
 pre-1.0 API out of the rest of the application.
 
-Dependencies are exact-version pinned and `Cargo.lock` is committed. The published 0.5.1
-GPUI Component release exposes Markdown through its all-languages feature; Textify selects only
-JSON and Markdown at runtime. Moving to a tested fork with per-language features is part of the
-dependency-hardening milestone so the final binary bundles only those grammars.
+Dependencies are exact-version pinned and `Cargo.lock` is committed. Textify's tested GPUI
+Component fork bundles only JSON, Markdown, and HTML grammars for the languages it highlights.
 
 ## Milestone 1 — editor MVP
 
@@ -211,11 +209,27 @@ Status: implemented and regression tested on 2026-08-08.
 - Legacy `quick_open_results` and `quick_open` configuration keys deserialize as aliases for
   `open_tab_search_results` and `search_open_tabs`.
 
+## Milestone 9 — workspace and compact-window polish
+
+Status: implemented and regression tested on 2026-08-09.
+
+- Close Folder is available from the File menu, command palette, and explorer header. It invalidates
+  in-flight indexing, Git, search, and LSP work, clears the persisted workspace, and retains tabs.
+- The bottom status bar uses width-based visibility tiers, a truncating path region, and
+  non-overlapping primary/secondary containers.
+- Settings persists a 1–8 indentation width and spaces-versus-hard-tabs choice, then applies it to
+  all open and future editor entities.
+- The project index admits recognized text, configuration, and source files only, before enforcing
+  its entry budget, so unsupported files neither render nor consume the cap.
+- The minimal pinned highlighter bundle adds Tree-sitter HTML for `.html` and `.htm` files.
+- The status bar wrap state is a clickable control that respects large-file policy.
+- The unexplained decorative circle was removed from the text-only title brand.
+
 ## Feature-complete verification
 
-Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
+Status: all planned milestones implemented, tested, documented, and committed on 2026-08-09.
 
-- 74 Textify tests and 113 pinned-fork tests pass.
+- 81 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.

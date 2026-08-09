@@ -3,14 +3,14 @@
 Textify is a fast, focused native text editor for macOS, built in Rust with GPUI and
 GPUI Component.
 
-Textify provides safe file handling, Markdown and JSON highlighting, multiple tabs, external-change
-detection, session restore, multicursor editing, measured large-file behavior, and a bounded-memory
-viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, live search
-across open tabs, a command palette, cancellable workspace search, configurable recent-file history,
-live settings/keymap reload, lazy Git decorations, optional language-server diagnostics and
-go-to-definition, native macOS menus, crash recovery, per-tab zoom and wrapping, searchable
-open-tab navigation, natural-language commands, and file drag-and-drop. Overflowed tabs scroll
-horizontally and the active tab is always revealed.
+Textify provides safe file handling, HTML, Markdown, and JSON highlighting, multiple tabs,
+external-change detection, session restore, multicursor editing, measured large-file behavior, and
+a bounded-memory viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project
+explorer, live search across open tabs, a command palette, cancellable workspace search,
+configurable recent-file history, live settings/keymap reload, lazy Git decorations, optional
+language-server diagnostics and go-to-definition, native macOS menus, crash recovery, per-tab zoom
+and wrapping, searchable open-tab navigation, natural-language commands, and file drag-and-drop.
+Overflowed tabs scroll horizontally and the active tab is always revealed.
 
 All milestones in the current build plan are implemented. The feature-complete verification record
 and optimized measurements are in [docs/plan.md](docs/plan.md) and
@@ -37,9 +37,11 @@ rope.
 ## IDE workflows
 
 Open a folder with Command-Shift-O. Textify indexes it in the background, restores it with the next
-session, and shows the virtualized explorer. `target`, `.git`, `node_modules`, symlinks,
-and over-budget entries are excluded. Command-P searches the live contents of every editable tab,
-including unsaved drafts; Command-Shift-F streams folder-wide workspace matches without blocking
+session, and shows the virtualized explorer. Use File → Close Folder or the explorer's close button
+when that workspace is no longer needed; open tabs stay open. `target`, `.git`, `node_modules`,
+symlinks, unsupported binary/media files, and over-budget entries are excluded. Command-P searches
+the live contents of every editable tab, including unsaved drafts; Command-Shift-F streams
+folder-wide workspace matches without blocking
 the UI; Command-Shift-P opens the command palette. Command-Option-P lists every open tab, filters as
 you type, and activates and reveals the chosen tab. File → Open Recent provides a separately bounded
 local history that can be disabled or cleared in Settings.
@@ -93,6 +95,7 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Previous tab | Control-Shift-Tab |
 | Search open tabs | Command-Option-P |
 | Open folder | Command-Shift-O |
+| Close folder | File menu, palette, or explorer close button |
 | Toggle explorer | Command-B |
 | Command palette | Command-Shift-P |
 | Settings | Command-, |
@@ -102,11 +105,13 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Workspace search | Command-Shift-F |
 | Go to definition | F12 |
 
-The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. The View menu
+The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. Click the
+status bar's WRAP / NO WRAP control to toggle wrapping for the active tab. The status bar
+progressively hides secondary details and truncates long paths as the window narrows. The View menu
 can hide the Textify title bar; Settings can independently hide its tagline and provides a
-searchable dropdown of installed editor fonts. Dirty tabs close through Save / Don't Save / Cancel;
-the editor surface is frameless, and hiding the title row reserves the native macOS window-control
-area.
+searchable dropdown of installed editor fonts plus explicit tab-width and tabs-versus-spaces
+controls. Dirty tabs close through Save / Don't Save / Cancel; the editor surface is frameless,
+and hiding the title row reserves the native macOS window-control area.
 
 See [docs/plan.md](docs/plan.md) for the build plan and [docs/research.md](docs/research.md) for
 the technology evaluation.

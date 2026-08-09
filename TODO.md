@@ -74,3 +74,18 @@ Initial settings for a proper full-featured text editor:
   open-tab navigation and content search.
 - [x] Session and recent-history writes no longer masquerade as settings/keymap reloads; genuine
   configuration reload notices name what changed and every bottom-bar status message is dismissible.
+
+# Workspace, editor, and compact-window polish
+
+- [x] A folder can be closed from File → Close Folder, the command palette, or the explorer header;
+  folder services stop while already-open tabs remain available.
+- [x] The status bar truncates its path and progressively hides secondary metadata before narrow
+  windows can make counters overlap the filename.
+- [x] Indentation is explicit and persisted: the default is four spaces, with a 1–8 tab-width
+  setting and an independent Use Tab Characters switch applied to every tab.
+- [x] The explorer lists known text, configuration, and source files only; binary/media/archive
+  files, `.DS_Store`, and ignored dependency/build directories stay hidden.
+- [x] `.html` and `.htm` documents use the bundled Tree-sitter HTML highlighter.
+- [x] WRAP / NO WRAP in the status bar is a clickable per-tab toggle and respects large-file policy.
+- [x] The decorative circle beside the Textify title was removed; it was not an application-icon
+  slot.
