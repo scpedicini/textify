@@ -72,6 +72,8 @@ actions!(
 
 const WINDOW_TITLE: &str = "Textify IDE";
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
+const UNTITLED_TITLE_CHARS: usize = 36;
+const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
 
 fn new_recovery_key(id: u64) -> u128 {
     let timestamp = SystemTime::now()
@@ -101,6 +103,47 @@ fn consume_zoom_delta(delta: ScrollDelta, accumulator: &mut f32) -> i8 {
             *accumulator -= step as f32;
             step
         }
+    }
+}
+
+fn first_line_title(chars: impl IntoIterator<Item = char>) -> Option<String> {
+    let mut title = String::new();
+    let mut visible_chars = 0usize;
+    let mut pending_space = false;
+    let mut truncated = false;
+
+    for character in chars.into_iter().take(UNTITLED_TITLE_SCAN_CHARS) {
+        if matches!(character, '\n' | '\r') {
+            break;
+        }
+        if character.is_whitespace() || character.is_control() {
+            pending_space = !title.is_empty();
+            continue;
+        }
+        if pending_space {
+            if visible_chars >= UNTITLED_TITLE_CHARS {
+                truncated = true;
+                break;
+            }
+            title.push(' ');
+            visible_chars += 1;
+            pending_space = false;
+        }
+        if visible_chars >= UNTITLED_TITLE_CHARS {
+            truncated = true;
+            break;
+        }
+        title.push(character);
+        visible_chars += 1;
+    }
+
+    if title.is_empty() {
+        None
+    } else {
+        if truncated {
+            title.push('…');
+        }
+        Some(title)
     }
 }
 
@@ -270,17 +313,23 @@ struct SettingsDraft {
 }
 
 impl EditorDocument {
-    fn display_name(&self) -> String {
-        self.label_override
-            .clone()
-            .unwrap_or_else(|| self.metadata.display_name(self.untitled_number))
+    fn display_name(&self, cx: &App) -> String {
+        if let Some(label) = &self.label_override {
+            return label.clone();
+        }
+        if self.metadata.path.is_none()
+            && let Some(title) = first_line_title(self.editor.rope(cx).chars())
+        {
+            return title;
+        }
+        self.metadata.display_name(self.untitled_number)
     }
 
-    fn title(&self) -> String {
+    fn title(&self, cx: &App) -> String {
         if self.dirty {
-            format!("{} •", self.display_name())
+            format!("{} •", self.display_name(cx))
         } else {
-            self.display_name()
+            self.display_name(cx)
         }
     }
 }
@@ -556,26 +605,33 @@ impl Workspace {
             window,
             cx,
         );
-        let subscription = cx.subscribe(editor.state(), move |workspace, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                let mut changed = false;
-                if let Some(document) = workspace
-                    .documents
-                    .iter_mut()
-                    .find(|document| document.id == id)
-                    && !document.programmatic_change
-                {
-                    document.dirty = true;
-                    document.revision = document.revision.wrapping_add(1);
-                    workspace.lsp_dirty.insert(id, Instant::now());
-                    changed = true;
+        let subscription = cx.subscribe_in(
+            editor.state(),
+            window,
+            move |workspace, _, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let mut changed = false;
+                    if let Some(document) = workspace
+                        .documents
+                        .iter_mut()
+                        .find(|document| document.id == id)
+                        && !document.programmatic_change
+                    {
+                        document.dirty = true;
+                        document.revision = document.revision.wrapping_add(1);
+                        workspace.lsp_dirty.insert(id, Instant::now());
+                        changed = true;
+                    }
+                    if changed {
+                        workspace.mark_recovery_pending(id, cx);
+                        if workspace.active_id() == id {
+                            workspace.update_window_title(window, cx);
+                        }
+                    }
+                    cx.notify();
                 }
-                if changed {
-                    workspace.mark_recovery_pending(id, cx);
-                }
-                cx.notify();
-            }
-        });
+            },
+        );
 
         self.documents.push(EditorDocument {
             id,
@@ -599,7 +655,7 @@ impl Workspace {
             zoom_accumulator: 0.0,
         });
         self.active_index = self.documents.len() - 1;
-        self.update_window_title(window);
+        self.update_window_title(window, cx);
 
         if focus_editor {
             window.defer(cx, move |window, cx| editor.focus(window, cx));
@@ -616,15 +672,15 @@ impl Workspace {
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
         }
-        self.update_window_title(window);
+        self.update_window_title(window, cx);
         self.persist_session(cx);
         cx.notify();
     }
 
-    fn update_window_title(&self, window: &mut Window) {
+    fn update_window_title(&self, window: &mut Window, cx: &App) {
         window.set_window_title(&format!(
             "{} — Textify",
-            self.active_document().display_name()
+            self.active_document().display_name(cx)
         ));
     }
 
@@ -1040,7 +1096,7 @@ impl Workspace {
         let Some(index) = self.document_index(id) else {
             return;
         };
-        let name = self.documents[index].display_name();
+        let name = self.documents[index].display_name(cx);
         let detail = if actual.is_some() {
             "The file changed outside Textify. Reload it, keep your buffer as the next save base, or compare both versions."
         } else {
@@ -1126,7 +1182,7 @@ impl Workspace {
                         document.external_changed = false;
                         document.dirty = false;
                         document.revision = document.revision.wrapping_add(1);
-                        workspace.update_window_title(window);
+                        workspace.update_window_title(window, cx);
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
                         cx.notify();
@@ -1145,7 +1201,7 @@ impl Workspace {
         let Some(path) = self.documents[index].metadata.path.clone() else {
             return;
         };
-        let name = self.documents[index].display_name();
+        let name = self.documents[index].display_name(cx);
         let comparison_name = name.clone();
         let local = self.documents[index].editor.rope(cx);
         let policy = self.policy;
@@ -2169,7 +2225,7 @@ impl Workspace {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let suggested = if document.metadata.path.is_some() {
-            document.display_name()
+            document.display_name(cx)
         } else {
             suggested_save_path(&directory, document.untitled_number)
                 .file_name()
@@ -2246,7 +2302,7 @@ impl Workspace {
                             elapsed_ms = elapsed.as_secs_f64() * 1000.0,
                             "saved document"
                         );
-                        workspace.update_window_title(window);
+                        workspace.update_window_title(window, cx);
                         if saved_clean {
                             workspace.clear_recovery(id, cx);
                         }
@@ -2290,7 +2346,7 @@ impl Workspace {
             return;
         }
 
-        let name = self.documents[index].display_name();
+        let name = self.documents[index].display_name(cx);
         let workspace = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let workspace = workspace.clone();
@@ -2350,7 +2406,7 @@ impl Workspace {
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
         }
-        self.update_window_title(window);
+        self.update_window_title(window, cx);
         self.persist_session(cx);
         cx.notify();
     }
@@ -2424,7 +2480,7 @@ impl Workspace {
             .map(|document| {
                 let id = document.id;
                 let close_workspace = workspace.clone();
-                Tab::new().label(document.title()).suffix(
+                Tab::new().label(document.title(cx)).suffix(
                     Button::new(("close-tab", id))
                         .ghost()
                         .xsmall()
@@ -3457,6 +3513,20 @@ mod tests {
             consume_zoom_delta(ScrollDelta::Lines(gpui::point(0., -3.)), &mut accumulator),
             -1
         );
+    }
+
+    #[test]
+    fn untitled_titles_use_a_bounded_normalized_first_line() {
+        assert_eq!(
+            first_line_title("  A   useful\ttitle  \nignored".chars()),
+            Some("A useful title".to_owned())
+        );
+        assert_eq!(first_line_title("\nsecond line".chars()), None);
+
+        let long = "🦀".repeat(UNTITLED_TITLE_CHARS + 10);
+        let title = first_line_title(long.chars()).expect("title");
+        assert_eq!(title.chars().count(), UNTITLED_TITLE_CHARS + 1);
+        assert!(title.ends_with('…'));
     }
 
     #[gpui::test]
