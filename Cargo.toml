@@ -38,6 +38,10 @@ ropey = { opt-level = 3 }
 taffy = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
 [lints.clippy]
 dbg_macro = "deny"
 todo = "deny"

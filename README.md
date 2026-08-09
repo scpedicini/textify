@@ -71,6 +71,15 @@ Textify enables GPUI's `runtime_shaders` feature so development builds work with
 Xcode or Apple's standalone Command Line Tools. Release packaging should use full Xcode and
 precompile Metal shaders.
 
+For the optimized local app, terminal symlink, and Raycast command, run:
+
+```sh
+./scripts/install-local.sh
+```
+
+Later `cargo build --release --bin textify` builds update the installed symlink targets in place.
+See [docs/deployment.md](docs/deployment.md) for the one-time Raycast setup and packaging details.
+
 ## Verify it
 
 ```sh

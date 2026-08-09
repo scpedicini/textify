@@ -109,3 +109,8 @@ Initial settings for a proper full-featured text editor:
 
 - [x] View → Toggle Line Numbers, the command palette, and Settings can show or hide the editor
   gutter globally; the persisted choice applies immediately to existing and future tabs.
+- [x] The optimized GUI has a recorded native `ps`, `vmmap`, and `leaks` baseline; its bounded idle
+  soak stayed flat, and UTF-8 loading no longer duplicates the complete file buffer.
+- [x] A thin-LTO release build creates a valid local macOS app bundle. Safe installer symlinks expose
+  it at `~/Applications/Textify.app` and `~/bin/textify`, and the Raycast Script Command launches or
+  focuses the one existing app instance.
