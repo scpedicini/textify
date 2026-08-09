@@ -114,7 +114,8 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. Click the
 status bar's WRAP / NO WRAP control to toggle wrapping for the active tab. The status bar
 progressively hides secondary details and truncates long paths as the window narrows. The View menu
-can hide the Textify title bar; Settings can independently hide its tagline and provides a
+can hide the Textify title bar or the editor's line-number gutter; Settings persists both choices,
+can independently hide the tagline, and provides a
 searchable dropdown of installed editor fonts plus explicit tab-width and tabs-versus-spaces
 controls. Dirty tabs close through Save / Don't Save / Cancel; the editor surface is frameless,
 and hiding the title row reserves the native macOS window-control area.

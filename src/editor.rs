@@ -21,6 +21,7 @@ pub struct EditorBackend {
 pub struct EditorConfiguration {
     pub budgets: EditorBudgets,
     pub indentation: IndentationSettings,
+    pub line_numbers: bool,
     pub soft_wrap: bool,
 }
 
@@ -41,7 +42,7 @@ impl EditorBackend {
                 .code_editor(language)
                 .undo_max_bytes(undo_bytes)
                 .search_max_matches(search_matches)
-                .line_number(true)
+                .line_number(configuration.line_numbers)
                 .tab_size(TabSize {
                     tab_size: configuration.indentation.tab_width,
                     hard_tabs: configuration.indentation.hard_tabs,
@@ -95,6 +96,11 @@ impl EditorBackend {
                 cx,
             )
         });
+    }
+
+    pub fn set_line_numbers(&self, visible: bool, window: &mut Window, cx: &mut App) {
+        self.state
+            .update(cx, |state, cx| state.set_line_number(visible, window, cx));
     }
 
     pub fn set_soft_wrap(&self, wrap: bool, window: &mut Window, cx: &mut App) {
@@ -195,6 +201,7 @@ mod tests {
                 EditorConfiguration {
                     budgets: EditorBudgets::default(),
                     indentation: IndentationSettings::default(),
+                    line_numbers: true,
                     soft_wrap: false,
                 },
                 window,

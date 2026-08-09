@@ -145,6 +145,7 @@ impl RecentFileSettings {
 pub struct AppearanceSettings {
     pub font_family: String,
     pub font_size: u16,
+    pub show_line_numbers: bool,
     pub show_title_bar: bool,
     pub show_tagline: bool,
 }
@@ -154,6 +155,7 @@ impl Default for AppearanceSettings {
         Self {
             font_family: "SFMono-Regular".to_owned(),
             font_size: 14,
+            show_line_numbers: true,
             show_title_bar: true,
             show_tagline: true,
         }

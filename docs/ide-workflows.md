@@ -59,6 +59,7 @@ Default `settings.json`:
   "appearance": {
     "font_family": "SFMono-Regular",
     "font_size": 14,
+    "show_line_numbers": true,
     "show_title_bar": true,
     "show_tagline": true
   },
@@ -111,6 +112,9 @@ independently. Saving or discarding a tab removes its active recovery copy; Comm
 snapshot before exiting. Recent Files controls a newest-first local Open Recent list (1–100 entries,
 default 10); disabling it clears the list, and Clear History is also available independently. See
 [privacy.md](privacy.md) for the complete local-data boundary.
+
+View → Toggle Line Numbers and the matching Settings switch control the gutter for every open and
+future editor tab. The choice is persisted in `appearance.show_line_numbers` and defaults to true.
 
 ## Native menus and editor gestures
 

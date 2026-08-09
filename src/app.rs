@@ -80,6 +80,7 @@ actions!(
         ShowWorkspaceSearch,
         ShowSettings,
         ToggleWordWrap,
+        ToggleLineNumbers,
         ToggleTitleBar,
         GoToDefinition,
         DismissOverlay,
@@ -456,6 +457,7 @@ enum IdeCommand {
     OpenRecent,
     ClearRecent,
     ToggleWordWrap,
+    ToggleLineNumbers,
     ToggleTitleBar,
     OpenFolder,
     CloseFolder,
@@ -530,6 +532,7 @@ struct TextLocation {
 struct SettingsDraft {
     font_size: u16,
     show_tagline: bool,
+    show_line_numbers: bool,
     indentation: IndentationSettings,
     recovery: RecoverySettings,
     recent_files: crate::settings::RecentFileSettings,
@@ -866,6 +869,7 @@ impl Workspace {
             EditorConfiguration {
                 budgets: self.settings.editor,
                 indentation: self.settings.indentation,
+                line_numbers: self.settings.appearance.show_line_numbers,
                 soft_wrap: word_wrap,
             },
             window,
@@ -2209,6 +2213,9 @@ impl Workspace {
             IdeCommand::OpenRecent => self.on_recent_files(&ShowRecentFiles, window, cx),
             IdeCommand::ClearRecent => self.on_clear_recent_files(&ClearRecentFiles, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
+            IdeCommand::ToggleLineNumbers => {
+                self.on_toggle_line_numbers(&ToggleLineNumbers, window, cx)
+            }
             IdeCommand::ToggleTitleBar => self.on_toggle_title_bar(&ToggleTitleBar, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::CloseFolder => self.on_close_folder(&CloseFolder, window, cx),
@@ -2251,6 +2258,7 @@ impl Workspace {
         self.settings_draft = Some(SettingsDraft {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
+            show_line_numbers: self.settings.appearance.show_line_numbers,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -2330,6 +2338,7 @@ impl Workspace {
         settings.appearance.font_family = font_family;
         settings.appearance.font_size = draft.font_size;
         settings.appearance.show_tagline = draft.show_tagline;
+        settings.appearance.show_line_numbers = draft.show_line_numbers;
         settings.appearance.normalize();
         settings.indentation = draft.indentation;
         settings.indentation.normalize();
@@ -2361,6 +2370,11 @@ impl Workspace {
                             document
                                 .editor
                                 .set_indentation(workspace.settings.indentation, cx);
+                            document.editor.set_line_numbers(
+                                workspace.settings.appearance.show_line_numbers,
+                                window,
+                                cx,
+                            );
                         }
                         let ids = workspace
                             .documents
@@ -2585,6 +2599,26 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_toggle_line_numbers(
+        &mut self,
+        _: &ToggleLineNumbers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.appearance.show_line_numbers = !self.settings.appearance.show_line_numbers;
+        let visible = self.settings.appearance.show_line_numbers;
+        for document in &self.documents {
+            document.editor.set_line_numbers(visible, window, cx);
+        }
+        self.status_message = Some(if visible {
+            "Line numbers shown".to_owned()
+        } else {
+            "Line numbers hidden".to_owned()
+        });
+        self.persist_settings_silently(cx);
+        cx.notify();
+    }
+
     fn on_toggle_title_bar(&mut self, _: &ToggleTitleBar, _: &mut Window, cx: &mut Context<Self>) {
         self.settings.appearance.show_title_bar = !self.settings.appearance.show_title_bar;
         self.status_message = Some(if self.settings.appearance.show_title_bar {
@@ -2794,6 +2828,11 @@ impl Workspace {
                                     document
                                         .editor
                                         .set_indentation(workspace.settings.indentation, cx);
+                                    document.editor.set_line_numbers(
+                                        workspace.settings.appearance.show_line_numbers,
+                                        window,
+                                        cx,
+                                    );
                                 }
                                 workspace.apply_recent_file_settings(cx);
                                 if lsp_changed {
@@ -4064,6 +4103,7 @@ impl Workspace {
         let draft = self.settings_draft.clone().unwrap_or(SettingsDraft {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
+            show_line_numbers: self.settings.appearance.show_line_numbers,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -4071,6 +4111,7 @@ impl Workspace {
         let temporary_enabled = draft.recovery.save_temporary_files;
         let unsaved_enabled = draft.recovery.keep_unsaved_changes;
         let tagline_enabled = draft.show_tagline;
+        let line_numbers_enabled = draft.show_line_numbers;
         let tab_width = draft.indentation.tab_width;
         let hard_tabs = draft.indentation.hard_tabs;
         let recent_enabled = draft.recent_files.enabled;
@@ -4078,6 +4119,7 @@ impl Workspace {
         let temporary_workspace = cx.entity();
         let unsaved_workspace = cx.entity();
         let tagline_workspace = cx.entity();
+        let line_numbers_workspace = cx.entity();
         let indentation_workspace = cx.entity();
         let recent_workspace = cx.entity();
 
@@ -4141,6 +4183,43 @@ impl Workspace {
                                         Select::new(&self.settings_font_select)
                                             .search_placeholder("Search installed fonts…")
                                             .w_full(),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Show Line Numbers"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Show the line-number gutter in editor tabs."),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-show-line-numbers")
+                                            .checked(line_numbers_enabled)
+                                            .on_click(move |checked, _, cx| {
+                                                line_numbers_workspace.update(
+                                                    cx,
+                                                    |workspace, cx| {
+                                                        if let Some(draft) =
+                                                            &mut workspace.settings_draft
+                                                        {
+                                                            draft.show_line_numbers = *checked;
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                );
+                                            }),
                                     ),
                             )
                             .child(
@@ -4648,6 +4727,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
+            .on_action(cx.listener(Self::on_toggle_line_numbers))
             .on_action(cx.listener(Self::on_toggle_title_bar))
             .on_action(cx.listener(Self::on_quit_textify))
             .on_action(cx.listener(Self::on_go_to_definition))
@@ -4927,6 +5007,12 @@ fn command_items() -> Vec<OverlayItem> {
             IdeCommand::ToggleWordWrap,
         ),
         (
+            "Toggle Line Numbers",
+            "Show or hide the editor line-number gutter",
+            "toggle show hide line numbers gutter editor rows",
+            IdeCommand::ToggleLineNumbers,
+        ),
+        (
             "Toggle Title Bar",
             "Show or hide the Textify heading",
             "toggle show hide top title bar header textify heading chrome",
@@ -5172,6 +5258,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Search Workspace…", ShowWorkspaceSearch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
+                MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
                 MenuItem::action("Toggle Title Bar", ToggleTitleBar),
                 MenuItem::action("Toggle File Explorer", ToggleSidebar),
             ],
@@ -5659,6 +5746,10 @@ mod tests {
                 draft.show_tagline,
                 workspace.settings.appearance.show_tagline
             );
+            assert_eq!(
+                draft.show_line_numbers,
+                workspace.settings.appearance.show_line_numbers
+            );
             assert_eq!(draft.indentation, workspace.settings.indentation);
             assert_eq!(draft.recovery, workspace.settings.recovery);
             assert_eq!(draft.recent_files, workspace.settings.recent_files);
@@ -5958,6 +6049,10 @@ mod tests {
         assert_eq!(
             first_command("hide the top title bar"),
             Some(IdeCommand::ToggleTitleBar)
+        );
+        assert_eq!(
+            first_command("hide line numbers"),
+            Some(IdeCommand::ToggleLineNumbers)
         );
         assert_eq!(
             first_command("open a recent file"),
@@ -6351,6 +6446,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(actions.contains(&"Toggle Word Wrap"));
+        assert!(actions.contains(&"Toggle Line Numbers"));
         assert!(actions.contains(&"Toggle Title Bar"));
         assert!(actions.contains(&"Command Palette…"));
         assert!(actions.contains(&"Search Open Tabs…"));
@@ -6500,6 +6596,49 @@ mod tests {
         let saved =
             TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
         assert_eq!(saved.indentation, indentation);
+    }
+
+    #[gpui::test]
+    fn line_number_toggle_is_persisted_and_applied_to_every_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.add_untitled(window, cx);
+                workspace.on_toggle_line_numbers(&ToggleLineNumbers, window, cx);
+                assert!(!workspace.settings.appearance.show_line_numbers);
+                for document in &workspace.documents {
+                    assert!(!document.editor.state().read(cx).line_numbers_visible());
+                }
+
+                workspace.add_untitled(window, cx);
+                assert!(
+                    !workspace
+                        .active_document()
+                        .editor
+                        .state()
+                        .read(cx)
+                        .line_numbers_visible()
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(!saved.appearance.show_line_numbers);
     }
 
     #[gpui::test]

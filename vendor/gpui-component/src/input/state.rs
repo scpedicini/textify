@@ -533,6 +533,11 @@ impl InputState {
         cx.notify();
     }
 
+    /// Returns whether the code-editor gutter currently shows line numbers.
+    pub fn line_numbers_visible(&self) -> bool {
+        self.mode.line_number()
+    }
+
     /// Set the number of rows for the multi-line Textarea.
     ///
     /// This is only used when `multi_line` is set to true.

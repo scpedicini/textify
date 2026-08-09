@@ -104,3 +104,8 @@ Initial settings for a proper full-featured text editor:
   picker for clean saved files, and the explicit choice survives session restore.
 - [x] CP437 documents save atomically back to CP437 without a document-sized conversion buffer;
   unrepresentable edits fail without replacing the original file.
+
+# Long-running and deployment readiness
+
+- [x] View → Toggle Line Numbers, the command palette, and Settings can show or hide the editor
+  gutter globally; the persisted choice applies immediately to existing and future tabs.
