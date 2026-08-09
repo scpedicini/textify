@@ -3460,6 +3460,13 @@ impl Workspace {
         };
         let parser_suppressed = document.metadata.language != Language::PlainText
             && document.metadata.parser_name(self.policy).is_none();
+        let can_toggle_wrap =
+            document.metadata.mode == FileMode::Normal && document.huge_viewer.is_none();
+        let wrap_label = if document.word_wrap && can_toggle_wrap {
+            "WRAP"
+        } else {
+            "NO WRAP"
+        };
         let path = document
             .metadata
             .path
@@ -3573,11 +3580,21 @@ impl Workspace {
                     .children(project_status)
                     .children(status_message)
                     .child(
-                        if document.word_wrap && document.metadata.mode == FileMode::Normal {
-                            "WRAP"
-                        } else {
-                            "NO WRAP"
-                        },
+                        Button::new("toggle-wrap-status")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .label(wrap_label)
+                            .disabled(!can_toggle_wrap)
+                            .debug_selector(|| "wrap-status-toggle".to_owned())
+                            .tooltip(if can_toggle_wrap {
+                                "Toggle word wrap"
+                            } else {
+                                "Word wrap is disabled by large-file policy"
+                            })
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_toggle_word_wrap(&ToggleWordWrap, window, cx)
+                            })),
                     )
                     .children(visibility.encoding.then_some("UTF-8"))
                     .children(
@@ -6312,6 +6329,43 @@ mod tests {
                     Some("Word wrap is disabled by large-file policy")
                 );
             });
+        });
+    }
+
+    #[gpui::test]
+    fn status_wrap_control_toggles_the_active_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.run_until_parked();
+        let wrap_control = cx
+            .debug_bounds("wrap-status-toggle")
+            .expect("visible wrap status control");
+        cx.simulate_click(wrap_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.active_document().word_wrap);
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Word wrap enabled for this tab")
+            );
+        });
+
+        cx.run_until_parked();
+        let wrap_control = cx
+            .debug_bounds("wrap-status-toggle")
+            .expect("wrap status control remains visible");
+        cx.simulate_click(wrap_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(!workspace.active_document().word_wrap);
         });
     }
 
