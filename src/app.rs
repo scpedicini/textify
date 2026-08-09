@@ -118,6 +118,31 @@ fn configuration_reload_message(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatusBarVisibility {
+    path: bool,
+    line_count: bool,
+    cursor_position: bool,
+    project: bool,
+    message: bool,
+    encoding: bool,
+    line_ending: bool,
+    language: bool,
+}
+
+fn status_bar_visibility(width: gpui::Pixels) -> StatusBarVisibility {
+    StatusBarVisibility {
+        path: width >= px(440.),
+        line_count: width >= px(920.),
+        cursor_position: width >= px(720.),
+        project: width >= px(1100.),
+        message: width >= px(1000.),
+        encoding: width >= px(900.),
+        line_ending: width >= px(820.),
+        language: width >= px(600.),
+    }
+}
+
 fn new_recovery_key(id: u64) -> u128 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3401,7 +3426,8 @@ impl Workspace {
             )
     }
 
-    fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let visibility = status_bar_visibility(window.viewport_size().width);
         let document = self.active_document();
         let (line_summary, position_summary) = if let Some(viewer) = &document.huge_viewer {
             let viewer = viewer.read(cx);
@@ -3428,22 +3454,33 @@ impl Workspace {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "Unsaved document".to_owned());
 
-        let project_status = self
+        let project_status = visibility
             .project
-            .as_ref()
-            .and_then(|project| project.root.file_name())
-            .and_then(|name| name.to_str())
-            .map(|name| format!("Folder: {name}"));
-        let status_message = self.status_message.clone().map(|message| {
-            Button::new("dismiss-status-message")
-                .ghost()
-                .xsmall()
-                .compact()
-                .label(message)
-                .icon(IconName::Close)
-                .tooltip("Dismiss status message")
-                .on_click(cx.listener(|workspace, _, _, cx| workspace.dismiss_status_message(cx)))
-        });
+            .then(|| {
+                self.project
+                    .as_ref()
+                    .and_then(|project| project.root.file_name())
+                    .and_then(|name| name.to_str())
+                    .map(|name| format!("Folder: {name}"))
+            })
+            .flatten();
+        let status_message = visibility
+            .message
+            .then(|| {
+                self.status_message.clone().map(|message| {
+                    Button::new("dismiss-status-message")
+                        .ghost()
+                        .xsmall()
+                        .compact()
+                        .label(message)
+                        .icon(IconName::Close)
+                        .tooltip("Dismiss status message")
+                        .on_click(
+                            cx.listener(|workspace, _, _, cx| workspace.dismiss_status_message(cx)),
+                        )
+                })
+            })
+            .flatten();
         h_flex()
             .h_7()
             .px_3()
@@ -3455,9 +3492,13 @@ impl Workspace {
             .bg(cx.theme().tab_bar)
             .text_xs()
             .text_color(cx.theme().muted_foreground)
+            .overflow_hidden()
             .child(
                 h_flex()
+                    .debug_selector(|| "status-primary".to_owned())
+                    .flex_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .gap_3()
                     .when(document.metadata.mode != FileMode::Normal, |row| {
                         row.child(
@@ -3503,14 +3544,19 @@ impl Workspace {
                                 .child("UNSAVED"),
                         )
                     })
-                    .child(path),
+                    .children(
+                        visibility
+                            .path
+                            .then(|| div().flex_1().min_w_0().truncate().child(path)),
+                    ),
             )
             .child(
                 h_flex()
+                    .debug_selector(|| "status-secondary".to_owned())
                     .flex_shrink_0()
-                    .gap_4()
-                    .child(line_summary)
-                    .child(position_summary)
+                    .gap_3()
+                    .children(visibility.line_count.then_some(line_summary))
+                    .children(visibility.cursor_position.then_some(position_summary))
                     .children(project_status)
                     .children(status_message)
                     .child(
@@ -3520,9 +3566,17 @@ impl Workspace {
                             "NO WRAP"
                         },
                     )
-                    .child("UTF-8")
-                    .child(document.metadata.analysis.line_ending.label())
-                    .child(document.metadata.language.label()),
+                    .children(visibility.encoding.then_some("UTF-8"))
+                    .children(
+                        visibility
+                            .line_ending
+                            .then_some(document.metadata.analysis.line_ending.label()),
+                    )
+                    .children(
+                        visibility
+                            .language
+                            .then_some(document.metadata.language.label()),
+                    ),
             )
     }
 
@@ -4199,7 +4253,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.first_paint_logged {
             self.first_paint_logged = true;
             tracing::info!(
@@ -4308,7 +4362,7 @@ impl Render for Workspace {
                             .child(content),
                     ),
             )
-            .child(self.render_status(cx));
+            .child(self.render_status(window, cx));
 
         div()
             .relative()
@@ -4871,6 +4925,58 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_bar_progressively_hides_secondary_metadata() {
+        let wide = status_bar_visibility(px(1200.));
+        assert_eq!(
+            wide,
+            StatusBarVisibility {
+                path: true,
+                line_count: true,
+                cursor_position: true,
+                project: true,
+                message: true,
+                encoding: true,
+                line_ending: true,
+                language: true,
+            }
+        );
+
+        let compact = status_bar_visibility(px(760.));
+        assert!(compact.path);
+        assert!(compact.cursor_position);
+        assert!(compact.language);
+        assert!(!compact.line_count);
+        assert!(!compact.project);
+        assert!(!compact.message);
+        assert!(!compact.encoding);
+        assert!(!compact.line_ending);
+
+        let narrow = status_bar_visibility(px(420.));
+        assert!(!narrow.path);
+        assert!(!narrow.cursor_position);
+        assert!(!narrow.language);
+    }
+
+    #[gpui::test]
+    fn compact_status_regions_do_not_overlap(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            Root::new(workspace, window, cx)
+        });
+        cx.simulate_resize(size(px(680.), px(420.)));
+        cx.run_until_parked();
+
+        let primary = cx
+            .debug_bounds("status-primary")
+            .expect("primary status region");
+        let secondary = cx
+            .debug_bounds("status-secondary")
+            .expect("secondary status region");
+        assert!(primary.right() <= secondary.left());
+    }
 
     #[test]
     fn only_exact_configuration_paths_request_a_reload() {
