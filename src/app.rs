@@ -21,7 +21,9 @@ use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
-    input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, RopeExt as _, SelectAll, Undo},
+    input::{
+        Copy, Cut, Input, InputEvent, InputState, Paste, Redo, Rope, RopeExt as _, SelectAll, Undo,
+    },
     switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
@@ -186,6 +188,44 @@ fn load_dropped_paths(
             (path, result)
         })
         .collect()
+}
+
+struct QuitSnapshot {
+    id: u64,
+    key: u128,
+    revision: u64,
+    rope: Rope,
+}
+
+fn persist_quit_state(
+    mut tabs: Vec<(u64, SessionTab)>,
+    active_index: usize,
+    workspace_root: Option<PathBuf>,
+    snapshots: Vec<QuitSnapshot>,
+    recovery_directory: &Path,
+    session_path: &Path,
+) -> (Vec<anyhow::Error>, anyhow::Result<()>) {
+    let mut failures = Vec::new();
+    for snapshot in snapshots {
+        match write_snapshot(
+            recovery_directory,
+            snapshot.key,
+            snapshot.revision,
+            snapshot.rope.chunks(),
+        ) {
+            Ok(path) => {
+                if let Some((_, tab)) = tabs.iter_mut().find(|(tab_id, _)| *tab_id == snapshot.id) {
+                    tab.recovery_path = Some(path);
+                    tab.dirty = true;
+                }
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+    let state =
+        SessionState::from_tabs(active_index, tabs.into_iter().map(|(_, tab)| tab).collect())
+            .with_workspace_root(workspace_root);
+    (failures, save_session(session_path, &state))
 }
 
 struct EditorDocument {
@@ -405,6 +445,7 @@ pub struct Workspace {
     pending_definitions: HashSet<u64>,
     recovery_pending: HashMap<u64, Instant>,
     recovery_in_flight: HashSet<u64>,
+    quitting: bool,
     _ide_subscriptions: Vec<Subscription>,
 }
 
@@ -483,6 +524,7 @@ impl Workspace {
             pending_definitions: HashSet::new(),
             recovery_pending: HashMap::new(),
             recovery_in_flight: HashSet::new(),
+            quitting: false,
             _ide_subscriptions,
         };
         workspace.add_untitled(window, cx);
@@ -717,10 +759,7 @@ impl Workspace {
     }
 
     fn update_window_title(&self, window: &mut Window, cx: &App) {
-        window.set_window_title(&format!(
-            "{} — Textify",
-            self.active_document().display_name(cx)
-        ));
+        window.set_window_title(&format!("{} — Textify", self.active_document().title(cx)));
     }
 
     fn persist_session(&self, cx: &mut Context<Self>) {
@@ -728,9 +767,28 @@ impl Workspace {
             return;
         }
 
+        let tabs = self.session_tabs();
+        let active_id = self.active_id();
+        let active_index = tabs
+            .iter()
+            .position(|(id, _)| *id == active_id)
+            .unwrap_or(0);
+        let workspace_root = self.workspace_root.clone();
+        let state =
+            SessionState::from_tabs(active_index, tabs.into_iter().map(|(_, tab)| tab).collect())
+                .with_workspace_root(workspace_root);
+        let path = self.session_path.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = save_session(&path, &state) {
+                tracing::warn!(%error, "could not persist session");
+            }
+        })
+        .detach();
+    }
+
+    fn session_tabs(&self) -> Vec<(u64, SessionTab)> {
         let recover_temporary = self.settings.recovery.save_temporary_files;
-        let tabs = self
-            .documents
+        self.documents
             .iter()
             .filter(|document| document.metadata.path.is_some() || recover_temporary)
             .map(|document| {
@@ -755,23 +813,7 @@ impl Workspace {
                     },
                 )
             })
-            .collect::<Vec<_>>();
-        let active_id = self.active_id();
-        let active_index = tabs
-            .iter()
-            .position(|(id, _)| *id == active_id)
-            .unwrap_or(0);
-        let workspace_root = self.workspace_root.clone();
-        let state =
-            SessionState::from_tabs(active_index, tabs.into_iter().map(|(_, tab)| tab).collect())
-                .with_workspace_root(workspace_root);
-        let path = self.session_path.clone();
-        cx.background_spawn(async move {
-            if let Err(error) = save_session(&path, &state) {
-                tracing::warn!(%error, "could not persist session");
-            }
-        })
-        .detach();
+            .collect()
     }
 
     fn mark_recovery_pending(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -787,8 +829,20 @@ impl Workspace {
         {
             return;
         }
-        self.recovery_pending.insert(id, Instant::now());
+        let needs_first_snapshot =
+            document.recovery_path.is_none() && !self.recovery_in_flight.contains(&id);
+        self.recovery_pending.insert(
+            id,
+            if needs_first_snapshot {
+                Instant::now() - RECOVERY_DEBOUNCE
+            } else {
+                Instant::now()
+            },
+        );
         self.persist_session(cx);
+        if needs_first_snapshot {
+            self.flush_recovery_due(cx);
+        }
     }
 
     fn flush_recovery_due(&mut self, cx: &mut Context<Self>) {
@@ -1904,6 +1958,68 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_quit_textify(&mut self, _: &QuitTextify, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quitting {
+            return;
+        }
+        self.quitting = true;
+        self.status_message = Some("Saving recovery copies before quitting…".to_owned());
+        let tabs = self.session_tabs();
+        let active_id = self.active_id();
+        let active_index = tabs
+            .iter()
+            .position(|(id, _)| *id == active_id)
+            .unwrap_or(0);
+        let snapshots = self
+            .documents
+            .iter()
+            .filter(|document| {
+                document.dirty
+                    && document.huge_viewer.is_none()
+                    && self
+                        .settings
+                        .recovery
+                        .enabled_for(document.metadata.path.is_some())
+            })
+            .map(|document| QuitSnapshot {
+                id: document.id,
+                key: document.recovery_key,
+                revision: document.revision,
+                rope: document.editor.rope(cx),
+            })
+            .collect::<Vec<_>>();
+        let directory = self.settings.recovery.directory(&self.data_dir);
+        let session_path = self.session_path.clone();
+        let workspace_root = self.workspace_root.clone();
+        let task = cx.background_spawn(async move {
+            persist_quit_state(
+                tabs,
+                active_index,
+                workspace_root,
+                snapshots,
+                &directory,
+                &session_path,
+            )
+        });
+        cx.notify();
+        cx.spawn_in(window, async move |workspace, window| {
+            let (failures, session_result) = task.await;
+            workspace
+                .update_in(window, |workspace, _, cx| {
+                    for error in failures {
+                        tracing::warn!(%error, "could not finish recovery snapshot during quit");
+                    }
+                    if let Err(error) = session_result {
+                        tracing::warn!(%error, "could not persist final session during quit");
+                    }
+                    workspace.status_message = Some("Recovery state saved".to_owned());
+                    cx.quit();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
     fn on_dismiss_overlay(
         &mut self,
         _: &DismissOverlay,
@@ -2791,6 +2907,17 @@ impl Workspace {
                                 .child("DISK CHANGED"),
                         )
                     })
+                    .when(document.dirty, |row| {
+                        row.child(
+                            div()
+                                .px_2()
+                                .py(px(1.))
+                                .rounded_sm()
+                                .bg(cx.theme().warning.opacity(0.12))
+                                .text_color(cx.theme().warning)
+                                .child("UNSAVED"),
+                        )
+                    })
                     .child(path),
             )
             .child(
@@ -3315,6 +3442,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
+            .on_action(cx.listener(Self::on_quit_textify))
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
             .on_drop(cx.listener(|workspace, paths: &ExternalPaths, window, cx| {
@@ -3615,10 +3743,6 @@ fn native_menus() -> Vec<Menu> {
     ]
 }
 
-fn quit_textify(_: &QuitTextify, cx: &mut App) {
-    cx.quit();
-}
-
 fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &str, action: A) {
     if !shortcut.trim().is_empty()
         && shortcut
@@ -3668,7 +3792,6 @@ pub fn run() {
             KeyBinding::new("escape", DismissOverlay, None),
             KeyBinding::new("cmd-q", QuitTextify, None),
         ]);
-        cx.on_action(quit_textify);
         cx.set_menus(native_menus());
 
         let options = WindowOptions {
@@ -3851,7 +3974,52 @@ mod tests {
             let draft = workspace.settings_draft.as_ref().expect("draft");
             assert_eq!(draft.font_size, workspace.settings.appearance.font_size);
             assert_eq!(draft.recovery, workspace.settings.recovery);
+            workspace.documents[0].dirty = true;
+            assert_eq!(workspace.documents[0].title(cx), "Untitled 1 •");
         });
+    }
+
+    #[test]
+    fn graceful_quit_flushes_the_latest_recovery_before_session_state() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let recovery_directory = directory.path().join("Backups");
+        let session_path = directory.path().join("session.json");
+        let tab = SessionTab {
+            path: None,
+            recovery_path: None,
+            untitled_number: 1,
+            label_override: None,
+            dirty: false,
+            font_size_override: None,
+            word_wrap: false,
+        };
+        let snapshots = vec![QuitSnapshot {
+            id: 42,
+            key: 99,
+            revision: 7,
+            rope: Rope::from("latest unsaved text 🦀"),
+        }];
+
+        let (failures, session_result) = persist_quit_state(
+            vec![(42, tab)],
+            0,
+            None,
+            snapshots,
+            &recovery_directory,
+            &session_path,
+        );
+        assert!(failures.is_empty());
+        session_result.expect("session save");
+        let session = load_session(&session_path).expect("session load");
+        assert!(session.tabs[0].dirty);
+        let recovery_path = session.tabs[0]
+            .recovery_path
+            .as_deref()
+            .expect("recovery path");
+        assert_eq!(
+            load_snapshot(recovery_path).expect("recovery contents"),
+            "latest unsaved text 🦀"
+        );
     }
 
     #[test]
