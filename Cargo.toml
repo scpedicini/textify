@@ -1,0 +1,28 @@
+[package]
+name = "textify"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, focused native text editor for macOS"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+gpui-component = { version = "=0.5.1", features = ["tree-sitter-languages"] }
+gpui-component-assets = "=0.5.1"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+debug = "limited"
+
+[profile.dev.package]
+gpui = { opt-level = 3 }
+ropey = { opt-level = 3 }
+taffy = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
