@@ -10,9 +10,10 @@ use anyhow::Context as _;
 
 use gpui::{
     App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, KeyBinding, Menu, MenuItem, MouseButton, OsAction, ParentElement as _, Render,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled,
-    Subscription, SystemMenuType, Timer, Window, WindowBounds, WindowOptions, actions, div,
+    IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, OsAction,
+    ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
+    StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
+    UniformListScrollHandle, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
 };
 use gpui_component::{
@@ -442,6 +443,8 @@ pub struct Workspace {
     overlay_mode: Option<OverlayMode>,
     overlay_input: Entity<InputState>,
     overlay_items: Vec<OverlayItem>,
+    overlay_selected_index: usize,
+    overlay_scroll_handle: UniformListScrollHandle,
     settings_visible: bool,
     settings_draft: Option<SettingsDraft>,
     settings_font_select: Entity<SelectState<SearchableVec<String>>>,
@@ -489,7 +492,9 @@ impl Workspace {
                 cx.subscribe_in(&overlay_input, window, |workspace, _, event, window, cx| {
                     match event {
                         InputEvent::Change => workspace.refresh_overlay(window, cx),
-                        InputEvent::PressEnter { .. } => workspace.accept_overlay(0, window, cx),
+                        InputEvent::PressEnter { .. } => {
+                            workspace.accept_overlay(workspace.overlay_selected_index, window, cx)
+                        }
                         _ => {}
                     }
                 }),
@@ -526,6 +531,8 @@ impl Workspace {
             overlay_mode: None,
             overlay_input,
             overlay_items: Vec::new(),
+            overlay_selected_index: 0,
+            overlay_scroll_handle: UniformListScrollHandle::new(),
             settings_visible: false,
             settings_draft: None,
             settings_font_select,
@@ -1583,6 +1590,7 @@ impl Workspace {
         }
         self.overlay_mode = Some(mode);
         self.overlay_items.clear();
+        self.overlay_selected_index = 0;
         let placeholder = match mode {
             OverlayMode::Commands => "Type a command",
             OverlayMode::OpenTabs => "Find an open tab",
@@ -1594,6 +1602,10 @@ impl Workspace {
             input.set_placeholder(placeholder, window, cx);
             input.focus(window, cx);
         });
+        let overlay_input = self.overlay_input.clone();
+        window.defer(cx, move |window, cx| {
+            overlay_input.update(cx, |input, cx| input.focus(window, cx));
+        });
         self.refresh_overlay(window, cx);
         cx.notify();
     }
@@ -1604,6 +1616,7 @@ impl Workspace {
         }
         self.overlay_mode = None;
         self.overlay_items.clear();
+        self.overlay_selected_index = 0;
         cx.notify();
     }
 
@@ -1618,6 +1631,7 @@ impl Workspace {
         let Some(mode) = self.overlay_mode else {
             return;
         };
+        self.overlay_selected_index = 0;
         let query = self.overlay_input.read(cx).value().trim().to_lowercase();
         match mode {
             OverlayMode::Commands => {
@@ -1674,6 +1688,43 @@ impl Workspace {
             OverlayMode::WorkspaceSearch => self.start_workspace_search(query, cx),
         }
         cx.notify();
+    }
+
+    fn move_overlay_selection(&mut self, direction: isize, cx: &mut Context<Self>) {
+        if self.overlay_mode.is_none() {
+            cx.propagate();
+            return;
+        }
+        if self.overlay_items.is_empty() {
+            cx.stop_propagation();
+            return;
+        }
+        let last = self.overlay_items.len() - 1;
+        self.overlay_selected_index = if direction < 0 {
+            self.overlay_selected_index.saturating_sub(1)
+        } else {
+            (self.overlay_selected_index + 1).min(last)
+        };
+        self.overlay_scroll_handle
+            .scroll_to_item(self.overlay_selected_index, ScrollStrategy::Center);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn on_overlay_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_mode.is_none() || event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "up" => self.move_overlay_selection(-1, cx),
+            "down" => self.move_overlay_selection(1, cx),
+            _ => {}
+        }
     }
 
     fn start_workspace_search(&mut self, query: String, cx: &mut Context<Self>) {
@@ -3256,46 +3307,68 @@ impl Workspace {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(title)
-                    .child("Enter opens first result · Esc closes"),
+                    .child("↑↓ navigate · Enter opens · Esc closes"),
             )
             .child(div().px_2().pb_2().child(Input::new(&self.overlay_input)))
-            .child(
-                uniform_list(
-                    "ide-overlay-results",
-                    count,
-                    cx.processor(|workspace, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .filter_map(|index| {
-                                let item = workspace.overlay_items.get(index)?.clone();
-                                Some(
-                                    v_flex()
-                                        .id(("overlay-item", index))
-                                        .min_h_10()
-                                        .px_3()
-                                        .py_1()
-                                        .cursor_pointer()
-                                        .border_t_1()
-                                        .border_color(cx.theme().border.opacity(0.55))
-                                        .hover(|row| row.bg(cx.theme().list_hover))
-                                        .on_click(cx.listener(move |workspace, _, window, cx| {
-                                            workspace.accept_overlay(index, window, cx)
-                                        }))
-                                        .child(div().text_sm().child(item.title))
-                                        .when(!item.subtitle.is_empty(), |row| {
-                                            row.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(item.subtitle),
-                                            )
-                                        }),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    }),
+            .when(count == 0, |panel| {
+                panel.child(
+                    div()
+                        .id("ide-overlay-empty")
+                        .h_10()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No matching results"),
                 )
-                .max_h(px(430.)),
-            );
+            })
+            .when(count > 0, |panel| {
+                panel.child(
+                    uniform_list(
+                        "ide-overlay-results",
+                        count,
+                        cx.processor(|workspace, range: std::ops::Range<usize>, _, cx| {
+                            range
+                                .filter_map(|index| {
+                                    let item = workspace.overlay_items.get(index)?.clone();
+                                    Some(
+                                        v_flex()
+                                            .id(("overlay-item", index))
+                                            .h_10()
+                                            .px_3()
+                                            .py_1()
+                                            .cursor_pointer()
+                                            .border_t_1()
+                                            .border_color(cx.theme().border.opacity(0.55))
+                                            .when(
+                                                index == workspace.overlay_selected_index,
+                                                |row| row.bg(cx.theme().list_active),
+                                            )
+                                            .hover(|row| row.bg(cx.theme().list_hover))
+                                            .on_click(cx.listener(
+                                                move |workspace, _, window, cx| {
+                                                    workspace.accept_overlay(index, window, cx)
+                                                },
+                                            ))
+                                            .child(div().text_sm().child(item.title))
+                                            .when(!item.subtitle.is_empty(), |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(item.subtitle),
+                                                )
+                                            }),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(self.overlay_scroll_handle.clone())
+                    .h(px(count.min(10) as f32 * 40.)),
+                )
+            });
 
         div()
             .id("ide-overlay-backdrop")
@@ -3727,6 +3800,7 @@ impl Render for Workspace {
             .relative()
             .size_full()
             .on_action(cx.listener(Self::on_input_escape))
+            .capture_key_down(cx.listener(Self::on_overlay_key_down))
             .child(workspace)
             .when(self.overlay_mode.is_some(), |root| {
                 root.child(self.render_overlay(cx))
@@ -4603,6 +4677,76 @@ mod tests {
             let offset = workspace.tab_scroll_handle.offset();
             assert!(tab.left() + offset.x >= viewport.left());
             assert!(tab.right() + offset.x <= viewport.right());
+        });
+    }
+
+    #[gpui::test]
+    fn open_tabs_filters_and_navigates_with_the_keyboard(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                workspace.documents[0].label_override = Some("document-00.txt".to_owned());
+                for index in 1..16 {
+                    workspace.add_untitled(window, cx);
+                    workspace.documents[index].label_override = Some(if index == 15 {
+                        "needle-notes.md".to_owned()
+                    } else {
+                        format!("document-{index:02}.txt")
+                    });
+                }
+                workspace.set_active_index(0, window, cx);
+                workspace.show_overlay(OverlayMode::OpenTabs, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_items.len(), 16);
+            assert_eq!(workspace.overlay_selected_index, 0);
+        });
+
+        cx.update(|window, cx| {
+            assert_eq!(
+                window.focused_input(cx),
+                Some(workspace.read(cx).overlay_input.clone())
+            )
+        });
+        let down_keys = "down ".repeat(12);
+        cx.simulate_keystrokes(down_keys.trim());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_selected_index, 12);
+        });
+        cx.simulate_keystrokes("enter");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.active_index, 12);
+            assert_eq!(workspace.overlay_mode, None);
+        });
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::OpenTabs, window, cx)
+            });
+        });
+        cx.simulate_input("needle");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_items.len(), 1);
+            assert_eq!(workspace.overlay_items[0].title, "needle-notes.md");
+        });
+        cx.simulate_keystrokes("enter");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.active_index, 15);
+            assert_eq!(workspace.overlay_mode, None);
         });
     }
 
