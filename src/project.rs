@@ -10,6 +10,111 @@ use anyhow::{Context as _, Result};
 use crate::huge_file::CancellationToken;
 
 const IGNORED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules", ".textify"];
+const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
+    "bash",
+    "c",
+    "cc",
+    "cfg",
+    "cjs",
+    "conf",
+    "cpp",
+    "css",
+    "csv",
+    "cs",
+    "cxx",
+    "dart",
+    "ejs",
+    "env",
+    "erl",
+    "ex",
+    "exs",
+    "fish",
+    "fs",
+    "fsx",
+    "go",
+    "gradle",
+    "h",
+    "hpp",
+    "hrl",
+    "htm",
+    "html",
+    "hxx",
+    "ini",
+    "java",
+    "js",
+    "json",
+    "jsonc",
+    "jsx",
+    "kt",
+    "kts",
+    "lock",
+    "log",
+    "lua",
+    "m",
+    "markdown",
+    "md",
+    "mdown",
+    "mkd",
+    "mjs",
+    "mm",
+    "php",
+    "properties",
+    "py",
+    "pyi",
+    "r",
+    "rb",
+    "rs",
+    "sh",
+    "sql",
+    "svelte",
+    "swift",
+    "text",
+    "toml",
+    "ts",
+    "tsv",
+    "tsx",
+    "txt",
+    "vue",
+    "xml",
+    "yaml",
+    "yml",
+    "zsh",
+];
+const SUPPORTED_TEXT_FILENAMES: &[&str] = &[
+    ".editorconfig",
+    ".env",
+    ".gitattributes",
+    ".gitignore",
+    "changelog",
+    "dockerfile",
+    "gemfile",
+    "license",
+    "makefile",
+    "procfile",
+    "readme",
+];
+
+fn is_supported_text_file(path: &Path) -> bool {
+    let extension_supported = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SUPPORTED_TEXT_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        });
+    if extension_supported {
+        return true;
+    }
+
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            SUPPORTED_TEXT_FILENAMES
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(name))
+        })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectEntry {
@@ -57,10 +162,6 @@ impl ProjectIndex {
 
             let mut child_directories = Vec::new();
             for child in children {
-                if entries.len() >= max_entries {
-                    truncated = true;
-                    break;
-                }
                 let name = child.file_name();
                 let name = name.to_string_lossy();
                 let file_type = match child.file_type() {
@@ -73,6 +174,15 @@ impl ProjectIndex {
                     continue;
                 }
                 let path = child.path();
+                let supported = file_type.is_dir()
+                    || (file_type.is_file() && is_supported_text_file(path.as_path()));
+                if !supported {
+                    continue;
+                }
+                if entries.len() >= max_entries {
+                    truncated = true;
+                    break;
+                }
                 let relative = path
                     .strip_prefix(&root)
                     .unwrap_or(path.as_path())
@@ -308,16 +418,44 @@ mod tests {
         )
         .expect("model");
         fs::write(directory.path().join("target/debug/binary"), "ignored").expect("ignored");
+        fs::write(directory.path().join(".DS_Store"), "metadata").expect("finder metadata");
+        fs::write(directory.path().join("cover.png"), b"not really a png").expect("image");
+        fs::write(directory.path().join("bundle.zip"), b"not really a zip").expect("archive");
+        fs::write(directory.path().join("README"), "project notes\n").expect("readme");
 
         let index = ProjectIndex::build(directory.path(), 100).expect("index");
-        assert_eq!(index.files.len(), 2);
+        assert_eq!(index.files.len(), 3);
         assert!(
             index
                 .files
                 .iter()
                 .all(|path| !path.to_string_lossy().contains("target"))
         );
+        assert!(index.files.iter().any(|path| path.ends_with("README")));
+        assert!(index.files.iter().all(|path| {
+            !matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".DS_Store" | "cover.png" | "bundle.zip")
+            )
+        }));
         assert!(index.quick_open("smod", 10)[0].ends_with("model.rs"));
+    }
+
+    #[test]
+    fn explorer_supports_known_text_and_source_files_only() {
+        for path in [
+            "notes.txt",
+            "data.JSON",
+            "page.html",
+            "README",
+            ".gitignore",
+            "src/main.rs",
+        ] {
+            assert!(is_supported_text_file(Path::new(path)), "{path}");
+        }
+        for path in ["photo.jpg", "sound.mp3", "archive.zip", ".DS_Store"] {
+            assert!(!is_supported_text_file(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
