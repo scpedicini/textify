@@ -16,8 +16,8 @@ use gpui::{
     prelude::FluentBuilder as _, px, size, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
-    ThemeMode, TitleBar, WindowExt,
+    ActiveTheme as _, Disableable as _, IconName, IndexPath, Root, Sizable as _, StyledExt as _,
+    Theme, ThemeMode, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
@@ -25,6 +25,7 @@ use gpui_component::{
         Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
         RopeExt as _, SelectAll, Undo,
     },
+    select::{SearchableVec, Select, SelectState},
     switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
@@ -440,7 +441,7 @@ pub struct Workspace {
     overlay_items: Vec<OverlayItem>,
     settings_visible: bool,
     settings_draft: Option<SettingsDraft>,
-    settings_font_input: Entity<InputState>,
+    settings_font_select: Entity<SelectState<SearchableVec<String>>>,
     settings_location_input: Entity<InputState>,
     workspace_search: Option<WorkspaceSearchStream>,
     status_message: Option<String>,
@@ -468,8 +469,15 @@ impl Workspace {
             TextifyKeymap::default()
         });
         let overlay_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command"));
-        let settings_font_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("SFMono-Regular"));
+        let font_families = editor_font_families(cx, &settings.appearance.font_family);
+        let selected_font = font_families
+            .iter()
+            .position(|font| font == &settings.appearance.font_family)
+            .map(|index| IndexPath::default().row(index));
+        let settings_font_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(font_families), selected_font, window, cx)
+                .searchable(true)
+        });
         let settings_location_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Textify application backups"));
         let _ide_subscriptions =
@@ -516,7 +524,7 @@ impl Workspace {
             overlay_items: Vec::new(),
             settings_visible: false,
             settings_draft: None,
-            settings_font_input,
+            settings_font_select,
             settings_location_input,
             workspace_search: None,
             status_message: None,
@@ -1827,15 +1835,16 @@ impl Workspace {
             recovery: self.settings.recovery.clone(),
         });
         let font_family = self.settings.appearance.font_family.clone();
+        let font_families = editor_font_families(cx, &font_family);
         let recovery_directory = self.settings.recovery.directory(&self.data_dir);
-        self.settings_font_input.update(cx, |input, cx| {
-            input.set_value(font_family, window, cx);
+        self.settings_font_select.update(cx, |select, cx| {
+            select.set_items(SearchableVec::new(font_families), window, cx);
+            select.set_selected_value(&font_family, window, cx);
+            select.focus(window, cx);
         });
         self.settings_location_input.update(cx, |input, cx| {
             input.set_value(recovery_directory.display().to_string(), window, cx);
         });
-        self.settings_font_input
-            .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
@@ -1876,7 +1885,12 @@ impl Workspace {
         let Some(mut draft) = self.settings_draft.clone() else {
             return;
         };
-        let font_family = self.settings_font_input.read(cx).value().to_string();
+        let font_family = self
+            .settings_font_select
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or_else(|| self.settings.appearance.font_family.clone());
         let location = self
             .settings_location_input
             .read(cx)
@@ -3275,7 +3289,11 @@ impl Workspace {
                                             .text_color(cx.theme().muted_foreground)
                                             .child("Applied to every tab unless that tab is zoomed."),
                                     )
-                                    .child(Input::new(&self.settings_font_input).w_full()),
+                                    .child(
+                                        Select::new(&self.settings_font_select)
+                                            .search_placeholder("Search installed fonts…")
+                                            .w_full(),
+                                    ),
                             )
                             .child(
                                 h_flex()
@@ -3587,6 +3605,29 @@ impl Render for Workspace {
                 root.child(self.render_settings_panel(cx))
             })
     }
+}
+
+fn editor_font_families(cx: &App, configured: &str) -> Vec<String> {
+    normalize_editor_font_families(cx.text_system().all_font_names(), configured)
+}
+
+fn normalize_editor_font_families(mut fonts: Vec<String>, configured: &str) -> Vec<String> {
+    fonts.retain(|font| !font.trim().is_empty());
+    for font in &mut fonts {
+        if font.eq_ignore_ascii_case(configured) {
+            *font = configured.to_owned();
+        }
+    }
+    if !configured.trim().is_empty() && !fonts.iter().any(|font| font == configured) {
+        fonts.push(configured.to_owned());
+    }
+    fonts.sort_by(|left, right| {
+        left.to_lowercase()
+            .cmp(&right.to_lowercase())
+            .then_with(|| left.cmp(right))
+    });
+    fonts.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    fonts
 }
 
 fn command_items() -> Vec<OverlayItem> {
@@ -4117,8 +4158,12 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             assert!(workspace.settings_visible);
             assert_eq!(
-                workspace.settings_font_input.read(cx).value(),
-                workspace.settings.appearance.font_family
+                workspace
+                    .settings_font_select
+                    .read(cx)
+                    .selected_value()
+                    .map(String::as_str),
+                Some(workspace.settings.appearance.font_family.as_str())
             );
             let draft = workspace.settings_draft.as_ref().expect("draft");
             assert_eq!(draft.font_size, workspace.settings.appearance.font_size);
@@ -4191,6 +4236,29 @@ mod tests {
         assert_eq!(
             consume_zoom_delta(ScrollDelta::Lines(gpui::point(0., -3.)), &mut accumulator),
             -1
+        );
+    }
+
+    #[test]
+    fn editor_font_picker_sorts_deduplicates_and_preserves_configuration() {
+        assert_eq!(
+            normalize_editor_font_families(
+                vec![
+                    "Zed Mono".to_owned(),
+                    "alpha code".to_owned(),
+                    "ALPHA CODE".to_owned(),
+                    "".to_owned(),
+                ],
+                "Missing Mono",
+            ),
+            ["ALPHA CODE", "Missing Mono", "Zed Mono"]
+        );
+        assert_eq!(
+            normalize_editor_font_families(
+                vec!["SFMONO-REGULAR".to_owned(), "Other".to_owned()],
+                "SFMono-Regular",
+            ),
+            ["Other", "SFMono-Regular"]
         );
     }
 
