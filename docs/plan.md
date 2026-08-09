@@ -224,6 +224,8 @@ Status: implemented and regression tested on 2026-08-09.
 - The minimal pinned highlighter bundle adds Tree-sitter HTML for `.html` and `.htm` files.
 - The status bar wrap state is a clickable control that respects large-file policy.
 - The unexplained decorative circle was removed from the text-only title brand.
+- The tab ribbon no longer spends overflow space on a redundant Save button; the native File menu
+  and Command-S remain the canonical save controls.
 
 ## Feature-complete verification
 

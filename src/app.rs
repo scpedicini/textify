@@ -3417,26 +3417,6 @@ impl Workspace {
                     ),
             )
             .children(tabs)
-            .suffix(
-                Button::new("save-document")
-                    .ghost()
-                    .small()
-                    .compact()
-                    .icon(IconName::File)
-                    .label(if self.active_document().saving {
-                        "Saving…"
-                    } else if self.active_document().huge_viewer.is_some() {
-                        "Read Only"
-                    } else {
-                        "Save"
-                    })
-                    .loading(self.active_document().saving)
-                    .disabled(self.active_document().huge_viewer.is_some())
-                    .tooltip_with_action("Save file", &SaveDocument, None)
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.on_save(&SaveDocument, window, cx)
-                    })),
-            )
     }
 
     fn render_status(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -6119,6 +6099,8 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        assert!(file_actions.contains(&"Save"));
+        assert!(file_actions.contains(&"Save As…"));
         assert!(file_actions.contains(&"Open Recent…"));
         assert!(file_actions.contains(&"Clear Recent Files"));
     }

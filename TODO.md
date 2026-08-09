@@ -89,3 +89,5 @@ Initial settings for a proper full-featured text editor:
 - [x] WRAP / NO WRAP in the status bar is a clickable per-tab toggle and respects large-file policy.
 - [x] The decorative circle beside the Textify title was removed; it was not an application-icon
   slot.
+- [x] The redundant right-side Save button was removed from the tab ribbon; File → Save and
+  Command-S remain available.
