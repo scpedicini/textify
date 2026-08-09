@@ -89,6 +89,17 @@ const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
 const UNTITLED_TITLE_CHARS: usize = 36;
 const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
 
+fn tab_toolbar_leading_inset(show_title_bar: bool) -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        if !show_title_bar {
+            return 80.;
+        }
+    }
+    let _ = show_title_bar;
+    0.
+}
+
 fn new_recovery_key(id: u64) -> u128 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3229,6 +3240,13 @@ impl Workspace {
                     .px_1()
                     .gap_1()
                     .child(
+                        div()
+                            .w(px(tab_toolbar_leading_inset(
+                                self.settings.appearance.show_title_bar,
+                            )))
+                            .flex_none(),
+                    )
+                    .child(
                         Button::new("new-document")
                             .ghost()
                             .xsmall()
@@ -5522,6 +5540,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(file_actions.contains(&"Open Recent…"));
         assert!(file_actions.contains(&"Clear Recent Files"));
+    }
+
+    #[test]
+    fn hidden_title_bar_keeps_toolbar_clear_of_native_window_controls() {
+        assert_eq!(tab_toolbar_leading_inset(true), 0.);
+        #[cfg(target_os = "macos")]
+        assert_eq!(tab_toolbar_leading_inset(false), 80.);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(tab_toolbar_leading_inset(false), 0.);
     }
 
     #[gpui::test]
