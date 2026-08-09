@@ -1,14 +1,19 @@
 use std::rc::Rc;
 
 use crate::{
-    ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex, tooltip::Tooltip,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
+    tooltip::Tooltip,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClickEvent, Div, Edges, ElementId, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px, relative,
+    AnyElement, App, ClickEvent, Context, Div, Edges, ElementId, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, px, relative,
 };
+
+type ContextMenuBuilder =
+    Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static>;
 
 /// Tab variants.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash)]
@@ -391,6 +396,7 @@ pub struct Tab {
     prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
     tooltip: Option<SharedString>,
+    context_menu: Option<ContextMenuBuilder>,
     children: Vec<AnyElement>,
     variant: TabVariant,
     size: Size,
@@ -442,6 +448,7 @@ impl Default for Tab {
             prefix: None,
             suffix: None,
             tooltip: None,
+            context_menu: None,
             variant: TabVariant::default(),
             size: Size::default(),
             on_click: None,
@@ -464,6 +471,15 @@ impl Tab {
     /// Set hover text for the tab.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Add a menu that opens when the tab is clicked with the secondary mouse button.
+    pub fn context_menu(
+        mut self,
+        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.context_menu = Some(Rc::new(builder));
         self
     }
 
@@ -591,6 +607,8 @@ impl RenderOnce for Tab {
         let inner_margins = self.variant.inner_margins(self.size);
         let inner_height = self.variant.inner_height(self.size);
         let height = self.variant.height(self.size);
+        let context_menu = self.context_menu;
+        let context_menu_id = self.id.clone();
 
         self.base
             .id(self.id)
@@ -673,6 +691,13 @@ impl RenderOnce for Tab {
                 this.when_some(self.on_click.clone(), |this, on_click| {
                     this.on_click(move |event, window, cx| on_click(event, window, cx))
                 })
+            })
+            .context_menu_with_id(context_menu_id, move |menu, window, cx| {
+                if let Some(builder) = context_menu.as_ref() {
+                    builder(menu, window, cx)
+                } else {
+                    menu
+                }
             })
     }
 }

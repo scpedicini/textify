@@ -19,7 +19,16 @@ pub trait ContextMenuExt: ParentElement + Styled {
         self,
         f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     ) -> ContextMenu<Self> {
-        ContextMenu::new("context-menu", self).menu(f)
+        self.context_menu_with_id("context-menu", f)
+    }
+
+    /// Add a context menu with an element-specific state identifier.
+    fn context_menu_with_id(
+        self,
+        id: impl Into<ElementId>,
+        f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> ContextMenu<Self> {
+        ContextMenu::new(id, self).menu(f)
     }
 }
 

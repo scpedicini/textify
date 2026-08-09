@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::mpsc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -9,10 +10,10 @@ use std::{
 use anyhow::Context as _;
 
 use gpui::{
-    App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, OsAction,
-    ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
+    App, AppContext as _, Application, ClipboardItem, Context, Entity, ExternalPaths,
+    InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
+    OsAction, ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
 };
@@ -26,6 +27,7 @@ use gpui_component::{
         Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
         RopeExt as _, SelectAll, Undo,
     },
+    menu::PopupMenuItem,
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectState},
     switch::Switch,
@@ -275,6 +277,36 @@ fn bounded_tab_title(title: &str) -> String {
     bounded.extend(characters[characters.len() - suffix_chars..].iter());
     bounded.push_str(dirty_marker);
     bounded
+}
+
+fn full_document_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|directory| directory.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    })
+}
+
+fn finder_reveal_command(path: &Path) -> Command {
+    let mut command = Command::new("/usr/bin/open");
+    command.arg("-R").arg(path);
+    command
+}
+
+fn reveal_in_finder(path: &Path) -> anyhow::Result<()> {
+    let status = finder_reveal_command(path)
+        .status()
+        .with_context(|| format!("could not ask Finder to reveal {}", path.display()))?;
+    anyhow::ensure!(
+        status.success(),
+        "Finder could not reveal {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
@@ -3597,6 +3629,51 @@ impl Workspace {
         });
     }
 
+    fn document_full_path(&self, id: u64) -> Option<PathBuf> {
+        self.document_index(id)
+            .and_then(|index| self.documents[index].metadata.path.as_deref())
+            .map(full_document_path)
+    }
+
+    fn copy_document_path(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(path) = self.document_full_path(id) else {
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+        self.status_message = Some(format!("Copied path: {}", path.display()));
+        cx.notify();
+        true
+    }
+
+    fn reveal_document_in_finder(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(path) = self.document_full_path(id) else {
+            return false;
+        };
+        self.status_message = Some(format!("Revealing {} in Finder…", path.display()));
+        let task = cx.background_spawn({
+            let path = path.clone();
+            async move { reveal_in_finder(&path) }
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.status_message = Some(match result {
+                        Ok(()) => format!("Revealed {} in Finder", path.display()),
+                        Err(error) => error.to_string(),
+                    });
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+        cx.notify();
+        true
+    }
+
     fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = cx.entity();
         let active_id = self.active_id();
@@ -3607,11 +3684,40 @@ impl Workspace {
                 let id = document.id;
                 let is_active = id == active_id;
                 let close_workspace = workspace.clone();
+                let copy_workspace = workspace.clone();
+                let reveal_workspace = workspace.clone();
+                let path_actions_enabled = document.metadata.path.is_some();
                 let title = document.title(cx);
                 Tab::new()
                     .label(bounded_tab_title(&title))
                     .tooltip(title)
                     .max_w(px(TAB_MAX_WIDTH))
+                    .context_menu(move |menu, _, _| {
+                        menu.item(
+                            PopupMenuItem::new("Copy Path to Clipboard")
+                                .disabled(!path_actions_enabled)
+                                .on_click({
+                                    let copy_workspace = copy_workspace.clone();
+                                    move |_, _, cx| {
+                                        copy_workspace.update(cx, |workspace, cx| {
+                                            workspace.copy_document_path(id, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Open Location in Finder")
+                                .disabled(!path_actions_enabled)
+                                .on_click({
+                                    let reveal_workspace = reveal_workspace.clone();
+                                    move |_, _, cx| {
+                                        reveal_workspace.update(cx, |workspace, cx| {
+                                            workspace.reveal_document_in_finder(id, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                    })
                     .suffix(
                         Button::new(("close-tab", id))
                             .ghost()
@@ -6054,6 +6160,60 @@ mod tests {
         assert_eq!(dirty.chars().count(), TAB_TITLE_MAX_CHARS);
         assert!(dirty.ends_with("CODEPAGE_437.TXT •"));
         assert_eq!(bounded_tab_title("short.txt"), "short.txt");
+    }
+
+    #[test]
+    fn finder_reveal_invocation_keeps_a_spaced_path_in_one_argument() {
+        use std::ffi::OsStr;
+
+        let path = Path::new("/tmp/Textify Folder/notes.txt");
+        let command = finder_reveal_command(path);
+        assert_eq!(command.get_program(), OsStr::new("/usr/bin/open"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("-R"), path.as_os_str()]
+        );
+    }
+
+    #[gpui::test]
+    fn tab_path_actions_target_the_clicked_saved_document(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("document directory");
+        let first_path = directory.path().join("first.txt");
+        let second_path = directory.path().join("second file.txt");
+        fs::write(&first_path, "first").expect("first fixture");
+        fs::write(&second_path, "second").expect("second fixture");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.active_document_mut().metadata.path = Some(first_path.clone());
+                workspace.add_untitled(window, cx);
+                let second_id = workspace.active_id();
+                workspace.active_document_mut().metadata.path = Some(second_path.clone());
+                workspace.active_index = 0;
+
+                assert!(workspace.copy_document_path(second_id, cx));
+                assert_eq!(
+                    cx.read_from_clipboard()
+                        .and_then(|clipboard| clipboard.text()),
+                    Some(full_document_path(&second_path).display().to_string())
+                );
+
+                workspace.add_untitled(window, cx);
+                let untitled_id = workspace.active_id();
+                assert!(!workspace.copy_document_path(untitled_id, cx));
+            });
+        });
     }
 
     #[test]

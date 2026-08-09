@@ -52,6 +52,8 @@ Initial settings for a proper full-featured text editor:
   searches open files with fuzzy or `*` wildcard matching.
 - [x] Exceptionally long filenames use a bounded tab width and middle ellipsis that preserves the
   identifying beginning, extension, dirty marker, and full-name hover tooltip.
+- [x] A saved-file tab's right-click menu can copy its full canonical path or reveal the file in
+  Finder; path commands stay disabled for untitled tabs and target the clicked tab.
 - [x] Command overlays close directly from Escape or an outside click and return focus to the editor.
 - [x] Enabling word wrap immediately reflows against the usable text width without edge clipping.
 - [x] Command-scroll zoom preserves the document row under the pointer through every reflow, with
