@@ -5,11 +5,12 @@ GPUI Component.
 
 Textify provides safe file handling, Markdown and JSON highlighting, multiple tabs, external-change
 detection, session restore, multicursor editing, measured large-file behavior, and a bounded-memory
-viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, quick-open,
-command palette, cancellable workspace search, live settings/keymap reload, lazy Git decorations,
-optional language-server diagnostics and go-to-definition, native macOS menus, crash recovery,
-per-tab zoom and wrapping, searchable open-tab navigation, natural-language commands, and file
-drag-and-drop. Overflowed tabs scroll horizontally and the active tab is always revealed.
+viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, live search
+across open tabs, a command palette, cancellable workspace search, configurable recent-file history,
+live settings/keymap reload, lazy Git decorations, optional language-server diagnostics and
+go-to-definition, native macOS menus, crash recovery, per-tab zoom and wrapping, searchable
+open-tab navigation, natural-language commands, and file drag-and-drop. Overflowed tabs scroll
+horizontally and the active tab is always revealed.
 
 All milestones in the current build plan are implemented. The feature-complete verification record
 and optimized measurements are in [docs/plan.md](docs/plan.md) and
@@ -37,9 +38,11 @@ rope.
 
 Open a folder with Command-Shift-O. Textify indexes it in the background, restores it with the next
 session, and shows the virtualized explorer. `target`, `.git`, `node_modules`, symlinks,
-and over-budget entries are excluded. Command-P quick-opens indexed files; Command-Shift-F streams
-workspace matches without blocking the UI; Command-Shift-P opens the command palette.
-Command-Option-P searches only the files already open and activates and reveals the chosen tab.
+and over-budget entries are excluded. Command-P searches the live contents of every editable tab,
+including unsaved drafts; Command-Shift-F streams folder-wide workspace matches without blocking
+the UI; Command-Shift-P opens the command palette. Command-Option-P lists every open tab, filters as
+you type, and activates and reveals the chosen tab. File → Open Recent provides a separately bounded
+local history that can be disabled or cleared in Settings.
 
 Textify creates `settings.json` and `keymap.json` under `~/Library/Application Support/Textify` (or
 `TEXTIFY_DATA_DIR`) after first paint. Both files reload when saved. Git decorations are lazy and can
@@ -95,13 +98,15 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Settings | Command-, |
 | Toggle word wrap | Option-Z |
 | Zoom active tab | Command-Scroll |
-| Quick open | Command-P |
+| Search text across open tabs | Command-P |
 | Workspace search | Command-Shift-F |
 | Go to definition | F12 |
 
 The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. The View menu
 can hide the Textify title bar; Settings can independently hide its tagline and provides a
-searchable dropdown of installed editor fonts.
+searchable dropdown of installed editor fonts. Dirty tabs close through Save / Don't Save / Cancel;
+the editor surface is frameless, and hiding the title row reserves the native macOS window-control
+area.
 
 See [docs/plan.md](docs/plan.md) for the build plan and [docs/research.md](docs/research.md) for
 the technology evaluation.

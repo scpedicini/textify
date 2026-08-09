@@ -9,6 +9,8 @@ Local data is stored in `~/Library/Application Support/Textify` by default:
 
 - `settings.json` and `keymap.json` contain user preferences.
 - `session.json` records open tabs and workspace state.
+- `recent-files.json` contains the bounded Open Recent path list when that setting is enabled. It
+  can be cleared from the File menu or Settings; disabling recent files also clears it.
 - `Backups/` contains atomic crash-recovery copies when recovery is enabled. The location is
   configurable in Settings, and each copy is removed after its tab is saved or discarded.
 

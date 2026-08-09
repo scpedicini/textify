@@ -187,11 +187,32 @@ Status: implemented and regression tested on 2026-08-08.
 - A persisted View command hides the complete Textify title bar; a separate persisted Settings
   switch hides only the tagline.
 
+## Milestone 8 — close safety, navigation, and local history
+
+Status: implemented and regression tested on 2026-08-08.
+
+- Command-W and tab close buttons share a three-choice dirty-document flow. Save As cancellation,
+  write errors, and edits racing a save all keep the tab open; recovery data is discarded only when
+  the document actually closes.
+- The Open Tabs overlay is a focused, virtualized, ten-row navigator with live fuzzy/wildcard
+  filtering, visible keyboard selection, Enter activation, and automatic tab-ribbon reveal.
+- Open Recent stores a serialized, newest-first, duplicate-free local path list. Settings controls
+  its enable state and 1–100 item limit; writes are serialized so rapid opens cannot overwrite newer
+  history with an older snapshot.
+- GPUI Component's generic Input border is disabled only at Textify's code-editor adapter boundary.
+- Command-P and the magnifying glass now search cancellable snapshots of every open editable rope,
+  including unsaved buffers. Exact phrases outrank all-word line matches, and accepting a result
+  selects its precise location after activating the tab.
+- Hidden custom-title mode reserves the same 80-pixel macOS leading area used by the visible title
+  row, preventing native traffic lights from covering toolbar controls.
+- Legacy `quick_open_results` and `quick_open` configuration keys deserialize as aliases for
+  `open_tab_search_results` and `search_open_tabs`.
+
 ## Feature-complete verification
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
 
-- 57 Textify tests and 113 pinned-fork tests pass.
+- 70 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.

@@ -56,3 +56,19 @@ Initial settings for a proper full-featured text editor:
 - [x] Editor Font is a searchable dropdown populated from installed font families.
 - [x] View → Toggle Title Bar hides or restores the complete Textify heading and persists the choice.
 - [x] Settings → Show Tagline independently hides or restores “A fast place for text.”
+
+# Interaction hardening — close, navigation, and history
+
+- [x] Command-W and every tab close button close clean temporary tabs immediately; dirty temporary
+  or named tabs use a Save / Don't Save / Cancel dialog, and Save closes only after a successful
+  write or Save As.
+- [x] Open Tabs opens as a ten-row keyboard-driven list of every tab, keeps the highlighted row in
+  view, filters live, and activates/reveals the selected tab with Enter.
+- [x] File → Open Recent uses a private newest-first history with a configurable 1–100 item limit,
+  an enable switch that clears history when disabled, and explicit Clear History commands.
+- [x] The code-editor surface no longer draws the generic rounded textbox border.
+- [x] Command-P and the magnifying glass search live text across all editable tabs, including
+  unsaved tabs, rank phrase/all-word matches, and jump to the selected document location.
+- [x] Hiding the Textify title row reserves the macOS traffic-light area ahead of the tab toolbar.
+- [x] The project explorer and cancellable folder-wide Workspace Search remain separate from
+  open-tab navigation and content search.
