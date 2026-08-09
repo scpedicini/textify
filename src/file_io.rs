@@ -74,7 +74,7 @@ pub fn load_utf8(path: &Path, policy: FilePolicy) -> Result<LoadedFile> {
 
     if file_metadata.len() >= policy.huge_file_bytes {
         bail!(
-            "{} is {:.1} MiB; Textify's paged huge-file viewer is not available yet",
+            "{} is {:.1} MiB and must be opened with Textify's paged huge-file viewer",
             path.display(),
             file_metadata.len() as f64 / (1024.0 * 1024.0)
         );

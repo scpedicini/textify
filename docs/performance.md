@@ -32,3 +32,14 @@ The native UI logs first workspace paint plus per-file open and save durations t
 Typing latency and scroll frame pacing remain interaction measurements: collect them with Apple
 Instruments using the generated fixtures when changing GPUI, the editor fork, text layout, or
 rendering code. Dependency upgrades are not accepted solely on core benchmark results.
+
+## Huge-file viewer baseline — 2026-08-08
+
+A native debug build opened a sparse 512 MiB UTF-8 log through the paged viewer. First workspace
+paint took 1.47 ms. After the background sparse line index completed, that Textify process used
+63.4 MiB resident memory. The viewer reads fixed-size pages with positional I/O and never creates
+a document-sized string or rope, so resident memory is independent of the file's total size.
+
+Core tests cover bounded pages, sparse line/byte navigation, search matches that cross read-buffer
+boundaries, cancellation, UTF-8 range validation, and copy/edit limits. Repeat the UI measurement
+with a real multi-gigabyte log when changing the page layout, indexing stride, or viewer controls.

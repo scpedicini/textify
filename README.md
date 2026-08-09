@@ -3,10 +3,18 @@
 Textify is a fast, focused native text editor for macOS, built in Rust with GPUI and
 GPUI Component.
 
-The first milestone is deliberately narrow: excellent text editing, safe file handling,
-Markdown and JSON highlighting, multiple tabs, and explicit behavior for large files. Project
-indexing, extensions, Git integration, and LSP features come after the editor foundation has a
-measured performance baseline.
+Textify currently provides safe file handling, Markdown and JSON highlighting, multiple tabs,
+external-change detection, session restore, measured large-file behavior, and a bounded-memory
+viewer for files at or above 512 MiB. Project, command, search, keymap, Git, and language-server
+workflows are tracked in the remaining milestones.
+
+## Huge files
+
+Files at or above 512 MiB open in a separate read-only paged viewer. Its toolbar supports page
+navigation, streaming find, go-to-line or `b:byte`, copying a page or selected lines, and reopening
+the visible/selected range as a temporary editable tab. The sparse line index, search, and line
+navigation run in cancellable background tasks; the complete file is never loaded into the editor
+rope.
 
 ## Run it
 

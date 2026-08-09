@@ -71,6 +71,8 @@ Exit criteria:
 
 ## Milestone 3 — huge-file viewer
 
+Status: implemented and bounded-memory smoke tested on 2026-08-08.
+
 - Add a read-only memory-mapped/paged viewer for files at or above 512 MiB.
 - Virtualize visible lines and expose streaming find, go-to-line/byte, and copy.
 - Allow reopening a selected range as an editable temporary document.
@@ -80,6 +82,15 @@ Exit criteria:
 
 - Opening a multi-gigabyte UTF-8 log has bounded resident memory.
 - Search and navigation are cancellable and do not block the UI thread.
+
+Implementation notes:
+
+- Files are read with positional, fixed-size page buffers; their contents never enter the normal
+  rope-backed editor unless the user explicitly chooses an editable range.
+- A sparse line index, streaming search, and line navigation run on background executors with
+  cancellation tokens.
+- The UI renders at most 512 page lines through a virtualized uniform list. Copy and temporary
+  edit ranges have explicit byte limits.
 
 ## Milestone 4 — multicursor architecture gate
 

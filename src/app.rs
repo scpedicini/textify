@@ -1,16 +1,19 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
+use anyhow::Context as _;
+
 use gpui::{
-    App, AppContext as _, Application, Context, InteractiveElement as _, IntoElement, KeyBinding,
-    ParentElement as _, Render, Styled, Subscription, Timer, Window, WindowBounds, WindowOptions,
-    actions, div, prelude::FluentBuilder as _, px, size,
+    App, AppContext as _, Application, Context, Entity, InteractiveElement as _, IntoElement,
+    KeyBinding, ParentElement as _, Render, Styled, Subscription, Timer, Window, WindowBounds,
+    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, Root, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar,
-    WindowExt,
+    ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
+    ThemeMode, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
@@ -21,12 +24,14 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use crate::{
-    document::{DocumentMetadata, FileAnalysis, FileMode, FilePolicy, Language},
+    document::{DocumentMetadata, FileAnalysis, FileMode, FilePolicy, Language, LineEnding},
     editor::EditorBackend,
     file_io::{
         DiskRevision, ExternalFileChanged, LoadedFile, load_utf8, optional_disk_revision,
         save_atomic_chunks_checked, suggested_save_path,
     },
+    huge_file::{HugeFile, MAX_EDIT_RANGE_BYTES},
+    huge_viewer::{HugeFileView, HugeViewerEvent},
     session::{SessionState, load_session, save_session},
     settings::{TextifySettings, textify_data_dir},
     watcher::FileWatcher,
@@ -47,6 +52,25 @@ actions!(
 
 const WINDOW_TITLE: &str = "Textify IDE";
 
+fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
+    let metadata = fs::metadata(path)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("could not inspect {}", path.display()))?;
+    if metadata.len() >= policy.huge_file_bytes {
+        let analysis = FileAnalysis {
+            bytes: metadata.len(),
+            lines: 0,
+            longest_line_bytes: 0,
+            line_ending: LineEnding::None,
+        };
+        return Ok(OpenedFile::Huge {
+            file: HugeFile::open(path)?,
+            metadata: DocumentMetadata::new(Some(path.to_path_buf()), analysis, policy),
+        });
+    }
+    load_utf8(path, policy).map(OpenedFile::Editable)
+}
+
 struct EditorDocument {
     id: u64,
     untitled_number: usize,
@@ -59,7 +83,9 @@ struct EditorDocument {
     external_changed: bool,
     programmatic_change: bool,
     label_override: Option<String>,
+    huge_viewer: Option<Entity<HugeFileView>>,
     _subscription: Subscription,
+    _huge_subscription: Option<Subscription>,
 }
 
 struct DocumentSeed {
@@ -68,6 +94,14 @@ struct DocumentSeed {
     disk_revision: Option<DiskRevision>,
     label_override: Option<String>,
     untitled_number: usize,
+}
+
+enum OpenedFile {
+    Editable(LoadedFile),
+    Huge {
+        file: HugeFile,
+        metadata: DocumentMetadata,
+    },
 }
 
 impl EditorDocument {
@@ -137,6 +171,10 @@ impl Workspace {
         &self.documents[self.active_index]
     }
 
+    fn active_document_mut(&mut self) -> &mut EditorDocument {
+        &mut self.documents[self.active_index]
+    }
+
     fn active_id(&self) -> u64 {
         self.active_document().id
     }
@@ -191,6 +229,62 @@ impl Workspace {
         self.persist_session(cx);
     }
 
+    fn push_opened(&mut self, opened: OpenedFile, window: &mut Window, cx: &mut Context<Self>) {
+        match opened {
+            OpenedFile::Editable(loaded) => self.push_loaded(loaded, window, cx),
+            OpenedFile::Huge { file, metadata } => self.push_huge(file, metadata, window, cx),
+        }
+    }
+
+    fn push_huge(
+        &mut self,
+        file: HugeFile,
+        metadata: DocumentMetadata,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.metadata.path == metadata.path)
+        {
+            self.set_active_index(index, window, cx);
+            return;
+        }
+        let viewer = match HugeFileView::new_entity(file, window, cx) {
+            Ok(viewer) => viewer,
+            Err(error) => {
+                Self::show_error("Could not open huge file", error, window, cx);
+                return;
+            }
+        };
+        self.push_document(
+            DocumentSeed {
+                text: String::new(),
+                metadata,
+                disk_revision: None,
+                label_override: None,
+                untitled_number: 0,
+            },
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(
+            &viewer,
+            window,
+            move |workspace, _, event, window, cx| match event {
+                HugeViewerEvent::EditRange { path, range } => {
+                    workspace.open_huge_range(path.clone(), range.clone(), window, cx);
+                }
+            },
+        );
+        let document = self.active_document_mut();
+        document.huge_viewer = Some(viewer);
+        document._huge_subscription = Some(subscription);
+        self.persist_session(cx);
+        cx.notify();
+    }
+
     fn push_document(&mut self, seed: DocumentSeed, window: &mut Window, cx: &mut Context<Self>) {
         let DocumentSeed {
             text,
@@ -199,6 +293,7 @@ impl Workspace {
             label_override,
             untitled_number,
         } = seed;
+        let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
         self.next_id += 1;
         let editor = EditorBackend::new(
@@ -236,12 +331,16 @@ impl Workspace {
             external_changed: false,
             programmatic_change: false,
             label_override,
+            huge_viewer: None,
             _subscription: subscription,
+            _huge_subscription: None,
         });
         self.active_index = self.documents.len() - 1;
         self.update_window_title(window);
 
-        window.defer(cx, move |window, cx| editor.focus(window, cx));
+        if focus_editor {
+            window.defer(cx, move |window, cx| editor.focus(window, cx));
+        }
         cx.notify();
     }
 
@@ -251,7 +350,9 @@ impl Workspace {
         }
 
         self.active_index = index;
-        self.active_document().editor.focus(window, cx);
+        if self.active_document().huge_viewer.is_none() {
+            self.active_document().editor.focus(window, cx);
+        }
         self.update_window_title(window);
         self.persist_session(cx);
         cx.notify();
@@ -303,7 +404,7 @@ impl Workspace {
             let loaded = session
                 .open_paths
                 .into_iter()
-                .map(|path| load_utf8(&path, policy).map_err(|error| (path, error)))
+                .map(|path| open_file(&path, policy).map_err(|error| (path, error)))
                 .collect::<Vec<_>>();
             Ok::<_, anyhow::Error>((active_index, loaded))
         });
@@ -326,7 +427,7 @@ impl Workspace {
                             }
                             for result in loaded {
                                 match result {
-                                    Ok(loaded) => workspace.push_loaded(loaded, window, cx),
+                                    Ok(opened) => workspace.push_opened(opened, window, cx),
                                     Err((path, error)) => tracing::warn!(
                                         %error,
                                         path = %path.display(),
@@ -386,6 +487,9 @@ impl Workspace {
             .documents
             .iter()
             .filter_map(|document| {
+                if document.huge_viewer.is_some() {
+                    return None;
+                }
                 let path = document.metadata.path.as_ref()?;
                 let parent = path.parent().unwrap_or_else(|| Path::new("."));
                 directories
@@ -595,6 +699,55 @@ impl Workspace {
         .detach();
     }
 
+    fn open_huge_range(
+        &mut self,
+        path: PathBuf,
+        range: std::ops::Range<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let display_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Huge file")
+            .to_owned();
+        let label = format!("{display_name} bytes {}–{}", range.start, range.end);
+        let task = cx.background_spawn(async move {
+            let file = HugeFile::open(&path)?;
+            file.read_utf8_range(range, MAX_EDIT_RANGE_BYTES)
+        });
+        cx.spawn_in(window, async move |workspace, window| {
+            let text = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| match text {
+                    Ok(text) => {
+                        let analysis = FileAnalysis::from_bytes(text.as_bytes());
+                        let metadata = DocumentMetadata::new(None, analysis, workspace.policy);
+                        let untitled_number = workspace.next_untitled_number;
+                        workspace.next_untitled_number += 1;
+                        workspace.push_document(
+                            DocumentSeed {
+                                text,
+                                metadata,
+                                disk_revision: None,
+                                label_override: Some(label),
+                                untitled_number,
+                            },
+                            window,
+                            cx,
+                        );
+                        workspace.active_document_mut().dirty = true;
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        Self::show_error("Could not edit selected range", error, window, cx)
+                    }
+                })
+                .ok()
+        })
+        .detach();
+    }
+
     fn on_new(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
         self.add_untitled(window, cx);
     }
@@ -612,19 +765,19 @@ impl Workspace {
             let path = receiver.await.ok()?.ok()??.into_iter().next()?;
             let started_at = Instant::now();
             let load_path = path.clone();
-            let task = window.background_spawn(async move { load_utf8(&load_path, policy) });
+            let task = window.background_spawn(async move { open_file(&load_path, policy) });
             let loaded = task.await;
             let elapsed = started_at.elapsed();
 
             workspace
                 .update_in(window, |workspace, window, cx| match loaded {
-                    Ok(loaded) => {
+                    Ok(opened) => {
                         tracing::info!(
                             path = %path.display(),
                             elapsed_ms = elapsed.as_secs_f64() * 1000.0,
                             "opened document"
                         );
-                        workspace.push_loaded(loaded, window, cx)
+                        workspace.push_opened(opened, window, cx)
                     }
                     Err(error) => Self::show_error("Could not open file", error, window, cx),
                 })
@@ -634,6 +787,15 @@ impl Workspace {
     }
 
     fn on_save(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_document().huge_viewer.is_some() {
+            Self::show_error(
+                "Huge file viewer is read-only",
+                anyhow::anyhow!("Select lines and use Edit Selection to open an editable copy."),
+                window,
+                cx,
+            );
+            return;
+        }
         let id = self.active_id();
         if let Some(path) = self.active_document().metadata.path.clone() {
             self.start_save(id, path, window, cx);
@@ -643,6 +805,10 @@ impl Workspace {
     }
 
     fn on_save_as(&mut self, _: &SaveDocumentAs, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_document().huge_viewer.is_some() {
+            self.on_save(&SaveDocument, window, cx);
+            return;
+        }
         self.prompt_save_as(self.active_id(), window, cx);
     }
 
@@ -817,7 +983,9 @@ impl Workspace {
             self.active_index = self.active_index.min(self.documents.len() - 1);
         }
 
-        self.active_document().editor.focus(window, cx);
+        if self.active_document().huge_viewer.is_none() {
+            self.active_document().editor.focus(window, cx);
+        }
         self.update_window_title(window);
         self.persist_session(cx);
         cx.notify();
@@ -915,10 +1083,13 @@ impl Workspace {
                     .icon(IconName::File)
                     .label(if self.active_document().saving {
                         "Saving…"
+                    } else if self.active_document().huge_viewer.is_some() {
+                        "Read Only"
                     } else {
                         "Save"
                     })
                     .loading(self.active_document().saving)
+                    .disabled(self.active_document().huge_viewer.is_some())
                     .tooltip_with_action("Save file", &SaveDocument, None)
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.on_save(&SaveDocument, window, cx)
@@ -928,9 +1099,22 @@ impl Workspace {
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let document = self.active_document();
-        let input = document.editor.state().read(cx);
-        let cursor = input.cursor_position();
-        let line_count = input.text().lines_len();
+        let (line_summary, position_summary) = if let Some(viewer) = &document.huge_viewer {
+            let viewer = viewer.read(cx);
+            let lines = viewer
+                .line_count()
+                .map(|lines| format!("{lines} lines"))
+                .unwrap_or_else(|| "Indexing lines…".to_owned());
+            let range = viewer.visible_range();
+            (lines, format!("Bytes {}–{}", range.start, range.end))
+        } else {
+            let input = document.editor.state().read(cx);
+            let cursor = input.cursor_position();
+            (
+                format!("{} lines", input.text().lines_len()),
+                format!("Ln {}, Col {}", cursor.line + 1, cursor.character + 1),
+            )
+        };
         let parser_suppressed = document.metadata.language != Language::PlainText
             && document.metadata.parser_name(self.policy).is_none();
         let path = document
@@ -994,12 +1178,8 @@ impl Workspace {
                 h_flex()
                     .flex_shrink_0()
                     .gap_4()
-                    .child(format!("{} lines", line_count))
-                    .child(format!(
-                        "Ln {}, Col {}",
-                        cursor.line + 1,
-                        cursor.character + 1
-                    ))
+                    .child(line_summary)
+                    .child(position_summary)
                     .child("UTF-8")
                     .child(document.metadata.analysis.line_ending.label())
                     .child(document.metadata.language.label()),
@@ -1017,6 +1197,12 @@ impl Render for Workspace {
             );
         }
         let editor = self.active_document().editor.clone();
+        let content = self
+            .active_document()
+            .huge_viewer
+            .clone()
+            .map(|viewer| viewer.into_any_element())
+            .unwrap_or_else(|| editor.render(cx).size_full().into_any_element());
 
         v_flex()
             .id("textify-workspace")
@@ -1066,7 +1252,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .overflow_hidden()
                     .bg(cx.theme().background)
-                    .child(editor.render(cx).size_full()),
+                    .child(content),
             )
             .child(self.render_status(cx))
     }
@@ -1120,4 +1306,31 @@ pub fn run() {
         .detach();
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_file_routes_at_the_huge_file_threshold() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let small = directory.path().join("small.txt");
+        let huge = directory.path().join("huge.txt");
+        fs::write(&small, vec![b'x'; 63]).expect("small fixture");
+        fs::write(&huge, vec![b'x'; 64]).expect("huge fixture");
+        let policy = FilePolicy {
+            huge_file_bytes: 64,
+            ..FilePolicy::default()
+        };
+
+        assert!(matches!(
+            open_file(&small, policy).expect("small"),
+            OpenedFile::Editable(_)
+        ));
+        assert!(matches!(
+            open_file(&huge, policy).expect("huge"),
+            OpenedFile::Huge { .. }
+        ));
+    }
 }
