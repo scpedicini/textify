@@ -850,8 +850,11 @@ impl InputState {
             let wrap_width = self
                 .last_layout
                 .as_ref()
-                .and_then(|b| b.wrap_width)
-                .unwrap_or(self.input_bounds.size.width);
+                .map(|layout| {
+                    self.input_bounds.size.width - layout.line_number_width - RIGHT_MARGIN
+                })
+                .unwrap_or(self.input_bounds.size.width - RIGHT_MARGIN)
+                .max(px(0.));
 
             self.text_wrapper.set_wrap_width(Some(wrap_width), cx);
 
@@ -2445,6 +2448,30 @@ mod tests {
                 input.replace_and_mark_text_in_range(None, "あ", None, window, cx);
                 assert!(input.secondary_selected_ranges.is_empty());
                 assert!(input.ime_marked_range.is_some());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn enabling_soft_wrap_uses_the_rendered_text_width(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .code_editor("text")
+                .soft_wrap(false)
+                .default_value("a long line that should reflow cleanly at the editor edge")
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let layout = input.last_layout.as_ref().expect("initial text layout");
+                let expected =
+                    (input.input_bounds.size.width - layout.line_number_width - RIGHT_MARGIN)
+                        .max(px(0.));
+
+                input.set_soft_wrap(true, window, cx);
+
+                assert_eq!(input.text_wrapper.wrap_width(), Some(expected));
             });
         });
     }

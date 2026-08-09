@@ -104,6 +104,11 @@ impl TextWrapper {
         self.update_all(&self.text.clone(), cx);
     }
 
+    #[cfg(test)]
+    pub(super) fn wrap_width(&self) -> Option<Pixels> {
+        self.wrap_width
+    }
+
     pub(super) fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
         if self.font.eq(&font) && self.font_size == font_size {
             return;
