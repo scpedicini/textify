@@ -1,5 +1,26 @@
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextEncoding {
+    #[default]
+    Utf8,
+    Cp437,
+}
+
+impl TextEncoding {
+    pub const ALL: [Self; 2] = [Self::Utf8, Self::Cp437];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8",
+            Self::Cp437 => "CP437",
+        }
+    }
+}
+
 /// The initial editor intentionally ships only the grammars we can continuously benchmark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -247,17 +268,28 @@ impl FilePolicy {
 pub struct DocumentMetadata {
     pub path: Option<PathBuf>,
     pub language: Language,
+    pub encoding: TextEncoding,
     pub mode: FileMode,
     pub analysis: FileAnalysis,
 }
 
 impl DocumentMetadata {
     pub fn new(path: Option<PathBuf>, analysis: FileAnalysis, policy: FilePolicy) -> Self {
+        Self::new_with_encoding(path, analysis, policy, TextEncoding::Utf8)
+    }
+
+    pub fn new_with_encoding(
+        path: Option<PathBuf>,
+        analysis: FileAnalysis,
+        policy: FilePolicy,
+        encoding: TextEncoding,
+    ) -> Self {
         let language = Language::detect(path.as_deref());
         let mode = policy.mode_for(analysis);
         Self {
             path,
             language,
+            encoding,
             mode,
             analysis,
         }
@@ -305,6 +337,13 @@ mod tests {
             Language::PlainText
         );
         assert_eq!(Language::detect(None), Language::PlainText);
+    }
+
+    #[test]
+    fn text_encoding_labels_are_explicit() {
+        assert_eq!(TextEncoding::ALL, [TextEncoding::Utf8, TextEncoding::Cp437]);
+        assert_eq!(TextEncoding::Utf8.label(), "UTF-8");
+        assert_eq!(TextEncoding::Cp437.label(), "CP437");
     }
 
     #[test]

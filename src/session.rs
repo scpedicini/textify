@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::document::TextEncoding;
 use crate::file_io::save_atomic;
 
 const SESSION_VERSION: u32 = 2;
@@ -23,6 +24,8 @@ pub struct SessionTab {
     #[serde(default)]
     pub dirty: bool,
     #[serde(default)]
+    pub encoding: TextEncoding,
+    #[serde(default)]
     pub font_size_override: Option<u16>,
     #[serde(default)]
     pub word_wrap: bool,
@@ -36,6 +39,7 @@ impl SessionTab {
             untitled_number: 0,
             label_override: None,
             dirty: false,
+            encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
         }
@@ -175,6 +179,7 @@ mod tests {
             untitled_number: 4,
             label_override: Some("Draft".to_owned()),
             dirty: true,
+            encoding: TextEncoding::Cp437,
             font_size_override: Some(18),
             word_wrap: true,
         };

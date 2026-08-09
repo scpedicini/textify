@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     document::{FileMode, FilePolicy},
-    file_io::{load_utf8, save_atomic_chunks},
+    file_io::{load_text, save_atomic_chunks},
     session::{SessionState, save_session},
 };
 
@@ -131,7 +131,7 @@ pub fn measure_corpus(corpus: &GeneratedCorpus) -> Result<Vec<FileMeasurement>> 
         .iter()
         .map(|path| {
             let open_started = Instant::now();
-            let loaded = load_utf8(path, policy)?;
+            let loaded = load_text(path, policy)?;
             let open = open_started.elapsed();
 
             let save_path = path.with_extension("textify-save.tmp");
@@ -215,9 +215,9 @@ mod tests {
         let corpus = generate_corpus(directory.path(), CorpusSpec::tiny()).expect("corpus");
         assert_eq!(corpus.files.len(), 6);
 
-        let json = load_utf8(&corpus.files[0], FilePolicy::default()).expect("json");
+        let json = load_text(&corpus.files[0], FilePolicy::default()).expect("json");
         assert_eq!(json.metadata.language, Language::Json);
-        let long_line = load_utf8(&corpus.files[4], FilePolicy::default()).expect("line");
+        let long_line = load_text(&corpus.files[4], FilePolicy::default()).expect("line");
         assert_eq!(long_line.metadata.analysis.longest_line_bytes, 1_024);
         assert!(corpus.session_path.is_file());
     }

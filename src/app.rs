@@ -35,11 +35,13 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use crate::{
-    document::{DocumentMetadata, FileAnalysis, FileMode, FilePolicy, Language, LineEnding},
+    document::{
+        DocumentMetadata, FileAnalysis, FileMode, FilePolicy, Language, LineEnding, TextEncoding,
+    },
     editor::{EditorBackend, EditorConfiguration},
     file_io::{
-        DiskRevision, ExternalFileChanged, LoadedFile, load_utf8, optional_disk_revision,
-        save_atomic_chunks_checked, suggested_save_path,
+        DiskRevision, ExternalFileChanged, LoadedFile, load_text, load_text_as,
+        optional_disk_revision, save_atomic_encoded_chunks_checked, suggested_save_path,
     },
     huge_file::{HugeFile, MAX_EDIT_RANGE_BYTES},
     huge_viewer::{HugeFileView, HugeViewerEvent},
@@ -252,6 +254,14 @@ fn first_line_title(chars: impl IntoIterator<Item = char>) -> Option<String> {
 }
 
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
+    open_file_with_encoding(path, policy, None)
+}
+
+fn open_file_with_encoding(
+    path: &Path,
+    policy: FilePolicy,
+    encoding: Option<TextEncoding>,
+) -> anyhow::Result<OpenedFile> {
     let metadata = fs::metadata(path)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("could not inspect {}", path.display()))?;
@@ -267,7 +277,11 @@ fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
             metadata: DocumentMetadata::new(Some(path.to_path_buf()), analysis, policy),
         });
     }
-    load_utf8(path, policy).map(OpenedFile::Editable)
+    match encoding {
+        Some(encoding) => load_text_as(path, policy, encoding),
+        None => load_text(path, policy),
+    }
+    .map(OpenedFile::Editable)
 }
 
 fn load_dropped_paths(
@@ -379,7 +393,8 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
     if let Some(recovery_path) = tab.recovery_path.clone() {
         let text = load_snapshot(&recovery_path)?;
         let analysis = FileAnalysis::from_bytes(text.as_bytes());
-        let metadata = DocumentMetadata::new(tab.path.clone(), analysis, policy);
+        let metadata =
+            DocumentMetadata::new_with_encoding(tab.path.clone(), analysis, policy, tab.encoding);
         let disk_revision = tab
             .path
             .as_deref()
@@ -400,7 +415,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
     }
 
     if let Some(path) = tab.path {
-        return open_file(&path, policy)
+        return open_file_with_encoding(&path, policy, Some(tab.encoding))
             .map(|opened| RestoredFile::Opened(opened, tab.font_size_override, tab.word_wrap));
     }
 
@@ -423,6 +438,7 @@ enum OverlayMode {
     Commands,
     OpenTabs,
     RecentFiles,
+    Encodings,
     OpenTabSearch,
     WorkspaceSearch,
 }
@@ -457,6 +473,7 @@ enum OverlayTarget {
     Command(IdeCommand),
     Tab(u64),
     File(PathBuf),
+    Encoding { id: u64, encoding: TextEncoding },
     Search(WorkspaceMatch),
     OpenTabSearch { id: u64, location: TextLocation },
 }
@@ -979,6 +996,7 @@ impl Workspace {
                         dirty: document.dirty
                             && recovery_enabled
                             && document.recovery_path.is_some(),
+                        encoding: document.metadata.encoding,
                         font_size_override: document.font_size_override,
                         word_wrap: document.word_wrap,
                     },
@@ -1434,14 +1452,15 @@ impl Workspace {
     }
 
     fn reload_document(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self
-            .document_index(id)
-            .and_then(|index| self.documents[index].metadata.path.clone())
-        else {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        let Some(path) = self.documents[index].metadata.path.clone() else {
             return;
         };
         let policy = self.policy;
-        let task = cx.background_spawn(async move { load_utf8(&path, policy) });
+        let encoding = self.documents[index].metadata.encoding;
+        let task = cx.background_spawn(async move { load_text_as(&path, policy, encoding) });
         cx.spawn_in(window, async move |workspace, window| {
             let loaded = task.await;
             workspace
@@ -1457,13 +1476,20 @@ impl Workspace {
                         document.programmatic_change = true;
                         editor.set_text(loaded.text, window, cx);
                         editor.set_parser(parser, cx);
-                        document.programmatic_change = false;
                         document.metadata = loaded.metadata;
                         document.disk_revision = Some(loaded.disk_revision);
                         document.external_changed = false;
                         document.dirty = false;
                         document.revision = document.revision.wrapping_add(1);
                         editor.set_soft_wrap(document.word_wrap && normal_mode, window, cx);
+                        let workspace_entity = cx.entity();
+                        window.defer(cx, move |_, cx| {
+                            workspace_entity.update(cx, |workspace, _| {
+                                if let Some(index) = workspace.document_index(id) {
+                                    workspace.documents[index].programmatic_change = false;
+                                }
+                            });
+                        });
                         workspace.update_window_title(window, cx);
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
@@ -1487,8 +1513,9 @@ impl Workspace {
         let comparison_name = name.clone();
         let local = self.documents[index].editor.rope(cx);
         let policy = self.policy;
+        let encoding = self.documents[index].metadata.encoding;
         let task = cx.background_spawn(async move {
-            let disk = match load_utf8(&path, policy) {
+            let disk = match load_text_as(&path, policy, encoding) {
                 Ok(loaded) => loaded.text,
                 Err(error) => format!("<disk version unavailable: {error}>"),
             };
@@ -1798,6 +1825,7 @@ impl Workspace {
             OverlayMode::Commands => "Type a command",
             OverlayMode::OpenTabs => "Find an open tab",
             OverlayMode::RecentFiles => "Find a recent file",
+            OverlayMode::Encodings => "Choose an encoding",
             OverlayMode::OpenTabSearch => "Search text across open tabs",
             OverlayMode::WorkspaceSearch => "Search text in the workspace",
         };
@@ -1881,6 +1909,24 @@ impl Workspace {
                         subtitle: path.display().to_string(),
                         search_text: path.display().to_string().to_lowercase(),
                         target: OverlayTarget::File(path),
+                    })
+                    .collect();
+                self.overlay_items = matching_open_tab_items(items, &query);
+            }
+            OverlayMode::Encodings => {
+                let id = self.active_id();
+                let current = self.active_document().metadata.encoding;
+                let items = TextEncoding::ALL
+                    .into_iter()
+                    .map(|encoding| OverlayItem {
+                        title: encoding.label().to_owned(),
+                        subtitle: if encoding == current {
+                            "Current encoding".to_owned()
+                        } else {
+                            "Reopen the file from disk with this encoding".to_owned()
+                        },
+                        search_text: encoding.label().to_ascii_lowercase(),
+                        target: OverlayTarget::Encoding { id, encoding },
                     })
                     .collect();
                 self.overlay_items = matching_open_tab_items(items, &query);
@@ -2113,6 +2159,9 @@ impl Workspace {
                 }
             }
             OverlayTarget::File(path) => self.open_path_at(path, None, window, cx),
+            OverlayTarget::Encoding { id, encoding } => {
+                self.reopen_document_as_encoding(id, encoding, window, cx)
+            }
             OverlayTarget::Search(item) => self.open_path_at(
                 item.path,
                 Some(TextLocation {
@@ -2394,6 +2443,116 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.show_overlay(OverlayMode::WorkspaceSearch, window, cx);
+    }
+
+    fn show_encoding_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let document = self.active_document();
+        if document.huge_viewer.is_some() {
+            self.status_message = Some(
+                "Encoding changes are unavailable in the read-only huge-file viewer".to_owned(),
+            );
+            cx.notify();
+            return;
+        }
+        if document.metadata.path.is_none() {
+            self.status_message =
+                Some("Save this document before reopening it with another encoding".to_owned());
+            cx.notify();
+            return;
+        }
+        if document.dirty {
+            self.status_message = Some(
+                "Save or discard this tab's changes before reopening it with another encoding"
+                    .to_owned(),
+            );
+            cx.notify();
+            return;
+        }
+        self.show_overlay(OverlayMode::Encodings, window, cx);
+    }
+
+    fn reopen_document_as_encoding(
+        &mut self,
+        id: u64,
+        encoding: TextEncoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        let document = &self.documents[index];
+        let Some(path) = document.metadata.path.clone() else {
+            return;
+        };
+        if document.dirty || document.huge_viewer.is_some() {
+            self.status_message =
+                Some("The document changed before it could be reopened".to_owned());
+            cx.notify();
+            return;
+        }
+        if document.metadata.encoding == encoding {
+            self.status_message = Some(format!("Already open as {}", encoding.label()));
+            document.editor.focus(window, cx);
+            cx.notify();
+            return;
+        }
+
+        let revision = document.revision;
+        let policy = self.policy;
+        self.status_message = Some(format!("Reopening as {}…", encoding.label()));
+        let task = cx.background_spawn(async move { load_text_as(&path, policy, encoding) });
+        cx.notify();
+        cx.spawn_in(window, async move |workspace, window| {
+            let loaded = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| match loaded {
+                    Ok(loaded) => {
+                        let Some(index) = workspace.document_index(id) else {
+                            return;
+                        };
+                        if workspace.documents[index].dirty
+                            || workspace.documents[index].revision != revision
+                        {
+                            workspace.status_message =
+                                Some("The document changed before it could be reopened".to_owned());
+                            cx.notify();
+                            return;
+                        }
+                        let editor = workspace.documents[index].editor.clone();
+                        let parser = loaded.metadata.parser_name(workspace.policy);
+                        let normal_mode = loaded.metadata.mode == FileMode::Normal;
+                        let document = &mut workspace.documents[index];
+                        document.programmatic_change = true;
+                        editor.set_text(loaded.text, window, cx);
+                        editor.set_parser(parser, cx);
+                        document.metadata = loaded.metadata;
+                        document.disk_revision = Some(loaded.disk_revision);
+                        document.external_changed = false;
+                        document.dirty = false;
+                        document.revision = document.revision.wrapping_add(1);
+                        editor.set_soft_wrap(document.word_wrap && normal_mode, window, cx);
+                        editor.focus(window, cx);
+                        let workspace_entity = cx.entity();
+                        window.defer(cx, move |_, cx| {
+                            workspace_entity.update(cx, |workspace, _| {
+                                if let Some(index) = workspace.document_index(id) {
+                                    workspace.documents[index].programmatic_change = false;
+                                }
+                            });
+                        });
+                        workspace.status_message =
+                            Some(format!("Reopened as {}", encoding.label()));
+                        workspace.persist_session(cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        Self::show_error("Could not reopen file", error, window, cx);
+                    }
+                })
+                .ok()
+        })
+        .detach();
     }
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
@@ -3095,6 +3254,7 @@ impl Workspace {
 
         document.saving = true;
         let revision = document.revision;
+        let encoding = document.metadata.encoding;
         let rope = document.editor.rope(cx);
         let expected = (document.metadata.path.as_deref() == Some(path.as_path()))
             .then(|| document.disk_revision.clone())
@@ -3102,7 +3262,12 @@ impl Workspace {
         let started_at = Instant::now();
         let task = cx.background_spawn(async move {
             let analysis = FileAnalysis::from_str_chunks(rope.chunks());
-            let result = save_atomic_chunks_checked(&path, rope.chunks(), expected.as_ref());
+            let result = save_atomic_encoded_chunks_checked(
+                &path,
+                rope.chunks(),
+                encoding,
+                expected.as_ref(),
+            );
             (path, analysis, result, started_at.elapsed())
         });
         let policy = self.policy;
@@ -3116,8 +3281,14 @@ impl Workspace {
                         let Some(index) = workspace.document_index(id) else {
                             return;
                         };
-                        let metadata =
-                            DocumentMetadata::new(Some(path.clone()), analysis, workspace.policy);
+                        let mut analysis = analysis;
+                        analysis.bytes = disk_revision.bytes;
+                        let metadata = DocumentMetadata::new_with_encoding(
+                            Some(path.clone()),
+                            analysis,
+                            workspace.policy,
+                            encoding,
+                        );
                         let parser = metadata.parser_name(policy);
                         let normal_mode = metadata.mode == FileMode::Normal;
                         let editor = workspace.documents[index].editor.clone();
@@ -3618,7 +3789,19 @@ impl Workspace {
                                 workspace.on_toggle_word_wrap(&ToggleWordWrap, window, cx)
                             })),
                     )
-                    .children(visibility.encoding.then_some("UTF-8"))
+                    .children(visibility.encoding.then(|| {
+                        Button::new("change-text-encoding")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .label(document.metadata.encoding.label())
+                            .disabled(document.huge_viewer.is_some())
+                            .debug_selector(|| "encoding-status-control".to_owned())
+                            .tooltip("Reopen file with another encoding")
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.show_encoding_picker(window, cx)
+                            }))
+                    }))
                     .children(
                         visibility
                             .line_ending
@@ -3777,6 +3960,7 @@ impl Workspace {
             Some(OverlayMode::Commands) => "COMMAND PALETTE",
             Some(OverlayMode::OpenTabs) => "OPEN TABS",
             Some(OverlayMode::RecentFiles) => "OPEN RECENT",
+            Some(OverlayMode::Encodings) => "REOPEN WITH ENCODING",
             Some(OverlayMode::OpenTabSearch) => "SEARCH OPEN TABS",
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
@@ -5354,7 +5538,7 @@ mod tests {
         let valid = directory.path().join("valid.txt");
         let invalid = directory.path().join("invalid.txt");
         fs::write(&valid, "hello\n").expect("valid fixture");
-        fs::write(&invalid, [0xff, 0xfe]).expect("invalid fixture");
+        fs::write(&invalid, [0x89, b'P', b'N', b'G', 0, 0xff]).expect("invalid fixture");
 
         let results = load_dropped_paths(
             vec![
@@ -5390,6 +5574,7 @@ mod tests {
                 untitled_number: 0,
                 label_override: None,
                 dirty: true,
+                encoding: TextEncoding::Cp437,
                 font_size_override: Some(17),
                 word_wrap: true,
             },
@@ -5403,11 +5588,40 @@ mod tests {
         assert_eq!(seed.text, "unsaved 🦀\n");
         assert_eq!(seed.metadata.path.as_deref(), Some(path.as_path()));
         assert_eq!(seed.metadata.language, Language::Markdown);
+        assert_eq!(seed.metadata.encoding, TextEncoding::Cp437);
         assert!(seed.disk_revision.is_some());
         assert!(seed.dirty);
         assert_eq!(seed.font_size_override, Some(17));
         assert!(seed.word_wrap);
         assert_eq!(seed.recovery_path.as_deref(), Some(recovery_path.as_path()));
+    }
+
+    #[test]
+    fn clean_session_restores_an_explicit_encoding_choice() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("ambiguous.txt");
+        fs::write(&path, [0xc2, 0xa3]).expect("fixture");
+
+        let restored = restore_session_tab(
+            SessionTab {
+                path: Some(path),
+                recovery_path: None,
+                untitled_number: 0,
+                label_override: None,
+                dirty: false,
+                encoding: TextEncoding::Cp437,
+                font_size_override: None,
+                word_wrap: false,
+            },
+            FilePolicy::default(),
+        )
+        .expect("restore");
+
+        let RestoredFile::Opened(OpenedFile::Editable(loaded), None, false) = restored else {
+            panic!("expected editable restored file");
+        };
+        assert_eq!(loaded.metadata.encoding, TextEncoding::Cp437);
+        assert_eq!(loaded.text, "┬ú");
     }
 
     #[gpui::test]
@@ -5616,6 +5830,7 @@ mod tests {
             untitled_number: 1,
             label_override: None,
             dirty: false,
+            encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
         };
@@ -6400,6 +6615,75 @@ mod tests {
         cx.simulate_click(wrap_control.center(), gpui::Modifiers::none());
         workspace.update(&mut cx.cx, |workspace, _| {
             assert!(!workspace.active_document().word_wrap);
+        });
+    }
+
+    #[gpui::test]
+    fn encoding_picker_reopens_a_clean_file_with_the_selected_decoder(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("document directory");
+        let path = directory.path().join("ambiguous.txt");
+        fs::write(&path, [0xc2, 0xa3]).expect("fixture");
+        let loaded = load_text(&path, FilePolicy::default()).expect("automatic UTF-8 load");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.push_loaded(loaded, window, cx);
+            });
+        });
+        cx.simulate_resize(size(px(1180.), px(780.)));
+        cx.run_until_parked();
+        let encoding_control = cx
+            .debug_bounds("encoding-status-control")
+            .expect("visible encoding status control");
+        cx.simulate_click(encoding_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, Some(OverlayMode::Encodings));
+            assert_eq!(workspace.overlay_items.len(), TextEncoding::ALL.len());
+            let cp437_index = workspace
+                .overlay_items
+                .iter()
+                .position(|item| {
+                    matches!(
+                        &item.target,
+                        OverlayTarget::Encoding {
+                            encoding: TextEncoding::Cp437,
+                            ..
+                        }
+                    )
+                })
+                .expect("CP437 option");
+            workspace.overlay_selected_index = cp437_index;
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_document().metadata.encoding,
+                TextEncoding::Cp437
+            );
+            assert!(!workspace.active_document().dirty);
+            assert!(!workspace.active_document().programmatic_change);
+            assert_eq!(
+                workspace.active_document().editor.rope(cx).to_string(),
+                "┬ú"
+            );
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Reopened as CP437")
+            );
         });
     }
 

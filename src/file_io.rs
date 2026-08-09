@@ -9,7 +9,17 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::document::{DocumentMetadata, FileMode, FilePolicy};
+use crate::document::{DocumentMetadata, FileMode, FilePolicy, TextEncoding};
+
+const CP437_HIGH_CHARS: [char; 128] = [
+    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å', 'É', 'æ', 'Æ',
+    'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ', 'á', 'í', 'ó', 'ú', 'ñ', 'Ñ',
+    'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»', '░', '▒', '▓', '│', '┤', '╡', '╢', '╖', '╕',
+    '╣', '║', '╗', '╝', '╜', '╛', '┐', '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦',
+    '╠', '═', '╬', '╧', '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌', '█', '▄', '▌', '▐',
+    '▀', 'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩', '≡', '±',
+    '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{00a0}',
+];
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -64,7 +74,19 @@ impl DiskRevision {
     }
 }
 
-pub fn load_utf8(path: &Path, policy: FilePolicy) -> Result<LoadedFile> {
+pub fn load_text(path: &Path, policy: FilePolicy) -> Result<LoadedFile> {
+    load_text_inner(path, policy, None)
+}
+
+pub fn load_text_as(path: &Path, policy: FilePolicy, encoding: TextEncoding) -> Result<LoadedFile> {
+    load_text_inner(path, policy, Some(encoding))
+}
+
+fn load_text_inner(
+    path: &Path,
+    policy: FilePolicy,
+    requested_encoding: Option<TextEncoding>,
+) -> Result<LoadedFile> {
     let file_metadata =
         fs::metadata(path).with_context(|| format!("could not inspect {}", path.display()))?;
 
@@ -85,13 +107,25 @@ pub fn load_utf8(path: &Path, policy: FilePolicy) -> Result<LoadedFile> {
         .with_context(|| format!("could not re-inspect {} after reading", path.display()))?;
     let disk_revision = DiskRevision::from_bytes(&file_metadata, &bytes);
     let analysis = crate::document::FileAnalysis::from_bytes(&bytes);
-    let metadata = DocumentMetadata::new(Some(path.to_path_buf()), analysis, policy);
+    let encoding = requested_encoding.unwrap_or_else(|| detect_encoding(&bytes));
+    if requested_encoding.is_none()
+        && encoding == TextEncoding::Cp437
+        && !looks_like_cp437_text(&bytes)
+    {
+        bail!(
+            "{} is neither valid UTF-8 nor recognizable CP437 text",
+            path.display()
+        );
+    }
+    let metadata =
+        DocumentMetadata::new_with_encoding(Some(path.to_path_buf()), analysis, policy, encoding);
     debug_assert_ne!(metadata.mode, FileMode::HugeViewer);
 
-    let text = String::from_utf8(bytes).with_context(|| {
+    let text = decode_text(&bytes, encoding).with_context(|| {
         format!(
-            "{} is not valid UTF-8; additional encodings are not supported yet",
-            path.display()
+            "could not decode {} as {}",
+            path.display(),
+            encoding.label()
         )
     })?;
 
@@ -100,6 +134,51 @@ pub fn load_utf8(path: &Path, policy: FilePolicy) -> Result<LoadedFile> {
         metadata,
         disk_revision,
     })
+}
+
+fn detect_encoding(bytes: &[u8]) -> TextEncoding {
+    if std::str::from_utf8(bytes).is_ok() {
+        TextEncoding::Utf8
+    } else {
+        TextEncoding::Cp437
+    }
+}
+
+fn looks_like_cp437_text(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return false;
+    }
+    let suspicious_controls = bytes
+        .iter()
+        .filter(|&&byte| byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r' | 0x0c | 0x1a | 0x1b))
+        .count();
+    suspicious_controls.saturating_mul(100) <= bytes.len().max(1).saturating_mul(2)
+}
+
+fn decode_text(bytes: &[u8], encoding: TextEncoding) -> Result<String> {
+    match encoding {
+        TextEncoding::Utf8 => String::from_utf8(bytes.to_vec()).context("invalid UTF-8"),
+        TextEncoding::Cp437 => Ok(bytes
+            .iter()
+            .map(|&byte| {
+                if byte < 0x80 {
+                    char::from(byte)
+                } else {
+                    CP437_HIGH_CHARS[usize::from(byte - 0x80)]
+                }
+            })
+            .collect()),
+    }
+}
+
+fn encode_cp437(character: char) -> Option<u8> {
+    if character.is_ascii() {
+        return Some(character as u8);
+    }
+    CP437_HIGH_CHARS
+        .iter()
+        .position(|&candidate| candidate == character)
+        .map(|index| index as u8 + 0x80)
 }
 
 /// Reads a bounded-memory content fingerprint and filesystem metadata for conflict detection.
@@ -170,6 +249,55 @@ pub fn save_atomic_chunks_checked<'a>(
     chunks: impl IntoIterator<Item = &'a str>,
     expected: Option<&DiskRevision>,
 ) -> Result<DiskRevision> {
+    save_atomic_with_writer(path, expected, |temporary| {
+        for chunk in chunks {
+            temporary.write_all(chunk.as_bytes()).with_context(|| {
+                format!("could not write temporary file for {}", path.display())
+            })?;
+        }
+        Ok(())
+    })
+}
+
+pub fn save_atomic_encoded_chunks_checked<'a>(
+    path: &Path,
+    chunks: impl IntoIterator<Item = &'a str>,
+    encoding: TextEncoding,
+    expected: Option<&DiskRevision>,
+) -> Result<DiskRevision> {
+    match encoding {
+        TextEncoding::Utf8 => save_atomic_chunks_checked(path, chunks, expected),
+        TextEncoding::Cp437 => save_atomic_with_writer(path, expected, |temporary| {
+            let mut buffer = Vec::with_capacity(8192);
+            for chunk in chunks {
+                for character in chunk.chars() {
+                    let Some(byte) = encode_cp437(character) else {
+                        bail!(
+                            "character {character:?} cannot be represented in CP437; remove or replace it before saving"
+                        );
+                    };
+                    buffer.push(byte);
+                    if buffer.len() == buffer.capacity() {
+                        temporary.write_all(&buffer).with_context(|| {
+                            format!("could not write temporary file for {}", path.display())
+                        })?;
+                        buffer.clear();
+                    }
+                }
+            }
+            temporary.write_all(&buffer).with_context(|| {
+                format!("could not write temporary file for {}", path.display())
+            })?;
+            Ok(())
+        }),
+    }
+}
+
+fn save_atomic_with_writer(
+    path: &Path,
+    expected: Option<&DiskRevision>,
+    write_contents: impl FnOnce(&mut tempfile::NamedTempFile) -> Result<()>,
+) -> Result<DiskRevision> {
     if let Some(expected) = expected {
         let actual = optional_disk_revision(path)?;
         if actual.as_ref() != Some(expected) {
@@ -193,11 +321,7 @@ pub fn save_atomic_chunks_checked<'a>(
         .map(|metadata| metadata.permissions());
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("could not create a temporary file in {}", parent.display()))?;
-    for chunk in chunks {
-        temporary
-            .write_all(chunk.as_bytes())
-            .with_context(|| format!("could not write temporary file for {}", path.display()))?;
-    }
+    write_contents(&mut temporary)?;
     temporary
         .flush()
         .with_context(|| format!("could not flush temporary file for {}", path.display()))?;
@@ -244,7 +368,7 @@ mod tests {
         let path = directory.path().join("notes.md");
         fs::write(&path, "# Notes\r\n\r\nHello").expect("fixture");
 
-        let loaded = load_utf8(&path, FilePolicy::default()).expect("load fixture");
+        let loaded = load_text(&path, FilePolicy::default()).expect("load fixture");
         assert_eq!(loaded.text, "# Notes\r\n\r\nHello");
         assert_eq!(loaded.metadata.language, Language::Markdown);
         assert_eq!(loaded.metadata.mode, FileMode::Normal);
@@ -264,13 +388,68 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_is_rejected() {
+    fn binary_data_is_not_misidentified_as_cp437_text() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("bytes.dat");
-        fs::write(&path, [0xff, 0xfe]).expect("fixture");
+        fs::write(&path, [0x89, b'P', b'N', b'G', 0, 0xff]).expect("fixture");
 
-        let error = load_utf8(&path, FilePolicy::default()).expect_err("must reject invalid UTF-8");
-        assert!(error.to_string().contains("not valid UTF-8"));
+        let error = load_text(&path, FilePolicy::default()).expect_err("must reject binary data");
+        assert!(error.to_string().contains("recognizable CP437 text"));
+    }
+
+    #[test]
+    fn cp437_is_detected_decoded_and_saved_without_conversion() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("dos.txt");
+        let bytes = b"Caf\x82\r\nBox: \xda\xc4\xbf\r\n";
+        fs::write(&path, bytes).expect("fixture");
+
+        let loaded = load_text(&path, FilePolicy::default()).expect("load CP437");
+        assert_eq!(loaded.metadata.encoding, TextEncoding::Cp437);
+        assert_eq!(loaded.text, "Café\r\nBox: ┌─┐\r\n");
+        assert_eq!(loaded.metadata.analysis.line_ending, LineEnding::CrLf);
+
+        save_atomic_encoded_chunks_checked(
+            &path,
+            [&loaded.text[..]],
+            loaded.metadata.encoding,
+            Some(&loaded.disk_revision),
+        )
+        .expect("save CP437");
+        assert_eq!(fs::read(path).expect("saved bytes"), bytes);
+    }
+
+    #[test]
+    fn explicit_cp437_reopen_overrides_a_valid_utf8_guess() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("ambiguous.txt");
+        fs::write(&path, [0xc2, 0xa3]).expect("fixture");
+
+        let automatic = load_text(&path, FilePolicy::default()).expect("automatic load");
+        assert_eq!(automatic.metadata.encoding, TextEncoding::Utf8);
+        assert_eq!(automatic.text, "£");
+        let cp437 = load_text_as(&path, FilePolicy::default(), TextEncoding::Cp437)
+            .expect("explicit CP437 load");
+        assert_eq!(cp437.metadata.encoding, TextEncoding::Cp437);
+        assert_eq!(cp437.text, "┬ú");
+    }
+
+    #[test]
+    fn cp437_save_rejects_unrepresentable_edits_without_replacing_the_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("dos.txt");
+        fs::write(&path, b"original\r\n").expect("fixture");
+        let expected = disk_revision(&path).expect("revision");
+
+        let error = save_atomic_encoded_chunks_checked(
+            &path,
+            ["snowman ☃\r\n"],
+            TextEncoding::Cp437,
+            Some(&expected),
+        )
+        .expect_err("unrepresentable text must fail");
+        assert!(error.to_string().contains("cannot be represented in CP437"));
+        assert_eq!(fs::read(&path).expect("original bytes"), b"original\r\n");
     }
 
     #[test]
