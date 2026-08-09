@@ -7126,6 +7126,7 @@ name = "textify"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cocoa 0.26.0",
  "gpui",
  "gpui-component",
  "gpui-component-assets",

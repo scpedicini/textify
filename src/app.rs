@@ -101,6 +101,42 @@ fn tab_toolbar_leading_inset(show_title_bar: bool) -> f32 {
     0.
 }
 
+fn preferred_dialog_directory(
+    active_path: Option<&Path>,
+    workspace_root: Option<&Path>,
+) -> PathBuf {
+    active_path
+        .and_then(Path::parent)
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .or_else(|| workspace_root.map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(target_os = "macos")]
+fn prime_open_dialog_directory(directory: &Path) {
+    use cocoa::{
+        appkit::{NSOpenPanel, NSSavePanel},
+        base::{YES, nil},
+        foundation::{NSAutoreleasePool, NSString, NSURL},
+    };
+
+    // GPUI 0.2 does not yet carry a starting directory in PathPromptOptions. NSOpenPanel's
+    // shared panel retains this URL when GPUI configures and presents it immediately afterward.
+    unsafe {
+        let panel = NSOpenPanel::openPanel(nil);
+        let path = NSString::alloc(nil)
+            .init_str(directory.to_string_lossy().as_ref())
+            .autorelease();
+        let url = NSURL::fileURLWithPath_isDirectory_(nil, path, YES);
+        panel.setDirectoryURL(url);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prime_open_dialog_directory(_: &Path) {}
+
 fn configuration_paths_changed(changed_paths: &HashSet<PathBuf>, data_dir: &Path) -> bool {
     changed_paths.contains(&data_dir.join("settings.json"))
         || changed_paths.contains(&data_dir.join("keymap.json"))
@@ -1545,6 +1581,11 @@ impl Workspace {
     }
 
     fn on_open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = preferred_dialog_directory(
+            self.active_document().metadata.path.as_deref(),
+            self.workspace_root.as_deref(),
+        );
+        prime_open_dialog_directory(&directory);
         let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -2887,6 +2928,11 @@ impl Workspace {
     }
 
     fn on_open(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = preferred_dialog_directory(
+            self.active_document().metadata.path.as_deref(),
+            self.workspace_root.as_deref(),
+        );
+        prime_open_dialog_directory(&directory);
         let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -3006,14 +3052,10 @@ impl Workspace {
             return;
         };
         let document = &self.documents[index];
-        let directory = document
-            .metadata
-            .path
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let directory = preferred_dialog_directory(
+            document.metadata.path.as_deref(),
+            self.workspace_root.as_deref(),
+        );
         let suggested = if document.metadata.path.is_some() {
             document.display_name(cx)
         } else {
@@ -5045,6 +5087,17 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_dialog_directory_follows_the_active_file_then_workspace() {
+        let active = Path::new("/tmp/textify-active/src/main.rs");
+        let workspace = Path::new("/tmp/textify-workspace");
+        assert_eq!(
+            preferred_dialog_directory(Some(active), Some(workspace)),
+            PathBuf::from("/tmp/textify-active/src")
+        );
+        assert_eq!(preferred_dialog_directory(None, Some(workspace)), workspace);
+    }
 
     #[test]
     fn status_bar_progressively_hides_secondary_metadata() {
