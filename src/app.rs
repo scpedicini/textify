@@ -9,8 +9,8 @@ use std::{
 use anyhow::Context as _;
 
 use gpui::{
-    App, AppContext as _, Application, Context, Entity, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, ScrollDelta, ScrollWheelEvent,
+    App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
+    IntoElement, KeyBinding, ParentElement as _, Render, ScrollDelta, ScrollWheelEvent,
     StatefulInteractiveElement as _, Styled, Subscription, Timer, Window, WindowBounds,
     WindowOptions, actions, div, prelude::FluentBuilder as _, px, size, uniform_list,
 };
@@ -164,6 +164,25 @@ fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
         });
     }
     load_utf8(path, policy).map(OpenedFile::Editable)
+}
+
+fn load_dropped_paths(
+    paths: Vec<PathBuf>,
+    policy: FilePolicy,
+) -> Vec<(PathBuf, anyhow::Result<OpenedFile>)> {
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .map(|path| {
+            let result = if path.is_file() {
+                open_file(&path, policy)
+            } else {
+                Err(anyhow::anyhow!("{} is not a file", path.display()))
+            };
+            (path, result)
+        })
+        .collect()
 }
 
 struct EditorDocument {
@@ -2185,6 +2204,59 @@ impl Workspace {
         .detach();
     }
 
+    fn open_dropped_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let count = paths.len();
+        self.status_message = Some(format!("Opening {count} dropped path(s)…"));
+        let policy = self.policy;
+        let task = cx.background_spawn(async move { load_dropped_paths(paths, policy) });
+        cx.notify();
+        cx.spawn_in(window, async move |workspace, window| {
+            let results = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| {
+                    let mut opened = 0usize;
+                    let mut failures = Vec::new();
+                    for (path, result) in results {
+                        match result {
+                            Ok(file) => {
+                                workspace.push_opened(file, window, cx);
+                                opened += 1;
+                            }
+                            Err(error) => failures.push(format!("{}: {error}", path.display())),
+                        }
+                    }
+                    workspace.status_message = Some(match (opened, failures.len()) {
+                        (opened, 0) => format!("Opened {opened} dropped file(s)"),
+                        (0, failed) => format!("Could not open {failed} dropped path(s)"),
+                        (opened, failed) => {
+                            format!("Opened {opened} file(s); skipped {failed} path(s)")
+                        }
+                    });
+                    if opened == 0
+                        && let Some(message) = failures.into_iter().next()
+                    {
+                        Self::show_error(
+                            "Could not open dropped file",
+                            anyhow::anyhow!(message),
+                            window,
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
     fn on_save(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_document().huge_viewer.is_some() {
             Self::show_error(
@@ -3174,6 +3246,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
+            .on_drop(cx.listener(|workspace, paths: &ExternalPaths, window, cx| {
+                workspace.open_dropped_paths(paths.paths().to_vec(), window, cx)
+            }))
             .child(
                 TitleBar::new().child(
                     h_flex()
@@ -3427,6 +3502,34 @@ mod tests {
             open_file(&huge, policy).expect("huge"),
             OpenedFile::Huge { .. }
         ));
+    }
+
+    #[test]
+    fn dropped_paths_are_deduplicated_and_validated_off_the_ui_path() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let valid = directory.path().join("valid.txt");
+        let invalid = directory.path().join("invalid.txt");
+        fs::write(&valid, "hello\n").expect("valid fixture");
+        fs::write(&invalid, [0xff, 0xfe]).expect("invalid fixture");
+
+        let results = load_dropped_paths(
+            vec![
+                valid.clone(),
+                directory.path().to_path_buf(),
+                valid,
+                invalid,
+            ],
+            FilePolicy::default(),
+        );
+        assert_eq!(results.len(), 3);
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_err()).count(),
+            2
+        );
     }
 
     #[test]
