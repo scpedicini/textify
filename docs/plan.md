@@ -169,15 +169,29 @@ Status: implemented, regression tested, and committed on 2026-08-08.
 Exit criteria:
 
 - Every item in `TODO.md` is checked and backed by a focused test.
-- The full workspace suite passes with 52 Textify tests and 111 pinned-fork tests.
+- At Milestone 6 completion, the workspace suite passed 52 Textify tests and 111 pinned-fork tests.
 - Formatting, all-target compilation, and Clippy with warnings denied are clean.
 - Native shell, settings, menu, wrap, palette, zoom, and recovery tests run headlessly.
+
+## Milestone 7 — interaction hardening
+
+Status: implemented and regression tested on 2026-08-08.
+
+- The tab ribbon scrolls horizontally, reveals every newly activated tab, exposes an all-tabs
+  chevron, and adds a fuzzy/wildcard Open Tabs switcher on Command-Option-P.
+- Command overlays dismiss from their focused input with Escape or from the backdrop and restore
+  editor focus.
+- The GPUI Component fork reflows a newly wrapped document against the exact painted text width.
+- Command-scroll records and preserves the painted caret position across the next font layout.
+- Settings uses a searchable installed-font picker instead of accepting arbitrary text.
+- A persisted View command hides the complete Textify title bar; a separate persisted Settings
+  switch hides only the tagline.
 
 ## Feature-complete verification
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
 
-- 52 Textify tests and 111 pinned-fork tests pass.
+- 57 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.

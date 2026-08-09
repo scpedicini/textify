@@ -45,3 +45,14 @@ Initial settings for a proper full-featured text editor:
 
 - [x] Textify installs no network client and contains no telemetry, analytics, crash uploader, or
   update checker. The boundary is documented and regression tested in `docs/privacy.md`.
+
+# UX hardening
+
+- [x] Overflowed tabs scroll, every activation reveals the selected tab, and Command-Option-P
+  searches open files with fuzzy or `*` wildcard matching.
+- [x] Command overlays close directly from Escape or an outside click and return focus to the editor.
+- [x] Enabling word wrap immediately reflows against the usable text width without edge clipping.
+- [x] Command-scroll zoom preserves the visible caret position through the new layout.
+- [x] Editor Font is a searchable dropdown populated from installed font families.
+- [x] View → Toggle Title Bar hides or restores the complete Textify heading and persists the choice.
+- [x] Settings → Show Tagline independently hides or restores “A fast place for text.”

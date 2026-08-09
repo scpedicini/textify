@@ -8,7 +8,8 @@ detection, session restore, multicursor editing, measured large-file behavior, a
 viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project explorer, quick-open,
 command palette, cancellable workspace search, live settings/keymap reload, lazy Git decorations,
 optional language-server diagnostics and go-to-definition, native macOS menus, crash recovery,
-per-tab zoom and wrapping, natural-language commands, and file drag-and-drop.
+per-tab zoom and wrapping, searchable open-tab navigation, natural-language commands, and file
+drag-and-drop. Overflowed tabs scroll horizontally and the active tab is always revealed.
 
 All milestones in the current build plan are implemented. The feature-complete verification record
 and optimized measurements are in [docs/plan.md](docs/plan.md) and
@@ -38,6 +39,7 @@ Open a folder with Command-Shift-O. Textify indexes it in the background, restor
 session, and shows the virtualized explorer. `target`, `.git`, `node_modules`, symlinks,
 and over-budget entries are excluded. Command-P quick-opens indexed files; Command-Shift-F streams
 workspace matches without blocking the UI; Command-Shift-P opens the command palette.
+Command-Option-P searches only the files already open and activates and reveals the chosen tab.
 
 Textify creates `settings.json` and `keymap.json` under `~/Library/Application Support/Textify` (or
 `TEXTIFY_DATA_DIR`) after first paint. Both files reload when saved. Git decorations are lazy and can
@@ -86,6 +88,7 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Close tab | Command-W |
 | Next tab | Control-Tab |
 | Previous tab | Control-Shift-Tab |
+| Search open tabs | Command-Option-P |
 | Open folder | Command-Shift-O |
 | Toggle explorer | Command-B |
 | Command palette | Command-Shift-P |
@@ -95,6 +98,10 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 | Quick open | Command-P |
 | Workspace search | Command-Shift-F |
 | Go to definition | F12 |
+
+The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. The View menu
+can hide the Textify title bar; Settings can independently hide its tagline and provides a
+searchable dropdown of installed editor fonts.
 
 See [docs/plan.md](docs/plan.md) for the build plan and [docs/research.md](docs/research.md) for
 the technology evaluation.

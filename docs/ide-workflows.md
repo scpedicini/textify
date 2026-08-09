@@ -28,7 +28,9 @@ Default `settings.json`:
 {
   "appearance": {
     "font_family": "SFMono-Regular",
-    "font_size": 14
+    "font_size": 14,
+    "show_title_bar": true,
+    "show_tagline": true
   },
   "recovery": {
     "save_temporary_files": true,
@@ -60,9 +62,12 @@ Default `settings.json`:
 Changing editor budgets updates existing tabs as well as future ones. Reducing the undo budget
 prunes complete oldest history groups immediately.
 
-Command-, opens the native-styled Settings panel. Appearance changes apply to tabs that have not
-been individually zoomed. Recovery copies are revisioned, atomic, and stored under `Backups/` when
-no custom location is selected. Untitled recovery and unsaved changes to named files can be enabled
+Command-, opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
+from installed system families; a configured family remains selectable if it is temporarily
+unavailable. Appearance changes apply to tabs that have not been individually zoomed. Show Tagline
+controls only “A fast place for text,” while View → Toggle Title Bar controls the complete heading;
+both choices persist. Recovery copies are revisioned, atomic, and stored under `Backups/` when no
+custom location is selected. Untitled recovery and unsaved changes to named files can be enabled
 independently. Saving or discarding a tab removes its active recovery copy; Command-Q writes a final
 snapshot before exiting. See [privacy.md](privacy.md) for the complete local-data boundary.
 
@@ -71,7 +76,12 @@ snapshot before exiting. See [privacy.md](privacy.md) for the complete local-dat
 Textify installs Textify, File, Edit, View, and Window menus in the macOS menu bar. The View menu and
 Command-Shift-P palette expose per-tab word wrap; Option-Z is its direct shortcut. Large and huge
 files always remain unwrapped. Command-scroll adjusts only the hovered active tab's size, while
-Command-T creates a new tab. Dropped files follow the same validation and large-file policy as Open.
+preserving its visible caret position; Command-T creates a new tab. Overflowed tabs accept
+horizontal trackpad or ordinary wheel scrolling, activating a tab reveals it, and the ribbon
+chevron lists every open document. Command-Option-P opens the searchable Open Tabs switcher, whose
+query supports fuzzy text and ordered `*` wildcard fragments. Dropped files follow the same
+validation and large-file policy as Open. Escape and outside clicks dismiss command overlays and
+restore editor focus.
 
 Default `keymap.json`:
 
