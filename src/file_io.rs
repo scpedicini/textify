@@ -121,7 +121,7 @@ fn load_text_inner(
         DocumentMetadata::new_with_encoding(Some(path.to_path_buf()), analysis, policy, encoding);
     debug_assert_ne!(metadata.mode, FileMode::HugeViewer);
 
-    let text = decode_text(&bytes, encoding).with_context(|| {
+    let text = decode_text(bytes, encoding).with_context(|| {
         format!(
             "could not decode {} as {}",
             path.display(),
@@ -155,12 +155,12 @@ fn looks_like_cp437_text(bytes: &[u8]) -> bool {
     suspicious_controls.saturating_mul(100) <= bytes.len().max(1).saturating_mul(2)
 }
 
-fn decode_text(bytes: &[u8], encoding: TextEncoding) -> Result<String> {
+fn decode_text(bytes: Vec<u8>, encoding: TextEncoding) -> Result<String> {
     match encoding {
-        TextEncoding::Utf8 => String::from_utf8(bytes.to_vec()).context("invalid UTF-8"),
+        TextEncoding::Utf8 => String::from_utf8(bytes).context("invalid UTF-8"),
         TextEncoding::Cp437 => Ok(bytes
-            .iter()
-            .map(|&byte| {
+            .into_iter()
+            .map(|byte| {
                 if byte < 0x80 {
                     char::from(byte)
                 } else {
@@ -374,6 +374,16 @@ mod tests {
         assert_eq!(loaded.metadata.mode, FileMode::Normal);
         assert_eq!(loaded.metadata.analysis.line_ending, LineEnding::CrLf);
         assert_eq!(loaded.disk_revision.bytes, loaded.text.len() as u64);
+    }
+
+    #[test]
+    fn utf8_decode_reuses_the_loaded_byte_buffer() {
+        let bytes = Vec::from("Textify keeps one file buffer");
+        let allocation = bytes.as_ptr();
+
+        let decoded = decode_text(bytes, TextEncoding::Utf8).expect("decode UTF-8");
+
+        assert_eq!(decoded.as_ptr(), allocation);
     }
 
     #[test]

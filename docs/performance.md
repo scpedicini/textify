@@ -62,3 +62,39 @@ Peak resident memory was 143.27 MiB. The 25/100 MiB JSON files and 5 MiB line ag
 parser-free large-file policy. Textify's native headless smoke test rendered an indexed project
 sidebar and command palette while asserting that the initial shell owns neither a project index nor
 an LSP process.
+
+## Native memory audit — 2026-08-09
+
+The optimized ARM64 GUI was launched once with a fresh, isolated data directory and left idle for
+2 minutes 34 seconds. First workspace paint took 0.98 ms. `ps` resident-memory samples were
+48,592 KiB at 13 seconds, 48,144 KiB at 51 and 91 seconds, and 35,360 KiB at 154 seconds. The
+process did not exhibit idle resident-memory growth during this bounded soak.
+
+Apple `vmmap -summary` reported a 79.0 MiB physical footprint and a 92.0 MiB peak. Most of its
+large virtual address ranges were unallocated malloc zones, shared frameworks, graphics mappings,
+and guard regions; virtual size is therefore not a useful proxy for Textify's physical memory use.
+
+Two Apple `leaks` scans 30 seconds apart both reported the same 449 allocations and 51,184 bytes.
+The dominant root was a 47.5 KiB Cocoa `NSArray`; the restricted release process did not expose
+allocation stacks. This is a small, startup-stable framework allocation rather than evidence of
+ongoing growth, but it remains a baseline to compare after GPUI or macOS upgrades. A bounded smoke
+test cannot prove that no interaction-specific leak exists, so long-soak Instruments runs should
+still be repeated after changes to tabs, project indexing, LSP lifecycle, or rendering.
+
+The same profiling pass found a transient full-file copy introduced by encoding detection: valid
+UTF-8 bytes were borrowed for decoding and then cloned into a `String`. Transferring ownership of
+the loaded byte buffer directly into `String::from_utf8` reduced peak RSS for the identical core
+corpus from 280.97 MiB to 143.38 MiB. A unit test now protects that zero-copy UTF-8 handoff.
+
+Optimized core results after the fix:
+
+| Fixture | Open | Save |
+| --- | ---: | ---: |
+| 1 MiB JSON | 1.24 ms | 17.73 ms |
+| 25 MiB minified JSON | 26.32 ms | 28.01 ms |
+| 100 MiB minified JSON | 113.40 ms | 81.23 ms |
+| 200,000 lines | 7.13 ms | 19.23 ms |
+| One 5 MiB line | 5.31 ms | 16.47 ms |
+| Unicode/IME sample | 0.05 ms | 11.55 ms |
+
+The release executables measured 20 MiB for `textify` and 1.4 MiB for `textify-perf`.
