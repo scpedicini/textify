@@ -109,6 +109,11 @@ impl Input {
         self
     }
 
+    /// Returns whether the input draws its outer border.
+    pub fn has_border(&self) -> bool {
+        self.bordered
+    }
+
     /// Set focus border for the input, default is true.
     pub fn focus_bordered(mut self, bordered: bool) -> Self {
         self.focus_bordered = bordered;

@@ -137,7 +137,47 @@ impl EditorBackend {
 
     pub fn render(&self, font_family: &str, font_size: u16, _cx: &App) -> Input {
         Input::new(&self.state)
+            .bordered(false)
+            .focus_bordered(false)
             .font_family(font_family.to_owned())
             .text_size(gpui::px(font_size as f32))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EditorHarness {
+        editor: EditorBackend,
+    }
+
+    impl gpui::Render for EditorHarness {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            self.editor.render("SFMono-Regular", 14, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn editor_surface_does_not_draw_generic_input_chrome(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let editor = EditorBackend::new(
+                String::new(),
+                None,
+                FileMode::Normal,
+                EditorBudgets::default(),
+                false,
+                window,
+                cx,
+            );
+            let input = editor.render("SFMono-Regular", 14, cx);
+            assert!(!input.has_border());
+            EditorHarness { editor }
+        });
     }
 }
