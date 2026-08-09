@@ -73,7 +73,7 @@ actions!(
         ShowOpenTabs,
         ShowRecentFiles,
         ClearRecentFiles,
-        ShowQuickOpen,
+        SearchOpenTabs,
         ShowWorkspaceSearch,
         ShowSettings,
         ToggleWordWrap,
@@ -333,7 +333,7 @@ enum OverlayMode {
     Commands,
     OpenTabs,
     RecentFiles,
-    QuickOpen,
+    OpenTabSearch,
     WorkspaceSearch,
 }
 
@@ -352,7 +352,7 @@ enum IdeCommand {
     ToggleWordWrap,
     ToggleTitleBar,
     OpenFolder,
-    QuickOpen,
+    SearchOpenTabs,
     WorkspaceSearch,
     ToggleSidebar,
     RefreshProject,
@@ -367,6 +367,7 @@ enum OverlayTarget {
     Tab(u64),
     File(PathBuf),
     Search(WorkspaceMatch),
+    OpenTabSearch { id: u64, location: TextLocation },
 }
 
 #[derive(Debug, Clone)]
@@ -375,6 +376,28 @@ struct OverlayItem {
     subtitle: String,
     search_text: String,
     target: OverlayTarget,
+}
+
+#[derive(Clone)]
+struct OpenTabSearchDocument {
+    id: u64,
+    order: usize,
+    title: String,
+    subtitle: String,
+    text: Rope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenTabContentMatch {
+    id: u64,
+    order: usize,
+    title: String,
+    subtitle: String,
+    preview: String,
+    line: usize,
+    column: usize,
+    end_column: usize,
+    score: i64,
 }
 
 enum WorkspaceSearchEvent {
@@ -462,6 +485,8 @@ pub struct Workspace {
     settings_font_select: Entity<SelectState<SearchableVec<String>>>,
     settings_location_input: Entity<InputState>,
     workspace_search: Option<WorkspaceSearchStream>,
+    open_tab_search_cancel: Option<crate::huge_file::CancellationToken>,
+    open_tab_search_revision: u64,
     status_message: Option<String>,
     lsp: Option<LspClient>,
     lsp_starting: bool,
@@ -560,6 +585,8 @@ impl Workspace {
             settings_font_select,
             settings_location_input,
             workspace_search: None,
+            open_tab_search_cancel: None,
+            open_tab_search_revision: 0,
             status_message: None,
             lsp: None,
             lsp_starting: false,
@@ -1612,6 +1639,10 @@ impl Workspace {
         if let Some(search) = self.workspace_search.take() {
             search.cancel.cancel();
         }
+        if let Some(cancel) = self.open_tab_search_cancel.take() {
+            cancel.cancel();
+        }
+        self.open_tab_search_revision = self.open_tab_search_revision.wrapping_add(1);
         self.overlay_mode = Some(mode);
         self.overlay_items.clear();
         self.overlay_selected_index = 0;
@@ -1619,7 +1650,7 @@ impl Workspace {
             OverlayMode::Commands => "Type a command",
             OverlayMode::OpenTabs => "Find an open tab",
             OverlayMode::RecentFiles => "Find a recent file",
-            OverlayMode::QuickOpen => "Quick open a project file",
+            OverlayMode::OpenTabSearch => "Search text across open tabs",
             OverlayMode::WorkspaceSearch => "Search text in the workspace",
         };
         self.overlay_input.update(cx, |input, cx| {
@@ -1638,6 +1669,9 @@ impl Workspace {
     fn hide_overlay(&mut self, cx: &mut Context<Self>) {
         if let Some(search) = self.workspace_search.take() {
             search.cancel.cancel();
+        }
+        if let Some(cancel) = self.open_tab_search_cancel.take() {
+            cancel.cancel();
         }
         self.overlay_mode = None;
         self.overlay_items.clear();
@@ -1703,35 +1737,103 @@ impl Workspace {
                     .collect();
                 self.overlay_items = matching_open_tab_items(items, &query);
             }
-            OverlayMode::QuickOpen => {
-                self.overlay_items = self
-                    .project
-                    .as_ref()
-                    .map(|project| {
-                        project
-                            .quick_open(&query, self.settings.workspace.quick_open_results)
-                            .into_iter()
-                            .map(|path| OverlayItem {
-                                title: path
-                                    .file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("File")
-                                    .to_owned(),
-                                subtitle: path
-                                    .strip_prefix(&project.root)
-                                    .unwrap_or(&path)
-                                    .display()
-                                    .to_string(),
-                                search_text: path.display().to_string(),
-                                target: OverlayTarget::File(path),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
+            OverlayMode::OpenTabSearch => self.start_open_tab_search(query, cx),
             OverlayMode::WorkspaceSearch => self.start_workspace_search(query, cx),
         }
         cx.notify();
+    }
+
+    fn start_open_tab_search(&mut self, query: String, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.open_tab_search_cancel.take() {
+            cancel.cancel();
+        }
+        self.overlay_items.clear();
+        if query.is_empty() {
+            self.status_message = Some("Type to search all open tabs".to_owned());
+            return;
+        }
+        let documents = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, document)| document.huge_viewer.is_none())
+            .map(|(order, document)| OpenTabSearchDocument {
+                id: document.id,
+                order,
+                title: document.display_name(cx),
+                subtitle: document
+                    .metadata
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "Unsaved document".to_owned()),
+                text: document.editor.rope(cx),
+            })
+            .collect::<Vec<_>>();
+        let max_matches = self.settings.workspace.search_max_matches;
+        let cancel = crate::huge_file::CancellationToken::default();
+        let worker_cancel = cancel.clone();
+        self.open_tab_search_cancel = Some(cancel);
+        self.open_tab_search_revision = self.open_tab_search_revision.wrapping_add(1);
+        let revision = self.open_tab_search_revision;
+        self.status_message = Some(format!("Searching open tabs for “{query}”…"));
+        let search_query = query.clone();
+        let task = cx.background_spawn(async move {
+            search_open_tabs(&documents, &search_query, max_matches, &worker_cancel)
+        });
+        cx.spawn(async move |workspace, cx| {
+            let matches = task.await;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    if workspace.overlay_mode != Some(OverlayMode::OpenTabSearch)
+                        || workspace.open_tab_search_revision != revision
+                        || workspace
+                            .overlay_input
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .to_lowercase()
+                            != query
+                    {
+                        return;
+                    }
+                    workspace.open_tab_search_cancel = None;
+                    workspace.overlay_items = matches
+                        .into_iter()
+                        .map(|item| OverlayItem {
+                            title: item.preview,
+                            subtitle: format!(
+                                "{} · {} · line {}, column {}",
+                                item.title,
+                                item.subtitle,
+                                item.line + 1,
+                                item.column + 1
+                            ),
+                            search_text: String::new(),
+                            target: OverlayTarget::OpenTabSearch {
+                                id: item.id,
+                                location: TextLocation {
+                                    line: item.line,
+                                    column: item.column,
+                                    end_line: item.line,
+                                    end_column: item.end_column,
+                                },
+                            },
+                        })
+                        .collect();
+                    workspace.overlay_selected_index = 0;
+                    workspace.status_message = Some(format!(
+                        "{} matches across open tabs",
+                        workspace.overlay_items.len()
+                    ));
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
     }
 
     fn move_overlay_selection(&mut self, direction: isize, cx: &mut Context<Self>) {
@@ -1874,6 +1976,21 @@ impl Workspace {
                 window,
                 cx,
             ),
+            OverlayTarget::OpenTabSearch { id, location } => {
+                if let Some(index) = self.document_index(id) {
+                    self.set_active_index(index, window, cx);
+                    if self.documents[index].huge_viewer.is_none() {
+                        self.documents[index].editor.select_position(
+                            location.line,
+                            location.column,
+                            location.end_line,
+                            location.end_column,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1897,7 +2014,7 @@ impl Workspace {
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
             IdeCommand::ToggleTitleBar => self.on_toggle_title_bar(&ToggleTitleBar, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
-            IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
+            IdeCommand::SearchOpenTabs => self.on_search_open_tabs(&SearchOpenTabs, window, cx),
             IdeCommand::WorkspaceSearch => {
                 self.on_workspace_search(&ShowWorkspaceSearch, window, cx)
             }
@@ -2077,8 +2194,13 @@ impl Workspace {
         .detach();
     }
 
-    fn on_quick_open(&mut self, _: &ShowQuickOpen, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_overlay(OverlayMode::QuickOpen, window, cx);
+    fn on_search_open_tabs(
+        &mut self,
+        _: &SearchOpenTabs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_overlay(OverlayMode::OpenTabSearch, window, cx);
     }
 
     fn on_open_tabs(&mut self, _: &ShowOpenTabs, window: &mut Window, cx: &mut Context<Self>) {
@@ -3138,13 +3260,13 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("quick-open")
+                        Button::new("search-open-tabs")
                             .ghost()
                             .xsmall()
                             .icon(IconName::Search)
-                            .tooltip_with_action("Quick open", &ShowQuickOpen, None)
+                            .tooltip_with_action("Search open tabs", &SearchOpenTabs, None)
                             .on_click(cx.listener(|workspace, _, window, cx| {
-                                workspace.on_quick_open(&ShowQuickOpen, window, cx)
+                                workspace.on_search_open_tabs(&SearchOpenTabs, window, cx)
                             })),
                     ),
             )
@@ -3416,7 +3538,7 @@ impl Workspace {
             Some(OverlayMode::Commands) => "COMMAND PALETTE",
             Some(OverlayMode::OpenTabs) => "OPEN TABS",
             Some(OverlayMode::RecentFiles) => "OPEN RECENT",
-            Some(OverlayMode::QuickOpen) => "QUICK OPEN",
+            Some(OverlayMode::OpenTabSearch) => "SEARCH OPEN TABS",
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
         };
@@ -3987,7 +4109,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_tabs))
             .on_action(cx.listener(Self::on_recent_files))
             .on_action(cx.listener(Self::on_clear_recent_files))
-            .on_action(cx.listener(Self::on_quick_open))
+            .on_action(cx.listener(Self::on_search_open_tabs))
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
@@ -4067,6 +4189,116 @@ impl Render for Workspace {
                 root.child(self.render_settings_panel(cx))
             })
     }
+}
+
+fn search_open_tabs(
+    documents: &[OpenTabSearchDocument],
+    query: &str,
+    max_matches: usize,
+    cancel: &crate::huge_file::CancellationToken,
+) -> Vec<OpenTabContentMatch> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() || max_matches == 0 || cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let tokens = query.split_whitespace().collect::<Vec<_>>();
+    let candidate_limit = max_matches.saturating_mul(4).max(max_matches);
+    let mut matches = Vec::new();
+
+    'documents: for document in documents {
+        for (line_index, line) in document.text.iter_lines().enumerate() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let line = line.to_string();
+            let line = line.trim_end_matches(['\n', '\r']);
+            let line_lower = line.to_ascii_lowercase();
+            let mut exact_from = 0usize;
+            let mut found_exact = false;
+            while let Some(relative) = line_lower[exact_from..].find(&query) {
+                found_exact = true;
+                let start = exact_from + relative;
+                let end = start + query.len();
+                push_open_tab_match(
+                    &mut matches,
+                    document,
+                    line,
+                    line_index,
+                    start,
+                    end,
+                    1_000 - start as i64,
+                );
+                if matches.len() >= candidate_limit {
+                    break 'documents;
+                }
+                exact_from = end;
+            }
+            if found_exact || tokens.len() < 2 {
+                continue;
+            }
+
+            let mut start = usize::MAX;
+            let mut end = 0usize;
+            let mut all_tokens = true;
+            for token in &tokens {
+                let Some(index) = line_lower.find(token) else {
+                    all_tokens = false;
+                    break;
+                };
+                start = start.min(index);
+                end = end.max(index + token.len());
+            }
+            if all_tokens {
+                push_open_tab_match(
+                    &mut matches,
+                    document,
+                    line,
+                    line_index,
+                    start,
+                    end,
+                    600 - end.saturating_sub(start) as i64,
+                );
+                if matches.len() >= candidate_limit {
+                    break 'documents;
+                }
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.order.cmp(&right.order))
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.column.cmp(&right.column))
+    });
+    matches.truncate(max_matches);
+    matches
+}
+
+fn push_open_tab_match(
+    matches: &mut Vec<OpenTabContentMatch>,
+    document: &OpenTabSearchDocument,
+    line: &str,
+    line_index: usize,
+    start: usize,
+    end: usize,
+    score: i64,
+) {
+    let column = line[..start].chars().count();
+    let end_column = column + line[start..end].chars().count();
+    matches.push(OpenTabContentMatch {
+        id: document.id,
+        order: document.order,
+        title: document.title.clone(),
+        subtitle: document.subtitle.clone(),
+        preview: line.chars().take(240).collect(),
+        line: line_index,
+        column,
+        end_column,
+        score,
+    });
 }
 
 fn editor_font_families(cx: &App, configured: &str) -> Vec<String> {
@@ -4173,10 +4405,10 @@ fn command_items() -> Vec<OverlayItem> {
             IdeCommand::OpenFolder,
         ),
         (
-            "Quick Open",
-            "Find an indexed project file",
-            "quick open find locate project file fuzzy",
-            IdeCommand::QuickOpen,
+            "Search Open Tabs",
+            "Find text in every open document",
+            "search find text content across all open tabs documents unsaved",
+            IdeCommand::SearchOpenTabs,
         ),
         (
             "Search Workspace",
@@ -4395,7 +4627,7 @@ fn native_menus() -> Vec<Menu> {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Command Palette…", ShowCommandPalette),
-                MenuItem::action("Quick Open…", ShowQuickOpen),
+                MenuItem::action("Search Open Tabs…", SearchOpenTabs),
                 MenuItem::action("Search Workspace…", ShowWorkspaceSearch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
@@ -4430,7 +4662,7 @@ fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &
 fn bind_ide_keymap(cx: &mut App, keymap: &TextifyKeymap) {
     let mut bindings = Vec::new();
     push_key_binding(&mut bindings, &keymap.command_palette, ShowCommandPalette);
-    push_key_binding(&mut bindings, &keymap.quick_open, ShowQuickOpen);
+    push_key_binding(&mut bindings, &keymap.quick_open, SearchOpenTabs);
     push_key_binding(&mut bindings, &keymap.workspace_search, ShowWorkspaceSearch);
     push_key_binding(&mut bindings, &keymap.open_folder, OpenFolder);
     push_key_binding(&mut bindings, &keymap.toggle_sidebar, ToggleSidebar);
@@ -4884,6 +5116,10 @@ mod tests {
             first_command("open a recent file"),
             Some(IdeCommand::OpenRecent)
         );
+        assert_eq!(
+            first_command("search all open tabs"),
+            Some(IdeCommand::SearchOpenTabs)
+        );
     }
 
     #[test]
@@ -4905,6 +5141,40 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert!(matches!(matches[0].target, OverlayTarget::Tab(2)));
+    }
+
+    #[test]
+    fn open_tab_content_search_ranks_phrases_and_all_word_matches() {
+        let documents = vec![
+            OpenTabSearchDocument {
+                id: 1,
+                order: 0,
+                title: "one.txt".to_owned(),
+                subtitle: "Unsaved document".to_owned(),
+                text: Rope::from("alpha second\nsecond then alpha\nNEEDLE café\n"),
+            },
+            OpenTabSearchDocument {
+                id: 2,
+                order: 1,
+                title: "two.txt".to_owned(),
+                subtitle: "/tmp/two.txt".to_owned(),
+                text: Rope::from("alpha second again\n"),
+            },
+        ];
+        let cancel = crate::huge_file::CancellationToken::default();
+        let matches = search_open_tabs(&documents, "alpha second", 10, &cancel);
+        assert_eq!(matches.len(), 3);
+        assert_eq!((matches[0].id, matches[0].line), (1, 0));
+        assert_eq!((matches[1].id, matches[1].line), (2, 0));
+        assert_eq!((matches[2].id, matches[2].line), (1, 1));
+
+        let case_insensitive = search_open_tabs(&documents, "needle", 10, &cancel);
+        assert_eq!(case_insensitive[0].line, 2);
+        assert_eq!(case_insensitive[0].column, 0);
+        assert_eq!(case_insensitive[0].end_column, 6);
+
+        cancel.cancel();
+        assert!(search_open_tabs(&documents, "alpha", 10, &cancel).is_empty());
     }
 
     #[gpui::test]
@@ -5110,6 +5380,66 @@ mod tests {
     }
 
     #[gpui::test]
+    fn search_open_tabs_finds_unsaved_text_and_jumps_to_the_match(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                workspace.documents[0].label_override = Some("first draft".to_owned());
+                workspace.documents[0].editor.set_text(
+                    "heading\nfind me in the first draft".to_owned(),
+                    window,
+                    cx,
+                );
+                workspace.add_untitled(window, cx);
+                workspace.documents[1].label_override = Some("second draft".to_owned());
+                workspace.documents[1].editor.set_text(
+                    "another heading\nfind me in the second draft".to_owned(),
+                    window,
+                    cx,
+                );
+                workspace.set_active_index(0, window, cx);
+                workspace.show_overlay(OverlayMode::OpenTabSearch, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_input("find me");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_items.len(), 2);
+            assert!(workspace.overlay_items[0].subtitle.contains("first draft"));
+            assert!(workspace.overlay_items[1].subtitle.contains("second draft"));
+        });
+
+        cx.simulate_keystrokes("down enter");
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(workspace.active_index, 1);
+            assert_eq!(workspace.overlay_mode, None);
+            assert_eq!(
+                workspace
+                    .active_document()
+                    .editor
+                    .state()
+                    .read(cx)
+                    .cursor_position()
+                    .line,
+                1
+            );
+        });
+    }
+
+    #[gpui::test]
     fn command_palette_dismisses_from_escape_and_the_backdrop(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -5176,6 +5506,22 @@ mod tests {
         assert!(actions.contains(&"Toggle Word Wrap"));
         assert!(actions.contains(&"Toggle Title Bar"));
         assert!(actions.contains(&"Command Palette…"));
+        assert!(actions.contains(&"Search Open Tabs…"));
+
+        let file = menus
+            .iter()
+            .find(|menu| menu.name == "File")
+            .expect("File menu");
+        let file_actions = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(file_actions.contains(&"Open Recent…"));
+        assert!(file_actions.contains(&"Clear Recent Files"));
     }
 
     #[gpui::test]
