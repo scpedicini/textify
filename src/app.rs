@@ -36,7 +36,7 @@ use gpui_component_assets::Assets;
 
 use crate::{
     document::{DocumentMetadata, FileAnalysis, FileMode, FilePolicy, Language, LineEnding},
-    editor::EditorBackend,
+    editor::{EditorBackend, EditorConfiguration},
     file_io::{
         DiskRevision, ExternalFileChanged, LoadedFile, load_utf8, optional_disk_revision,
         save_atomic_chunks_checked, suggested_save_path,
@@ -51,8 +51,8 @@ use crate::{
     recovery::{load_snapshot, remove_snapshot, write_snapshot},
     session::{SessionState, SessionTab, load_session, save_session},
     settings::{
-        AppearanceSettings, RecoverySettings, TextifyKeymap, TextifySettings, ensure_config_files,
-        textify_data_dir,
+        AppearanceSettings, IndentationSettings, RecoverySettings, TextifyKeymap, TextifySettings,
+        ensure_config_files, textify_data_dir,
     },
     watcher::FileWatcher,
 };
@@ -477,6 +477,7 @@ struct TextLocation {
 struct SettingsDraft {
     font_size: u16,
     show_tagline: bool,
+    indentation: IndentationSettings,
     recovery: RecoverySettings,
     recent_files: crate::settings::RecentFileSettings,
 }
@@ -809,8 +810,11 @@ impl Workspace {
             text,
             metadata.parser_name(self.policy),
             metadata.mode,
-            self.settings.editor,
-            word_wrap,
+            EditorConfiguration {
+                budgets: self.settings.editor,
+                indentation: self.settings.indentation,
+                soft_wrap: word_wrap,
+            },
             window,
             cx,
         );
@@ -2157,6 +2161,7 @@ impl Workspace {
         self.settings_draft = Some(SettingsDraft {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
+            indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
         });
@@ -2236,6 +2241,8 @@ impl Workspace {
         settings.appearance.font_size = draft.font_size;
         settings.appearance.show_tagline = draft.show_tagline;
         settings.appearance.normalize();
+        settings.indentation = draft.indentation;
+        settings.indentation.normalize();
         settings.recovery = draft.recovery;
         settings.recent_files = draft.recent_files;
         settings.recent_files.normalize();
@@ -2261,6 +2268,9 @@ impl Workspace {
                                 document.metadata.mode,
                                 cx,
                             );
+                            document
+                                .editor
+                                .set_indentation(workspace.settings.indentation, cx);
                         }
                         let ids = workspace
                             .documents
@@ -2581,6 +2591,9 @@ impl Workspace {
                                         document.metadata.mode,
                                         cx,
                                     );
+                                    document
+                                        .editor
+                                        .set_indentation(workspace.settings.indentation, cx);
                                 }
                                 workspace.apply_recent_file_settings(cx);
                                 if lsp_changed {
@@ -3828,17 +3841,21 @@ impl Workspace {
         let draft = self.settings_draft.clone().unwrap_or(SettingsDraft {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
+            indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
         });
         let temporary_enabled = draft.recovery.save_temporary_files;
         let unsaved_enabled = draft.recovery.keep_unsaved_changes;
         let tagline_enabled = draft.show_tagline;
+        let tab_width = draft.indentation.tab_width;
+        let hard_tabs = draft.indentation.hard_tabs;
         let recent_enabled = draft.recent_files.enabled;
         let recent_limit = draft.recent_files.max_files;
         let temporary_workspace = cx.entity();
         let unsaved_workspace = cx.entity();
         let tagline_workspace = cx.entity();
+        let indentation_workspace = cx.entity();
         let recent_workspace = cx.entity();
 
         div()
@@ -3996,6 +4013,113 @@ impl Workspace {
                                                         },
                                                     )),
                                             ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Tab Width"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(
+                                                        "Visual tab width and spaces inserted by Tab.",
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("settings-tab-width-smaller")
+                                                    .outline()
+                                                    .label("−")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.indentation.tab_width = draft
+                                                                    .indentation
+                                                                    .tab_width
+                                                                    .saturating_sub(1)
+                                                                    .max(IndentationSettings::MIN_TAB_WIDTH);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_12()
+                                                    .text_center()
+                                                    .child(tab_width.to_string()),
+                                            )
+                                            .child(
+                                                Button::new("settings-tab-width-larger")
+                                                    .outline()
+                                                    .label("+")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.indentation.tab_width =
+                                                                    (draft.indentation.tab_width + 1)
+                                                                        .min(IndentationSettings::MAX_TAB_WIDTH);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Use Tab Characters"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(
+                                                        "Off inserts spaces; on inserts one tab character.",
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-hard-tabs")
+                                            .checked(hard_tabs)
+                                            .on_click(move |checked, _, cx| {
+                                                indentation_workspace.update(
+                                                    cx,
+                                                    |workspace, cx| {
+                                                        if let Some(draft) =
+                                                            &mut workspace.settings_draft
+                                                        {
+                                                            draft.indentation.hard_tabs = *checked;
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                );
+                                            }),
                                     ),
                             )
                             .child(
@@ -5272,6 +5396,7 @@ mod tests {
                 draft.show_tagline,
                 workspace.settings.appearance.show_tagline
             );
+            assert_eq!(draft.indentation, workspace.settings.indentation);
             assert_eq!(draft.recovery, workspace.settings.recovery);
             assert_eq!(draft.recent_files, workspace.settings.recent_files);
             workspace.documents[0].dirty = true;
@@ -6057,6 +6182,58 @@ mod tests {
         let saved =
             TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
         assert!(!saved.appearance.show_tagline);
+    }
+
+    #[gpui::test]
+    fn indentation_settings_are_saved_and_applied_to_every_open_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let indentation = IndentationSettings {
+            tab_width: 2,
+            hard_tabs: true,
+        };
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.add_untitled(window, cx);
+                workspace.show_settings(window, cx);
+                workspace
+                    .settings_draft
+                    .as_mut()
+                    .expect("settings draft")
+                    .indentation = indentation;
+                workspace.save_settings_window(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.settings.indentation, indentation);
+            for document in &workspace.documents {
+                assert_eq!(
+                    document.editor.state().read(cx).configured_tab_size(),
+                    gpui_component::input::TabSize {
+                        tab_size: 2,
+                        hard_tabs: true,
+                    }
+                );
+            }
+        });
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert_eq!(saved.indentation, indentation);
     }
 
     #[gpui::test]

@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct TabSize {
     /// Default is 2
     pub tab_size: usize,
@@ -214,6 +214,22 @@ impl InputState {
             _ => {}
         }
         self
+    }
+
+    /// Update the indentation inserted by Tab and the width used to render tab characters.
+    pub fn set_tab_size(&mut self, tab: TabSize, cx: &mut Context<Self>) {
+        debug_assert!(self.mode.is_multi_line() || self.mode.is_code_editor());
+        match &mut self.mode {
+            InputMode::PlainText { tab: current, .. }
+            | InputMode::CodeEditor { tab: current, .. } => *current = tab,
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Return the active indentation configuration.
+    pub fn configured_tab_size(&self) -> TabSize {
+        self.mode.tab_size()
     }
 
     pub(super) fn indent_inline(

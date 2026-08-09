@@ -6,11 +6,22 @@ use gpui_component::{
     input::{Input, InputState, Position, Rope, RopeExt as _, TabSize},
 };
 
-use crate::{document::FileMode, lsp::LspDiagnostic, settings::EditorBudgets};
+use crate::{
+    document::FileMode,
+    lsp::LspDiagnostic,
+    settings::{EditorBudgets, IndentationSettings},
+};
 
 #[derive(Clone)]
 pub struct EditorBackend {
     state: Entity<InputState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EditorConfiguration {
+    pub budgets: EditorBudgets,
+    pub indentation: IndentationSettings,
+    pub soft_wrap: bool,
 }
 
 impl EditorBackend {
@@ -18,14 +29,13 @@ impl EditorBackend {
         text: String,
         parser: Option<&'static str>,
         mode: FileMode,
-        budgets: EditorBudgets,
-        soft_wrap: bool,
+        configuration: EditorConfiguration,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
         // `text` is GPUI Component's explicit plain-text language and never selects a parser.
         let language = parser.unwrap_or("text");
-        let (undo_bytes, search_matches) = budgets.for_mode(mode);
+        let (undo_bytes, search_matches) = configuration.budgets.for_mode(mode);
         let state = cx.new(|cx| {
             InputState::new(window, cx)
                 .code_editor(language)
@@ -33,11 +43,11 @@ impl EditorBackend {
                 .search_max_matches(search_matches)
                 .line_number(true)
                 .tab_size(TabSize {
-                    tab_size: 4,
-                    hard_tabs: false,
+                    tab_size: configuration.indentation.tab_width,
+                    hard_tabs: configuration.indentation.hard_tabs,
                 })
                 // Large-file policy always wins over a restored per-tab preference.
-                .soft_wrap(soft_wrap && mode == FileMode::Normal)
+                .soft_wrap(configuration.soft_wrap && mode == FileMode::Normal)
                 .default_value(text)
                 .placeholder(if mode == FileMode::Large {
                     "Large-file mode"
@@ -72,6 +82,18 @@ impl EditorBackend {
         let (undo_bytes, search_matches) = budgets.for_mode(mode);
         self.state.update(cx, |state, cx| {
             state.set_resource_budgets(undo_bytes, search_matches, cx)
+        });
+    }
+
+    pub fn set_indentation(&self, indentation: IndentationSettings, cx: &mut App) {
+        self.state.update(cx, |state, cx| {
+            state.set_tab_size(
+                TabSize {
+                    tab_size: indentation.tab_width,
+                    hard_tabs: indentation.hard_tabs,
+                },
+                cx,
+            )
         });
     }
 
@@ -170,8 +192,11 @@ mod tests {
                 String::new(),
                 None,
                 FileMode::Normal,
-                EditorBudgets::default(),
-                false,
+                EditorConfiguration {
+                    budgets: EditorBudgets::default(),
+                    indentation: IndentationSettings::default(),
+                    soft_wrap: false,
+                },
                 window,
                 cx,
             );

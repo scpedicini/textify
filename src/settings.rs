@@ -54,6 +54,7 @@ impl EditorBudgets {
 #[serde(default)]
 pub struct TextifySettings {
     pub appearance: AppearanceSettings,
+    pub indentation: IndentationSettings,
     pub recovery: RecoverySettings,
     pub recent_files: RecentFileSettings,
     pub editor: EditorBudgets,
@@ -68,6 +69,7 @@ impl TextifySettings {
                 let mut settings: Self = serde_json::from_slice(&bytes)
                     .with_context(|| format!("could not parse {}", path.display()))?;
                 settings.appearance.normalize();
+                settings.indentation.normalize();
                 settings.recent_files.normalize();
                 Ok(settings)
             }
@@ -79,6 +81,33 @@ impl TextifySettings {
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).context("could not serialize settings")?;
         save_atomic(path, &json)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IndentationSettings {
+    pub tab_width: usize,
+    pub hard_tabs: bool,
+}
+
+impl Default for IndentationSettings {
+    fn default() -> Self {
+        Self {
+            tab_width: 4,
+            hard_tabs: false,
+        }
+    }
+}
+
+impl IndentationSettings {
+    pub const MIN_TAB_WIDTH: usize = 1;
+    pub const MAX_TAB_WIDTH: usize = 8;
+
+    pub fn normalize(&mut self) {
+        self.tab_width = self
+            .tab_width
+            .clamp(Self::MIN_TAB_WIDTH, Self::MAX_TAB_WIDTH);
     }
 }
 
@@ -305,6 +334,7 @@ mod tests {
         assert_eq!(settings.workspace.max_entries, 100_000);
         assert!(!settings.lsp.enabled);
         assert_eq!(settings.appearance, AppearanceSettings::default());
+        assert_eq!(settings.indentation, IndentationSettings::default());
         assert_eq!(settings.recovery, RecoverySettings::default());
         assert_eq!(settings.recent_files, RecentFileSettings::default());
     }
@@ -343,11 +373,30 @@ mod tests {
         let mut settings = TextifySettings::default();
         settings.appearance.font_size = 18;
         settings.appearance.show_tagline = false;
+        settings.indentation = IndentationSettings {
+            tab_width: 2,
+            hard_tabs: true,
+        };
         settings.recovery.keep_unsaved_changes = false;
         settings.recent_files.max_files = 24;
 
         settings.save(&path).expect("save");
         assert_eq!(TextifySettings::load(&path).expect("load"), settings);
+    }
+
+    #[test]
+    fn indentation_settings_are_explicit_and_bounded() {
+        let mut indentation = IndentationSettings {
+            tab_width: usize::MAX,
+            hard_tabs: true,
+        };
+        indentation.normalize();
+        assert_eq!(indentation.tab_width, IndentationSettings::MAX_TAB_WIDTH);
+        assert!(indentation.hard_tabs);
+
+        indentation.tab_width = 0;
+        indentation.normalize();
+        assert_eq!(indentation.tab_width, IndentationSettings::MIN_TAB_WIDTH);
     }
 
     #[test]
