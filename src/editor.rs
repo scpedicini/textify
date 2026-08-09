@@ -2,7 +2,6 @@
 
 use gpui::{App, AppContext as _, Entity, Styled as _, Window};
 use gpui_component::{
-    ActiveTheme,
     highlighter::{Diagnostic, DiagnosticSeverity},
     input::{Input, InputState, Position, Rope, RopeExt as _, TabSize},
 };
@@ -126,9 +125,9 @@ impl EditorBackend {
         self.state.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    pub fn render(&self, cx: &App) -> Input {
+    pub fn render(&self, font_family: &str, font_size: u16, _cx: &App) -> Input {
         Input::new(&self.state)
-            .font_family(cx.theme().mono_font_family.clone())
-            .text_size(cx.theme().mono_font_size)
+            .font_family(font_family.to_owned())
+            .text_size(gpui::px(font_size as f32))
     }
 }

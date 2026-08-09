@@ -3,7 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context as _;
@@ -21,6 +21,7 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, RopeExt as _},
+    switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -39,8 +40,12 @@ use crate::{
     project::{
         ProjectIndex, SearchSummary, WorkspaceMatch, load_git_status, stream_workspace_search,
     },
-    session::{SessionState, load_session, save_session},
-    settings::{TextifyKeymap, TextifySettings, ensure_config_files, textify_data_dir},
+    recovery::{load_snapshot, remove_snapshot, write_snapshot},
+    session::{SessionState, SessionTab, load_session, save_session},
+    settings::{
+        AppearanceSettings, RecoverySettings, TextifyKeymap, TextifySettings, ensure_config_files,
+        textify_data_dir,
+    },
     watcher::FileWatcher,
 };
 
@@ -59,12 +64,22 @@ actions!(
         ShowCommandPalette,
         ShowQuickOpen,
         ShowWorkspaceSearch,
+        ShowSettings,
         GoToDefinition,
         DismissOverlay
     ]
 );
 
 const WINDOW_TITLE: &str = "Textify IDE";
+const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
+
+fn new_recovery_key(id: u64) -> u128 {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    timestamp ^ ((std::process::id() as u128) << 64) ^ id as u128
+}
 
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
     let metadata = fs::metadata(path)
@@ -100,6 +115,9 @@ struct EditorDocument {
     huge_viewer: Option<Entity<HugeFileView>>,
     _subscription: Subscription,
     _huge_subscription: Option<Subscription>,
+    recovery_key: u128,
+    recovery_path: Option<PathBuf>,
+    recovery_revision: u64,
 }
 
 struct DocumentSeed {
@@ -108,6 +126,8 @@ struct DocumentSeed {
     disk_revision: Option<DiskRevision>,
     label_override: Option<String>,
     untitled_number: usize,
+    dirty: bool,
+    recovery_path: Option<PathBuf>,
 }
 
 enum OpenedFile {
@@ -116,6 +136,49 @@ enum OpenedFile {
         file: HugeFile,
         metadata: DocumentMetadata,
     },
+}
+
+enum RestoredFile {
+    Opened(OpenedFile),
+    Recovered(DocumentSeed),
+}
+
+fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<RestoredFile> {
+    if let Some(recovery_path) = tab.recovery_path.clone() {
+        let text = load_snapshot(&recovery_path)?;
+        let analysis = FileAnalysis::from_bytes(text.as_bytes());
+        let metadata = DocumentMetadata::new(tab.path.clone(), analysis, policy);
+        let disk_revision = tab
+            .path
+            .as_deref()
+            .map(optional_disk_revision)
+            .transpose()?
+            .flatten();
+        return Ok(RestoredFile::Recovered(DocumentSeed {
+            text,
+            metadata,
+            disk_revision,
+            label_override: tab.label_override,
+            untitled_number: tab.untitled_number,
+            dirty: tab.dirty,
+            recovery_path: Some(recovery_path),
+        }));
+    }
+
+    if let Some(path) = tab.path {
+        return open_file(&path, policy).map(RestoredFile::Opened);
+    }
+
+    let metadata = DocumentMetadata::new(None, FileAnalysis::from_bytes(b""), policy);
+    Ok(RestoredFile::Recovered(DocumentSeed {
+        text: String::new(),
+        metadata,
+        disk_revision: None,
+        label_override: tab.label_override,
+        untitled_number: tab.untitled_number.max(1),
+        dirty: false,
+        recovery_path: None,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +234,12 @@ struct TextLocation {
     end_column: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SettingsDraft {
+    font_size: u16,
+    recovery: RecoverySettings,
+}
+
 impl EditorDocument {
     fn display_name(&self) -> String {
         self.label_override
@@ -212,6 +281,10 @@ pub struct Workspace {
     overlay_mode: Option<OverlayMode>,
     overlay_input: Entity<InputState>,
     overlay_items: Vec<OverlayItem>,
+    settings_visible: bool,
+    settings_draft: Option<SettingsDraft>,
+    settings_font_input: Entity<InputState>,
+    settings_location_input: Entity<InputState>,
     workspace_search: Option<WorkspaceSearchStream>,
     status_message: Option<String>,
     lsp: Option<LspClient>,
@@ -219,6 +292,8 @@ pub struct Workspace {
     lsp_opened: HashSet<PathBuf>,
     lsp_dirty: HashMap<u64, Instant>,
     pending_definitions: HashSet<u64>,
+    recovery_pending: HashMap<u64, Instant>,
+    recovery_in_flight: HashSet<u64>,
     _ide_subscriptions: Vec<Subscription>,
 }
 
@@ -239,6 +314,10 @@ impl Workspace {
                 .placeholder("Type a command")
                 .clean_on_escape()
         });
+        let settings_font_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("SFMono-Regular"));
+        let settings_location_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Textify application backups"));
         let _ide_subscriptions =
             vec![
                 cx.subscribe_in(&overlay_input, window, |workspace, _, event, window, cx| {
@@ -280,6 +359,10 @@ impl Workspace {
             overlay_mode: None,
             overlay_input,
             overlay_items: Vec::new(),
+            settings_visible: false,
+            settings_draft: None,
+            settings_font_input,
+            settings_location_input,
             workspace_search: None,
             status_message: None,
             lsp: None,
@@ -287,6 +370,8 @@ impl Workspace {
             lsp_opened: HashSet::new(),
             lsp_dirty: HashMap::new(),
             pending_definitions: HashSet::new(),
+            recovery_pending: HashMap::new(),
+            recovery_in_flight: HashSet::new(),
             _ide_subscriptions,
         };
         workspace.add_untitled(window, cx);
@@ -320,6 +405,8 @@ impl Workspace {
                 disk_revision: None,
                 label_override: None,
                 untitled_number,
+                dirty: false,
+                recovery_path: None,
                 metadata,
             },
             window,
@@ -343,6 +430,8 @@ impl Workspace {
                 disk_revision: Some(loaded.disk_revision),
                 label_override: None,
                 untitled_number: 0,
+                dirty: false,
+                recovery_path: None,
             },
             window,
             cx,
@@ -391,6 +480,8 @@ impl Workspace {
                 disk_revision: None,
                 label_override: None,
                 untitled_number: 0,
+                dirty: false,
+                recovery_path: None,
             },
             window,
             cx,
@@ -418,6 +509,8 @@ impl Workspace {
             disk_revision,
             label_override,
             untitled_number,
+            dirty,
+            recovery_path,
         } = seed;
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
@@ -432,6 +525,7 @@ impl Workspace {
         );
         let subscription = cx.subscribe(editor.state(), move |workspace, _, event, cx| {
             if matches!(event, InputEvent::Change) {
+                let mut changed = false;
                 if let Some(document) = workspace
                     .documents
                     .iter_mut()
@@ -441,6 +535,10 @@ impl Workspace {
                     document.dirty = true;
                     document.revision = document.revision.wrapping_add(1);
                     workspace.lsp_dirty.insert(id, Instant::now());
+                    changed = true;
+                }
+                if changed {
+                    workspace.mark_recovery_pending(id, cx);
                 }
                 cx.notify();
             }
@@ -451,7 +549,7 @@ impl Workspace {
             untitled_number,
             editor: editor.clone(),
             metadata,
-            dirty: false,
+            dirty,
             saving: false,
             revision: 0,
             disk_revision,
@@ -461,6 +559,9 @@ impl Workspace {
             huge_viewer: None,
             _subscription: subscription,
             _huge_subscription: None,
+            recovery_key: new_recovery_key(id),
+            recovery_path,
+            recovery_revision: 0,
         });
         self.active_index = self.documents.len() - 1;
         self.update_window_title(window);
@@ -497,17 +598,41 @@ impl Workspace {
             return;
         }
 
-        let open_paths = self
+        let recover_temporary = self.settings.recovery.save_temporary_files;
+        let tabs = self
             .documents
             .iter()
-            .filter_map(|document| document.metadata.path.clone())
+            .filter(|document| document.metadata.path.is_some() || recover_temporary)
+            .map(|document| {
+                let recovery_enabled = self
+                    .settings
+                    .recovery
+                    .enabled_for(document.metadata.path.is_some());
+                (
+                    document.id,
+                    SessionTab {
+                        path: document.metadata.path.clone(),
+                        recovery_path: (document.dirty && recovery_enabled)
+                            .then(|| document.recovery_path.clone())
+                            .flatten(),
+                        untitled_number: document.untitled_number,
+                        label_override: document.label_override.clone(),
+                        dirty: document.dirty
+                            && recovery_enabled
+                            && document.recovery_path.is_some(),
+                    },
+                )
+            })
             .collect::<Vec<_>>();
-        let active_path = self.active_document().metadata.path.as_ref();
-        let active_index = active_path
-            .and_then(|active| open_paths.iter().position(|path| path == active))
+        let active_id = self.active_id();
+        let active_index = tabs
+            .iter()
+            .position(|(id, _)| *id == active_id)
             .unwrap_or(0);
         let workspace_root = self.workspace_root.clone();
-        let state = SessionState::new(active_index, open_paths).with_workspace_root(workspace_root);
+        let state =
+            SessionState::from_tabs(active_index, tabs.into_iter().map(|(_, tab)| tab).collect())
+                .with_workspace_root(workspace_root);
         let path = self.session_path.clone();
         cx.background_spawn(async move {
             if let Err(error) = save_session(&path, &state) {
@@ -515,6 +640,129 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn mark_recovery_pending(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        let document = &self.documents[index];
+        if !self
+            .settings
+            .recovery
+            .enabled_for(document.metadata.path.is_some())
+            || document.huge_viewer.is_some()
+        {
+            return;
+        }
+        self.recovery_pending.insert(id, Instant::now());
+        self.persist_session(cx);
+    }
+
+    fn flush_recovery_due(&mut self, cx: &mut Context<Self>) {
+        let due = self
+            .recovery_pending
+            .iter()
+            .filter(|(id, changed_at)| {
+                changed_at.elapsed() >= RECOVERY_DEBOUNCE && !self.recovery_in_flight.contains(id)
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in due {
+            self.start_recovery_snapshot(id, cx);
+        }
+    }
+
+    fn start_recovery_snapshot(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.document_index(id) else {
+            self.recovery_pending.remove(&id);
+            return;
+        };
+        let document = &self.documents[index];
+        if !document.dirty
+            || document.huge_viewer.is_some()
+            || !self
+                .settings
+                .recovery
+                .enabled_for(document.metadata.path.is_some())
+        {
+            self.recovery_pending.remove(&id);
+            return;
+        }
+
+        let revision = document.revision;
+        let key = document.recovery_key;
+        let rope = document.editor.rope(cx);
+        let directory = self.settings.recovery.directory(&self.data_dir);
+        self.recovery_pending.remove(&id);
+        self.recovery_in_flight.insert(id);
+        let task =
+            cx.background_spawn(
+                async move { write_snapshot(&directory, key, revision, rope.chunks()) },
+            );
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.recovery_in_flight.remove(&id);
+                    match result {
+                        Ok(path) => {
+                            let mut remove = Some(path.clone());
+                            if let Some(index) = workspace.document_index(id) {
+                                let enabled = workspace.settings.recovery.enabled_for(
+                                    workspace.documents[index].metadata.path.is_some(),
+                                );
+                                let document = &mut workspace.documents[index];
+                                if document.dirty
+                                    && enabled
+                                    && revision >= document.recovery_revision
+                                {
+                                    remove = document.recovery_path.replace(path);
+                                    document.recovery_revision = revision;
+                                }
+                                if document.dirty && document.revision > revision && enabled {
+                                    workspace.recovery_pending.insert(id, Instant::now());
+                                }
+                            }
+                            if let Some(remove) = remove {
+                                cx.background_spawn(async move {
+                                    if let Err(error) = remove_snapshot(&remove) {
+                                        tracing::warn!(%error, "could not prune recovery copy");
+                                    }
+                                })
+                                .detach();
+                            }
+                            workspace.persist_session(cx);
+                        }
+                        Err(error) => {
+                            workspace.status_message =
+                                Some("Could not update crash-recovery copy".to_owned());
+                            tracing::warn!(%error, "recovery snapshot failed");
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    fn clear_recovery(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.recovery_pending.remove(&id);
+        let path = self
+            .document_index(id)
+            .and_then(|index| self.documents[index].recovery_path.take());
+        if let Some(path) = path {
+            cx.background_spawn(async move {
+                if let Err(error) = remove_snapshot(&path) {
+                    tracing::warn!(%error, "could not remove recovery copy");
+                }
+            })
+            .detach();
+        }
     }
 
     fn start_background_services(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -559,6 +807,7 @@ impl Workspace {
                     .update_in(window, |workspace, window, cx| {
                         workspace.poll_workspace_search(cx);
                         workspace.poll_lsp(window, cx);
+                        workspace.flush_recovery_due(cx);
                     })
                     .is_err()
                 {
@@ -578,9 +827,16 @@ impl Workspace {
             let active_index = session.active_index;
             let workspace_root = session.workspace_root;
             let loaded = session
-                .open_paths
+                .tabs
                 .into_iter()
-                .map(|path| open_file(&path, policy).map_err(|error| (path, error)))
+                .map(|tab| {
+                    let label = tab
+                        .path
+                        .clone()
+                        .or_else(|| tab.recovery_path.clone())
+                        .unwrap_or_else(|| PathBuf::from("Untitled"));
+                    restore_session_tab(tab, policy).map_err(|error| (label, error))
+                })
                 .collect::<Vec<_>>();
             Ok::<_, anyhow::Error>((active_index, loaded, workspace_root))
         });
@@ -603,7 +859,15 @@ impl Workspace {
                             }
                             for result in loaded {
                                 match result {
-                                    Ok(opened) => workspace.push_opened(opened, window, cx),
+                                    Ok(RestoredFile::Opened(opened)) => {
+                                        workspace.push_opened(opened, window, cx)
+                                    }
+                                    Ok(RestoredFile::Recovered(seed)) => {
+                                        workspace.next_untitled_number = workspace
+                                            .next_untitled_number
+                                            .max(seed.untitled_number.saturating_add(1));
+                                        workspace.push_document(seed, window, cx);
+                                    }
                                     Err((path, error)) => tracing::warn!(
                                         %error,
                                         path = %path.display(),
@@ -872,6 +1136,8 @@ impl Workspace {
                             disk_revision: None,
                             label_override: Some(format!("Compare {name}")),
                             untitled_number,
+                            dirty: false,
+                            recovery_path: None,
                         },
                         window,
                         cx,
@@ -915,11 +1181,14 @@ impl Workspace {
                                 disk_revision: None,
                                 label_override: Some(label),
                                 untitled_number,
+                                dirty: true,
+                                recovery_path: None,
                             },
                             window,
                             cx,
                         );
-                        workspace.active_document_mut().dirty = true;
+                        let id = workspace.active_id();
+                        workspace.mark_recovery_pending(id, cx);
                         cx.notify();
                     }
                     Err(error) => {
@@ -1268,7 +1537,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match command {
-            IdeCommand::NewFile => self.add_untitled(window, cx),
+            IdeCommand::NewFile => self.on_new(&NewDocument, window, cx),
             IdeCommand::OpenFile => self.on_open(&OpenDocument, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
@@ -1277,7 +1546,7 @@ impl Workspace {
             }
             IdeCommand::ToggleSidebar => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             IdeCommand::RefreshProject => self.refresh_project(window, cx),
-            IdeCommand::OpenSettings => self.open_config_file("settings.json", window, cx),
+            IdeCommand::OpenSettings => self.show_settings(window, cx),
             IdeCommand::OpenKeymap => self.open_config_file("keymap.json", window, cx),
             IdeCommand::GoToDefinition => self.on_go_to_definition(&GoToDefinition, window, cx),
         }
@@ -1300,6 +1569,147 @@ impl Workspace {
         self.show_overlay(OverlayMode::Commands, window, cx);
     }
 
+    fn on_show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_settings(window, cx);
+    }
+
+    fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hide_overlay(cx);
+        self.settings_visible = true;
+        self.settings_draft = Some(SettingsDraft {
+            font_size: self.settings.appearance.font_size,
+            recovery: self.settings.recovery.clone(),
+        });
+        let font_family = self.settings.appearance.font_family.clone();
+        let recovery_directory = self.settings.recovery.directory(&self.data_dir);
+        self.settings_font_input.update(cx, |input, cx| {
+            input.set_value(font_family, window, cx);
+        });
+        self.settings_location_input.update(cx, |input, cx| {
+            input.set_value(recovery_directory.display().to_string(), window, cx);
+        });
+        self.settings_font_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    fn hide_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_visible = false;
+        self.settings_draft = None;
+        if self.active_document().huge_viewer.is_none() {
+            self.active_document().editor.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn choose_recovery_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose Textify Recovery Folder".into()),
+        });
+        cx.spawn_in(window, async move |workspace, window| {
+            let path = receiver.await.ok()?.ok()??.into_iter().next()?;
+            workspace
+                .update_in(window, |workspace, window, cx| {
+                    if let Some(draft) = &mut workspace.settings_draft {
+                        draft.recovery.temporary_files_location = Some(path.clone());
+                    }
+                    workspace.settings_location_input.update(cx, |input, cx| {
+                        input.set_value(path.display().to_string(), window, cx)
+                    });
+                    cx.notify();
+                })
+                .ok()
+        })
+        .detach();
+    }
+
+    fn save_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut draft) = self.settings_draft.clone() else {
+            return;
+        };
+        let font_family = self.settings_font_input.read(cx).value().to_string();
+        let location = self
+            .settings_location_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let default_location = self.data_dir.join("Backups");
+        draft.recovery.temporary_files_location =
+            if location.is_empty() || Path::new(&location) == default_location.as_path() {
+                None
+            } else {
+                Some(PathBuf::from(location))
+            };
+
+        let mut settings = self.settings.clone();
+        settings.appearance = AppearanceSettings {
+            font_family,
+            font_size: draft.font_size,
+        };
+        settings.appearance.normalize();
+        settings.recovery = draft.recovery;
+        let path = self.data_dir.join("settings.json");
+        let task = cx.background_spawn({
+            let settings = settings.clone();
+            async move {
+                fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+                settings.save(&path)
+            }
+        });
+        cx.spawn_in(window, async move |workspace, window| {
+            let result = task.await;
+            workspace
+                .update_in(window, |workspace, window, cx| match result {
+                    Ok(()) => {
+                        let lsp_changed = workspace.settings.lsp != settings.lsp;
+                        workspace.settings = settings;
+                        for document in &workspace.documents {
+                            document.editor.set_budgets(
+                                workspace.settings.editor,
+                                document.metadata.mode,
+                                cx,
+                            );
+                        }
+                        let ids = workspace
+                            .documents
+                            .iter()
+                            .map(|document| document.id)
+                            .collect::<Vec<_>>();
+                        for id in ids {
+                            let Some(index) = workspace.document_index(id) else {
+                                continue;
+                            };
+                            let enabled = workspace
+                                .settings
+                                .recovery
+                                .enabled_for(workspace.documents[index].metadata.path.is_some());
+                            if enabled && workspace.documents[index].dirty {
+                                workspace.recovery_pending.insert(id, Instant::now());
+                            } else if !enabled {
+                                workspace.clear_recovery(id, cx);
+                            }
+                        }
+                        if lsp_changed {
+                            workspace.restart_lsp(window, cx);
+                        }
+                        workspace.persist_session(cx);
+                        workspace.status_message = Some("Settings saved".to_owned());
+                        workspace.hide_settings(window, cx);
+                    }
+                    Err(error) => {
+                        workspace.status_message = Some(error.to_string());
+                        Self::show_error("Could not save settings", error, window, cx);
+                    }
+                })
+                .ok()
+        })
+        .detach();
+    }
+
     fn on_quick_open(&mut self, _: &ShowQuickOpen, window: &mut Window, cx: &mut Context<Self>) {
         self.show_overlay(OverlayMode::QuickOpen, window, cx);
     }
@@ -1318,8 +1728,15 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_dismiss_overlay(&mut self, _: &DismissOverlay, _: &mut Window, cx: &mut Context<Self>) {
-        if self.overlay_mode.is_some() {
+    fn on_dismiss_overlay(
+        &mut self,
+        _: &DismissOverlay,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_visible {
+            self.hide_settings(window, cx);
+        } else if self.overlay_mode.is_some() {
             self.hide_overlay(cx);
         } else {
             cx.propagate();
@@ -1635,6 +2052,7 @@ impl Workspace {
 
     fn on_new(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
         self.add_untitled(window, cx);
+        self.persist_session(cx);
     }
 
     fn on_open(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -1773,7 +2191,8 @@ impl Workspace {
                         document.disk_revision = Some(disk_revision);
                         document.external_changed = false;
                         document.saving = false;
-                        if document.revision == revision {
+                        let saved_clean = document.revision == revision;
+                        if saved_clean {
                             document.dirty = false;
                         }
                         editor.set_parser(parser, cx);
@@ -1788,6 +2207,9 @@ impl Workspace {
                             "saved document"
                         );
                         workspace.update_window_title(window);
+                        if saved_clean {
+                            workspace.clear_recovery(id, cx);
+                        }
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
                         cx.notify();
@@ -1856,6 +2278,15 @@ impl Workspace {
             return;
         };
         let removed = self.documents.remove(index);
+        self.recovery_pending.remove(&id);
+        if let Some(path) = removed.recovery_path.clone() {
+            cx.background_spawn(async move {
+                if let Err(error) = remove_snapshot(&path) {
+                    tracing::warn!(%error, "could not remove discarded recovery copy");
+                }
+            })
+            .detach();
+        }
         if let Some(path) = removed.metadata.path
             && self.lsp_opened.remove(&path)
             && let Some(client) = &self.lsp
@@ -1953,7 +2384,8 @@ impl Workspace {
                             .icon(IconName::Plus)
                             .tooltip_with_action("New file", &NewDocument, None)
                             .on_click(cx.listener(|workspace, _, window, cx| {
-                                workspace.add_untitled(window, cx)
+                                workspace.add_untitled(window, cx);
+                                workspace.persist_session(cx);
                             })),
                     )
                     .child(
@@ -2299,6 +2731,268 @@ impl Workspace {
                 .max_h(px(430.)),
             )
     }
+
+    fn render_settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let draft = self.settings_draft.clone().unwrap_or(SettingsDraft {
+            font_size: self.settings.appearance.font_size,
+            recovery: self.settings.recovery.clone(),
+        });
+        let temporary_enabled = draft.recovery.save_temporary_files;
+        let unsaved_enabled = draft.recovery.keep_unsaved_changes;
+        let temporary_workspace = cx.entity();
+        let unsaved_workspace = cx.entity();
+
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .left_0()
+            .bg(cx.theme().background.opacity(0.78))
+            .child(
+                v_flex()
+                    .absolute()
+                    .top(px(52.))
+                    .bottom(px(52.))
+                    .left(px(150.))
+                    .right(px(150.))
+                    .max_h(px(680.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .child(
+                        h_flex()
+                            .h_12()
+                            .px_5()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(div().text_lg().font_semibold().child("Settings"))
+                            .child(
+                                Button::new("close-settings")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip("Close Settings")
+                                    .on_click(cx.listener(|workspace, _, window, cx| {
+                                        workspace.hide_settings(window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .p_5()
+                            .gap_5()
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(div().text_sm().font_semibold().child("Editor Font"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Applied to every tab unless that tab is zoomed."),
+                                    )
+                                    .child(Input::new(&self.settings_font_input).w_full()),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().font_semibold().child("Text Size"))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Default editor size in points."),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("settings-font-smaller")
+                                                    .outline()
+                                                    .label("−")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.font_size = draft
+                                                                    .font_size
+                                                                    .saturating_sub(1)
+                                                                    .max(AppearanceSettings::MIN_FONT_SIZE);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_12()
+                                                    .text_center()
+                                                    .child(format!("{} pt", draft.font_size)),
+                                            )
+                                            .child(
+                                                Button::new("settings-font-larger")
+                                                    .outline()
+                                                    .label("+")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.font_size = (draft.font_size + 1)
+                                                                    .min(AppearanceSettings::MAX_FONT_SIZE);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Save Temporary Files"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Continuously recover Untitled tabs after a crash or force quit."),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-save-temporary")
+                                            .checked(temporary_enabled)
+                                            .on_click(move |checked, _, cx| {
+                                                temporary_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.recovery.save_temporary_files =
+                                                            *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Keep Unsaved Changes"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Recover edits to named files without overwriting the originals."),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-keep-unsaved")
+                                            .checked(unsaved_enabled)
+                                            .on_click(move |checked, _, cx| {
+                                                unsaved_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.recovery.keep_unsaved_changes =
+                                                            *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child("Temporary Files Location"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Recovery copies stay local and are removed after save or discard."),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Input::new(&self.settings_location_input)
+                                                    .flex_1()
+                                                    .min_w_0(),
+                                            )
+                                            .child(
+                                                Button::new("choose-recovery-folder")
+                                                    .outline()
+                                                    .label("Choose…")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, window, cx| {
+                                                            workspace.choose_recovery_directory(
+                                                                window, cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .h(px(56.))
+                            .px_5()
+                            .gap_2()
+                            .justify_end()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                Button::new("cancel-settings")
+                                    .ghost()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|workspace, _, window, cx| {
+                                        workspace.hide_settings(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("save-settings")
+                                    .primary()
+                                    .label("Save Settings")
+                                    .on_click(cx.listener(|workspace, _, window, cx| {
+                                        workspace.save_settings_window(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+    }
 }
 
 impl Render for Workspace {
@@ -2316,7 +3010,16 @@ impl Render for Workspace {
             .huge_viewer
             .clone()
             .map(|viewer| viewer.into_any_element())
-            .unwrap_or_else(|| editor.render(cx).size_full().into_any_element());
+            .unwrap_or_else(|| {
+                editor
+                    .render(
+                        &self.settings.appearance.font_family,
+                        self.settings.appearance.font_size,
+                        cx,
+                    )
+                    .size_full()
+                    .into_any_element()
+            });
 
         let workspace = v_flex()
             .id("textify-workspace")
@@ -2335,6 +3038,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_workspace_search))
+            .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
             .child(
@@ -2393,6 +3097,9 @@ impl Render for Workspace {
             .when(self.overlay_mode.is_some(), |root| {
                 root.child(self.render_overlay(cx))
             })
+            .when(self.settings_visible, |root| {
+                root.child(self.render_settings_panel(cx))
+            })
     }
 }
 
@@ -2427,7 +3134,7 @@ fn command_items() -> Vec<OverlayItem> {
         ),
         (
             "Open Settings",
-            "Edit settings.json (reloads on save)",
+            "Change fonts and crash recovery",
             IdeCommand::OpenSettings,
         ),
         (
@@ -2491,6 +3198,7 @@ pub fn run() {
             KeyBinding::new("cmd-s", SaveDocument, None),
             KeyBinding::new("cmd-shift-s", SaveDocumentAs, None),
             KeyBinding::new("cmd-w", CloseDocument, None),
+            KeyBinding::new("cmd-,", ShowSettings, None),
             KeyBinding::new("ctrl-tab", NextDocument, None),
             KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
             KeyBinding::new("escape", DismissOverlay, None),
@@ -2584,5 +3292,66 @@ mod tests {
             open_file(&huge, policy).expect("huge"),
             OpenedFile::Huge { .. }
         ));
+    }
+
+    #[test]
+    fn recovered_named_file_keeps_disk_identity_and_draft_text() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("notes.md");
+        fs::write(&path, "saved\n").expect("saved fixture");
+        let recovery_path =
+            write_snapshot(directory.path(), 12, 7, ["unsaved 🦀\n"]).expect("recovery fixture");
+        let restored = restore_session_tab(
+            SessionTab {
+                path: Some(path.clone()),
+                recovery_path: Some(recovery_path.clone()),
+                untitled_number: 0,
+                label_override: None,
+                dirty: true,
+            },
+            FilePolicy::default(),
+        )
+        .expect("restore");
+
+        let RestoredFile::Recovered(seed) = restored else {
+            panic!("expected recovered editor");
+        };
+        assert_eq!(seed.text, "unsaved 🦀\n");
+        assert_eq!(seed.metadata.path.as_deref(), Some(path.as_path()));
+        assert_eq!(seed.metadata.language, Language::Markdown);
+        assert!(seed.disk_revision.is_some());
+        assert!(seed.dirty);
+        assert_eq!(seed.recovery_path.as_deref(), Some(recovery_path.as_path()));
+    }
+
+    #[gpui::test]
+    fn settings_window_uses_current_appearance_and_recovery_values(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_settings(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| {
+            assert!(workspace.settings_visible);
+            assert_eq!(
+                workspace.settings_font_input.read(cx).value(),
+                workspace.settings.appearance.font_family
+            );
+            let draft = workspace.settings_draft.as_ref().expect("draft");
+            assert_eq!(draft.font_size, workspace.settings.appearance.font_size);
+            assert_eq!(draft.recovery, workspace.settings.recovery);
+        });
     }
 }

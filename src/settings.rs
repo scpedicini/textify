@@ -1,9 +1,12 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::document::FileMode;
+use crate::{document::FileMode, file_io::save_atomic};
 
 pub fn textify_data_dir() -> std::path::PathBuf {
     if let Some(path) = std::env::var_os("TEXTIFY_DATA_DIR") {
@@ -50,6 +53,8 @@ impl EditorBudgets {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextifySettings {
+    pub appearance: AppearanceSettings,
+    pub recovery: RecoverySettings,
     pub editor: EditorBudgets,
     pub workspace: WorkspaceSettings,
     pub lsp: LspSettings,
@@ -58,10 +63,84 @@ pub struct TextifySettings {
 impl TextifySettings {
     pub fn load(path: &Path) -> Result<Self> {
         match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("could not parse {}", path.display())),
+            Ok(bytes) => {
+                let mut settings: Self = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("could not parse {}", path.display()))?;
+                settings.appearance.normalize();
+                Ok(settings)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
+        }
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let json = serde_json::to_string_pretty(self).context("could not serialize settings")?;
+        save_atomic(path, &json)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceSettings {
+    pub font_family: String,
+    pub font_size: u16,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            font_family: "SFMono-Regular".to_owned(),
+            font_size: 14,
+        }
+    }
+}
+
+impl AppearanceSettings {
+    pub const MIN_FONT_SIZE: u16 = 8;
+    pub const MAX_FONT_SIZE: u16 = 40;
+
+    pub fn normalize(&mut self) {
+        self.font_family = self.font_family.trim().to_owned();
+        if self.font_family.is_empty() {
+            self.font_family = Self::default().font_family;
+        }
+        self.font_size = self
+            .font_size
+            .clamp(Self::MIN_FONT_SIZE, Self::MAX_FONT_SIZE);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecoverySettings {
+    pub save_temporary_files: bool,
+    pub keep_unsaved_changes: bool,
+    pub temporary_files_location: Option<PathBuf>,
+}
+
+impl Default for RecoverySettings {
+    fn default() -> Self {
+        Self {
+            save_temporary_files: true,
+            keep_unsaved_changes: true,
+            temporary_files_location: None,
+        }
+    }
+}
+
+impl RecoverySettings {
+    pub fn directory(&self, data_dir: &Path) -> PathBuf {
+        self.temporary_files_location
+            .clone()
+            .unwrap_or_else(|| data_dir.join("Backups"))
+    }
+
+    pub const fn enabled_for(&self, has_file_path: bool) -> bool {
+        if has_file_path {
+            self.keep_unsaved_changes
+        } else {
+            self.save_temporary_files
         }
     }
 }
@@ -188,6 +267,46 @@ mod tests {
         assert_eq!(settings.editor.normal_search_matches, 20_000);
         assert_eq!(settings.workspace.max_entries, 100_000);
         assert!(!settings.lsp.enabled);
+        assert_eq!(settings.appearance, AppearanceSettings::default());
+        assert_eq!(settings.recovery, RecoverySettings::default());
+    }
+
+    #[test]
+    fn recovery_location_defaults_to_private_application_storage() {
+        let root = Path::new("/tmp/textify-data");
+        let recovery = RecoverySettings::default();
+        assert_eq!(recovery.directory(root), root.join("Backups"));
+        assert!(recovery.enabled_for(false));
+        assert!(recovery.enabled_for(true));
+
+        let custom = RecoverySettings {
+            temporary_files_location: Some(PathBuf::from("/tmp/custom-textify")),
+            ..RecoverySettings::default()
+        };
+        assert_eq!(custom.directory(root), PathBuf::from("/tmp/custom-textify"));
+    }
+
+    #[test]
+    fn appearance_normalization_keeps_rendering_values_safe() {
+        let mut appearance = AppearanceSettings {
+            font_family: "   ".to_owned(),
+            font_size: 200,
+        };
+        appearance.normalize();
+        assert_eq!(appearance.font_family, "SFMono-Regular");
+        assert_eq!(appearance.font_size, AppearanceSettings::MAX_FONT_SIZE);
+    }
+
+    #[test]
+    fn settings_save_round_trips_atomically() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("settings.json");
+        let mut settings = TextifySettings::default();
+        settings.appearance.font_size = 18;
+        settings.recovery.keep_unsaved_changes = false;
+
+        settings.save(&path).expect("save");
+        assert_eq!(TextifySettings::load(&path).expect("load"), settings);
     }
 
     #[test]
