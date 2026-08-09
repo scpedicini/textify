@@ -3088,6 +3088,7 @@ impl Workspace {
                             Button::new(("discard-close", id))
                                 .label("Don't Save")
                                 .with_variant(ButtonVariant::Danger)
+                                .debug_selector(|| "discard-close".to_owned())
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     discard_workspace.update(cx, |workspace, cx| {
@@ -3235,11 +3236,13 @@ impl Workspace {
 
     fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = cx.entity();
+        let active_id = self.active_id();
         let tabs = self
             .documents
             .iter()
             .map(|document| {
                 let id = document.id;
+                let is_active = id == active_id;
                 let close_workspace = workspace.clone();
                 Tab::new().label(document.title(cx)).suffix(
                     Button::new(("close-tab", id))
@@ -3248,6 +3251,9 @@ impl Workspace {
                         .compact()
                         .icon(IconName::Close)
                         .tooltip("Close")
+                        .when(is_active, |button| {
+                            button.debug_selector(|| "active-tab-close".to_owned())
+                        })
                         .on_click(move |_, window, cx| {
                             close_workspace.update(cx, |workspace, cx| {
                                 workspace.request_close(id, window, cx)
@@ -5066,6 +5072,78 @@ mod tests {
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_ne!(workspace.active_id(), original_id);
             assert_eq!(workspace.documents.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn dirty_untitled_command_w_renders_and_operates_the_close_dialog(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-t", NewDocument, None),
+                KeyBinding::new("cmd-w", CloseDocument, None),
+            ])
+        });
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        workspace.update(cx, |workspace, _| {
+            workspace.session_path = directory.path().join("session.json")
+        });
+
+        cx.simulate_keystrokes("cmd-t");
+        let dirty_id = workspace.update(&mut cx.cx, |workspace, _| workspace.active_id());
+        cx.simulate_input("unsaved draft");
+        cx.simulate_keystrokes("enter");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.documents.len(), 2);
+            assert_eq!(workspace.active_id(), dirty_id);
+            assert!(workspace.active_document().dirty);
+            assert!(workspace.active_document().metadata.path.is_none());
+        });
+
+        cx.simulate_keystrokes("cmd-w");
+        cx.update(|window, cx| assert!(window.has_active_dialog(cx)));
+        assert!(cx.debug_bounds("active-dialog").is_some());
+
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.active_id(), dirty_id);
+            assert!(workspace.active_document().dirty);
+        });
+
+        cx.simulate_keystrokes("cmd-w enter");
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.active_id(), dirty_id);
+            assert!(workspace.active_document().dirty);
+        });
+
+        let close_tab = cx
+            .debug_bounds("active-tab-close")
+            .expect("visible active-tab close control");
+        cx.simulate_click(close_tab.center(), gpui::Modifiers::none());
+        assert!(cx.debug_bounds("active-dialog").is_some());
+        let discard = cx
+            .debug_bounds("discard-close")
+            .expect("visible Don't Save control");
+        cx.simulate_click(discard.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.documents.len(), 1);
+            assert_ne!(workspace.active_id(), dirty_id);
         });
     }
 

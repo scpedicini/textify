@@ -60,8 +60,8 @@ Initial settings for a proper full-featured text editor:
 # Interaction hardening — close, navigation, and history
 
 - [x] Command-W and every tab close button close clean temporary tabs immediately; dirty temporary
-  or named tabs use a Save / Don't Save / Cancel dialog, and Save closes only after a successful
-  write or Save As.
+  or named tabs use a rendered, keyboard-operable Save / Don't Save / Cancel dialog, and Save closes
+  only after a successful write or Save As.
 - [x] Open Tabs opens as a ten-row keyboard-driven list of every tab, keeps the highlighted row in
   view, filters live, and activates/reveals the selected tab with Enter.
 - [x] File → Open Recent uses a private newest-first history with a configurable 1–100 item limit,

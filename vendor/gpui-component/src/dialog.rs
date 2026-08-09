@@ -393,6 +393,7 @@ impl RenderOnce for Dialog {
             .child(
                 div()
                     .id("dialog")
+                    .debug_selector(|| "active-dialog".to_owned())
                     .occlude()
                     .w(view_size.width)
                     .h(view_size.height)

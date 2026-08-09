@@ -337,46 +337,9 @@ impl Root {
         cx: &mut App,
     ) -> Option<impl IntoElement + use<>> {
         let root = window.root::<Root>()??;
-
         let active_dialogs = root.read(cx).active_dialogs.clone();
 
-        if active_dialogs.is_empty() {
-            return None;
-        }
-
-        let mut show_overlay_ix = None;
-
-        let mut dialogs = active_dialogs
-            .iter()
-            .enumerate()
-            .map(|(i, active_dialog)| {
-                let mut dialog = Dialog::new(window, cx);
-
-                dialog = (active_dialog.builder)(dialog, window, cx);
-
-                // Give the dialog the focus handle, because `dialog` is a temporary value, is not possible to
-                // keep the focus handle in the dialog.
-                //
-                // So we keep the focus handle in the `active_dialog`, this is owned by the `Root`.
-                dialog.focus_handle = active_dialog.focus_handle.clone();
-
-                dialog.layer_ix = i;
-                // Find the dialog which one needs to show overlay.
-                if dialog.has_overlay() {
-                    show_overlay_ix = Some(i);
-                }
-
-                dialog
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(ix) = show_overlay_ix {
-            if let Some(dialog) = dialogs.get_mut(ix) {
-                dialog.overlay_visible = true;
-            }
-        }
-
-        Some(div().children(dialogs))
+        build_dialog_layer(active_dialogs, window, cx)
     }
 
     /// Return the root view of the Root.
@@ -391,6 +354,50 @@ impl Root {
     fn on_action_tab_prev(&mut self, _: &TabPrev, window: &mut Window, _: &mut Context<Self>) {
         window.focus_prev();
     }
+}
+
+fn build_dialog_layer(
+    active_dialogs: Vec<ActiveDialog>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<impl IntoElement + use<>> {
+    if active_dialogs.is_empty() {
+        return None;
+    }
+
+    let mut show_overlay_ix = None;
+
+    let mut dialogs = active_dialogs
+        .iter()
+        .enumerate()
+        .map(|(i, active_dialog)| {
+            let mut dialog = Dialog::new(window, cx);
+
+            dialog = (active_dialog.builder)(dialog, window, cx);
+
+            // Give the dialog the focus handle, because `dialog` is a temporary value, is not possible to
+            // keep the focus handle in the dialog.
+            //
+            // So we keep the focus handle in the `active_dialog`, this is owned by the `Root`.
+            dialog.focus_handle = active_dialog.focus_handle.clone();
+
+            dialog.layer_ix = i;
+            // Find the dialog which one needs to show overlay.
+            if dialog.has_overlay() {
+                show_overlay_ix = Some(i);
+            }
+
+            dialog
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(ix) = show_overlay_ix {
+        if let Some(dialog) = dialogs.get_mut(ix) {
+            dialog.overlay_visible = true;
+        }
+    }
+
+    Some(div().children(dialogs))
 }
 
 impl Render for Root {
@@ -408,7 +415,8 @@ impl Render for Root {
                 .font_family(cx.theme().font_family.clone())
                 .bg(cx.theme().background)
                 .text_color(cx.theme().foreground)
-                .child(self.view.clone()),
+                .child(self.view.clone())
+                .children(build_dialog_layer(self.active_dialogs.clone(), window, cx)),
         )
     }
 }

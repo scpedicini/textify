@@ -194,6 +194,9 @@ Status: implemented and regression tested on 2026-08-08.
 - Command-W and tab close buttons share a three-choice dirty-document flow. Save As cancellation,
   write errors, and edits racing a save all keep the tab open; recovery data is discarded only when
   the document actually closes.
+- The pinned component root mounts its recorded modal layer. An interaction test performs Command-T,
+  types into an untitled tab, invokes Command-W, verifies the rendered dialog, and exercises Cancel,
+  Save/Save As cancellation, and Don't Save.
 - The Open Tabs overlay is a focused, virtualized, ten-row navigator with live fuzzy/wildcard
   filtering, visible keyboard selection, Enter activation, and automatic tab-ribbon reveal.
 - Open Recent stores a serialized, newest-first, duplicate-free local path list. Settings controls
@@ -212,7 +215,7 @@ Status: implemented and regression tested on 2026-08-08.
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
 
-- 73 Textify tests and 113 pinned-fork tests pass.
+- 74 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.
