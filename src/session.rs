@@ -22,6 +22,8 @@ pub struct SessionTab {
     pub label_override: Option<String>,
     #[serde(default)]
     pub dirty: bool,
+    #[serde(default)]
+    pub font_size_override: Option<u16>,
 }
 
 impl SessionTab {
@@ -32,6 +34,7 @@ impl SessionTab {
             untitled_number: 0,
             label_override: None,
             dirty: false,
+            font_size_override: None,
         }
     }
 }
@@ -169,6 +172,7 @@ mod tests {
             untitled_number: 4,
             label_override: Some("Draft".to_owned()),
             dirty: true,
+            font_size_override: Some(18),
         };
         let state = SessionState::from_tabs(0, vec![tab.clone()]);
         save_session(&path, &state).expect("save");

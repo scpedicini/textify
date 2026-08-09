@@ -10,6 +10,8 @@ Textify's changes are limited to its editor requirements:
   available as `tree-sitter-all-languages`.
 - unknown and explicit `text` languages never initialize a Tree-sitter parser.
 - editor builders expose an approximate undo-memory budget and a search-decoration limit.
+- Command-scroll is passed to the host application for Textify's per-tab text zoom.
+- selection sets provide contained multicursor editing, rectangular selection, and grouped undo.
 
 Upgrade by replacing the upstream sources, reapplying these contained changes, and running the
 full Textify performance and interaction corpus before committing both the fork and lockfile.

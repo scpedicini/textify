@@ -10,9 +10,9 @@ use anyhow::Context as _;
 
 use gpui::{
     App, AppContext as _, Application, Context, Entity, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, StatefulInteractiveElement as _, Styled, Subscription,
-    Timer, Window, WindowBounds, WindowOptions, actions, div, prelude::FluentBuilder as _, px,
-    size, uniform_list,
+    KeyBinding, ParentElement as _, Render, ScrollDelta, ScrollWheelEvent,
+    StatefulInteractiveElement as _, Styled, Subscription, Timer, Window, WindowBounds,
+    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
@@ -81,6 +81,29 @@ fn new_recovery_key(id: u64) -> u128 {
     timestamp ^ ((std::process::id() as u128) << 64) ^ id as u128
 }
 
+fn consume_zoom_delta(delta: ScrollDelta, accumulator: &mut f32) -> i8 {
+    match delta {
+        ScrollDelta::Lines(delta) => {
+            if delta.y > 0.0 {
+                1
+            } else if delta.y < 0.0 {
+                -1
+            } else {
+                0
+            }
+        }
+        ScrollDelta::Pixels(delta) => {
+            *accumulator += delta.y / px(40.);
+            if accumulator.abs() < 1.0 {
+                return 0;
+            }
+            let step = if *accumulator > 0.0 { 1 } else { -1 };
+            *accumulator -= step as f32;
+            step
+        }
+    }
+}
+
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
     let metadata = fs::metadata(path)
         .map_err(anyhow::Error::from)
@@ -118,6 +141,8 @@ struct EditorDocument {
     recovery_key: u128,
     recovery_path: Option<PathBuf>,
     recovery_revision: u64,
+    font_size_override: Option<u16>,
+    zoom_accumulator: f32,
 }
 
 struct DocumentSeed {
@@ -128,6 +153,7 @@ struct DocumentSeed {
     untitled_number: usize,
     dirty: bool,
     recovery_path: Option<PathBuf>,
+    font_size_override: Option<u16>,
 }
 
 enum OpenedFile {
@@ -139,7 +165,7 @@ enum OpenedFile {
 }
 
 enum RestoredFile {
-    Opened(OpenedFile),
+    Opened(OpenedFile, Option<u16>),
     Recovered(DocumentSeed),
 }
 
@@ -162,11 +188,13 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
             untitled_number: tab.untitled_number,
             dirty: tab.dirty,
             recovery_path: Some(recovery_path),
+            font_size_override: tab.font_size_override,
         }));
     }
 
     if let Some(path) = tab.path {
-        return open_file(&path, policy).map(RestoredFile::Opened);
+        return open_file(&path, policy)
+            .map(|opened| RestoredFile::Opened(opened, tab.font_size_override));
     }
 
     let metadata = DocumentMetadata::new(None, FileAnalysis::from_bytes(b""), policy);
@@ -178,6 +206,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
         untitled_number: tab.untitled_number.max(1),
         dirty: false,
         recovery_path: None,
+        font_size_override: tab.font_size_override,
     }))
 }
 
@@ -407,6 +436,7 @@ impl Workspace {
                 untitled_number,
                 dirty: false,
                 recovery_path: None,
+                font_size_override: None,
                 metadata,
             },
             window,
@@ -432,6 +462,7 @@ impl Workspace {
                 untitled_number: 0,
                 dirty: false,
                 recovery_path: None,
+                font_size_override: None,
             },
             window,
             cx,
@@ -482,6 +513,7 @@ impl Workspace {
                 untitled_number: 0,
                 dirty: false,
                 recovery_path: None,
+                font_size_override: None,
             },
             window,
             cx,
@@ -511,6 +543,7 @@ impl Workspace {
             untitled_number,
             dirty,
             recovery_path,
+            font_size_override,
         } = seed;
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
@@ -562,6 +595,8 @@ impl Workspace {
             recovery_key: new_recovery_key(id),
             recovery_path,
             recovery_revision: 0,
+            font_size_override,
+            zoom_accumulator: 0.0,
         });
         self.active_index = self.documents.len() - 1;
         self.update_window_title(window);
@@ -620,6 +655,7 @@ impl Workspace {
                         dirty: document.dirty
                             && recovery_enabled
                             && document.recovery_path.is_some(),
+                        font_size_override: document.font_size_override,
                     },
                 )
             })
@@ -859,8 +895,10 @@ impl Workspace {
                             }
                             for result in loaded {
                                 match result {
-                                    Ok(RestoredFile::Opened(opened)) => {
-                                        workspace.push_opened(opened, window, cx)
+                                    Ok(RestoredFile::Opened(opened, font_size_override)) => {
+                                        workspace.push_opened(opened, window, cx);
+                                        workspace.active_document_mut().font_size_override =
+                                            font_size_override;
                                     }
                                     Ok(RestoredFile::Recovered(seed)) => {
                                         workspace.next_untitled_number = workspace
@@ -1138,6 +1176,7 @@ impl Workspace {
                             untitled_number,
                             dirty: false,
                             recovery_path: None,
+                            font_size_override: None,
                         },
                         window,
                         cx,
@@ -1183,6 +1222,7 @@ impl Workspace {
                                 untitled_number,
                                 dirty: true,
                                 recovery_path: None,
+                                font_size_override: None,
                             },
                             window,
                             cx,
@@ -2328,6 +2368,43 @@ impl Workspace {
         self.set_active_index(previous, window, cx);
     }
 
+    fn on_editor_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.modifiers.secondary() || self.active_document().huge_viewer.is_some() {
+            cx.propagate();
+            return;
+        }
+        let step = {
+            let document = self.active_document_mut();
+            consume_zoom_delta(event.delta, &mut document.zoom_accumulator)
+        };
+        if step == 0 {
+            cx.stop_propagation();
+            return;
+        }
+        let default_size = self.settings.appearance.font_size;
+        let document = self.active_document_mut();
+        let current = document.font_size_override.unwrap_or(default_size);
+        let next = if step > 0 {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
+        }
+        .clamp(
+            AppearanceSettings::MIN_FONT_SIZE,
+            AppearanceSettings::MAX_FONT_SIZE,
+        );
+        document.font_size_override = Some(next);
+        self.status_message = Some(format!("Text size: {next} pt (this tab)"));
+        self.persist_session(cx);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     fn show_error(title: &'static str, error: anyhow::Error, window: &mut Window, cx: &mut App) {
         let message = error.to_string();
         window.open_dialog(cx, move |dialog, _, _| {
@@ -3005,6 +3082,10 @@ impl Render for Workspace {
             );
         }
         let editor = self.active_document().editor.clone();
+        let font_size = self
+            .active_document()
+            .font_size_override
+            .unwrap_or(self.settings.appearance.font_size);
         let content = self
             .active_document()
             .huge_viewer
@@ -3012,11 +3093,7 @@ impl Render for Workspace {
             .map(|viewer| viewer.into_any_element())
             .unwrap_or_else(|| {
                 editor
-                    .render(
-                        &self.settings.appearance.font_family,
-                        self.settings.appearance.font_size,
-                        cx,
-                    )
+                    .render(&self.settings.appearance.font_family, font_size, cx)
                     .size_full()
                     .into_any_element()
             });
@@ -3085,6 +3162,7 @@ impl Render for Workspace {
                             .min_w_0()
                             .overflow_hidden()
                             .bg(cx.theme().background)
+                            .on_scroll_wheel(cx.listener(Self::on_editor_scroll))
                             .child(content),
                     ),
             )
@@ -3194,6 +3272,7 @@ pub fn run() {
         gpui_component::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewDocument, None),
+            KeyBinding::new("cmd-t", NewDocument, None),
             KeyBinding::new("cmd-o", OpenDocument, None),
             KeyBinding::new("cmd-s", SaveDocument, None),
             KeyBinding::new("cmd-shift-s", SaveDocumentAs, None),
@@ -3308,6 +3387,7 @@ mod tests {
                 untitled_number: 0,
                 label_override: None,
                 dirty: true,
+                font_size_override: Some(17),
             },
             FilePolicy::default(),
         )
@@ -3321,6 +3401,7 @@ mod tests {
         assert_eq!(seed.metadata.language, Language::Markdown);
         assert!(seed.disk_revision.is_some());
         assert!(seed.dirty);
+        assert_eq!(seed.font_size_override, Some(17));
         assert_eq!(seed.recovery_path.as_deref(), Some(recovery_path.as_path()));
     }
 
@@ -3352,6 +3433,89 @@ mod tests {
             let draft = workspace.settings_draft.as_ref().expect("draft");
             assert_eq!(draft.font_size, workspace.settings.appearance.font_size);
             assert_eq!(draft.recovery, workspace.settings.recovery);
+        });
+    }
+
+    #[test]
+    fn trackpad_zoom_accumulates_while_wheel_zoom_steps_once() {
+        let mut accumulator = 0.0;
+        assert_eq!(
+            consume_zoom_delta(
+                ScrollDelta::Pixels(gpui::point(px(0.), px(20.))),
+                &mut accumulator,
+            ),
+            0
+        );
+        assert_eq!(
+            consume_zoom_delta(
+                ScrollDelta::Pixels(gpui::point(px(0.), px(20.))),
+                &mut accumulator,
+            ),
+            1
+        );
+        assert_eq!(
+            consume_zoom_delta(ScrollDelta::Lines(gpui::point(0., -3.)), &mut accumulator),
+            -1
+        );
+    }
+
+    #[gpui::test]
+    fn command_scroll_zoom_is_isolated_to_the_active_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                let default_size = workspace.settings.appearance.font_size;
+                workspace.on_editor_scroll(
+                    &ScrollWheelEvent {
+                        delta: ScrollDelta::Lines(gpui::point(0., 1.)),
+                        modifiers: gpui::Modifiers {
+                            platform: true,
+                            ..gpui::Modifiers::default()
+                        },
+                        ..ScrollWheelEvent::default()
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    workspace.documents[0].font_size_override,
+                    Some(default_size + 1)
+                );
+
+                workspace.add_untitled(window, cx);
+                workspace.on_editor_scroll(
+                    &ScrollWheelEvent {
+                        delta: ScrollDelta::Lines(gpui::point(0., -1.)),
+                        modifiers: gpui::Modifiers {
+                            platform: true,
+                            ..gpui::Modifiers::default()
+                        },
+                        ..ScrollWheelEvent::default()
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    workspace.documents[0].font_size_override,
+                    Some(default_size + 1)
+                );
+                assert_eq!(
+                    workspace.documents[1].font_size_override,
+                    Some(default_size - 1)
+                );
+            });
         });
     }
 }

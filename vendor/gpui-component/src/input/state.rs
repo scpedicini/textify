@@ -1474,6 +1474,11 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Textify reserves Command-scroll for per-document text zoom. Let the containing
+        // application handle that gesture instead of consuming it as editor scrolling.
+        if event.modifiers.secondary() {
+            return;
+        }
         let line_height = self
             .last_layout
             .as_ref()
