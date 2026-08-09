@@ -250,6 +250,12 @@ pub(super) struct LastLayout {
     pub(super) cursor_bounds: Option<Bounds<Pixels>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ZoomAnchor {
+    pub(crate) offset: usize,
+    pub(crate) viewport_y: Pixels,
+}
+
 impl LastLayout {
     /// Get the line layout for the given row (0-based).
     ///
@@ -310,8 +316,8 @@ pub struct InputState {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
-    /// A one-shot caret position to preserve across a font or layout scale change.
-    pub(crate) cursor_anchor: Option<Point<Pixels>>,
+    /// A one-shot document position to preserve across a font or layout scale change.
+    pub(crate) zoom_anchor: Option<ZoomAnchor>,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
 
@@ -415,7 +421,7 @@ impl InputState {
             scroll_handle: ScrollHandle::new(),
             scroll_size: gpui::size(px(0.), px(0.)),
             deferred_scroll_offset: None,
-            cursor_anchor: None,
+            zoom_anchor: None,
             preferred_column: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -1530,30 +1536,42 @@ impl InputState {
         cx.notify();
     }
 
-    /// Preserve the visible caret position through the next text layout.
+    fn preserve_zoom_anchor_for_offset(&mut self, offset: usize) -> bool {
+        let Some(layout) = self.last_layout.as_ref() else {
+            return false;
+        };
+        if self.text_wrapper.lines.is_empty() {
+            return false;
+        }
+
+        let offset = offset.min(self.text.len());
+        let display_point = self.text_wrapper.offset_to_display_point(offset);
+        let viewport_y =
+            display_point.row as f32 * layout.line_height + self.scroll_handle.offset().y;
+        let visible = viewport_y + layout.line_height >= px(0.)
+            && viewport_y <= self.input_bounds.size.height;
+        if visible {
+            self.zoom_anchor = Some(ZoomAnchor { offset, viewport_y });
+        }
+        visible
+    }
+
+    /// Preserve the document row under the pointer through the next text layout.
+    ///
+    /// Returns false when the pointer is outside the input or layout has not completed yet.
+    pub fn preserve_zoom_anchor_at(&mut self, position: Point<Pixels>) -> bool {
+        if !self.input_bounds.contains(&position) {
+            return false;
+        }
+        let offset = self.index_for_mouse_position(position);
+        self.preserve_zoom_anchor_for_offset(offset)
+    }
+
+    /// Preserve the visible caret row through the next text layout.
     ///
     /// Returns false when the caret is outside the viewport or layout has not completed yet.
     pub fn preserve_cursor_anchor(&mut self) -> bool {
-        let Some(cursor_bounds) = self
-            .last_layout
-            .as_ref()
-            .and_then(|layout| layout.cursor_bounds)
-        else {
-            return false;
-        };
-        let scroll_offset = self.scroll_handle.offset();
-        let anchor = point(
-            cursor_bounds.left() - self.input_bounds.left(),
-            cursor_bounds.top() + scroll_offset.y - self.input_bounds.top(),
-        );
-        let visible = anchor.x >= px(0.)
-            && anchor.x <= self.input_bounds.size.width
-            && anchor.y >= px(0.)
-            && anchor.y <= self.input_bounds.size.height;
-        if visible {
-            self.cursor_anchor = Some(anchor);
-        }
-        visible
+        self.preserve_zoom_anchor_for_offset(self.cursor())
     }
 
     /// Scroll to make the given offset visible.
@@ -2559,12 +2577,9 @@ mod tests {
         cx.run_until_parked();
 
         let before = input.update(&mut cx.cx, |input, _| {
-            let cursor = input
-                .last_layout
-                .as_ref()
-                .and_then(|layout| layout.cursor_bounds)
-                .expect("caret layout");
-            let y = cursor.top() + input.scroll_handle.offset().y - input.input_bounds.top();
+            let layout = input.last_layout.as_ref().expect("caret layout");
+            let display_point = input.text_wrapper.offset_to_display_point(input.cursor());
+            let y = display_point.row as f32 * layout.line_height + input.scroll_handle.offset().y;
             assert!(input.preserve_cursor_anchor());
             y
         });
@@ -2575,14 +2590,82 @@ mod tests {
         cx.run_until_parked();
 
         input.update(&mut cx.cx, |input, _| {
-            let cursor = input
-                .last_layout
-                .as_ref()
-                .and_then(|layout| layout.cursor_bounds)
-                .expect("scaled caret layout");
-            let after = cursor.top() + input.scroll_handle.offset().y - input.input_bounds.top();
+            let layout = input.last_layout.as_ref().expect("scaled caret layout");
+            let display_point = input.text_wrapper.offset_to_display_point(input.cursor());
+            let after =
+                display_point.row as f32 * layout.line_height + input.scroll_handle.offset().y;
             assert!((after - before).abs() <= px(1.));
-            assert!(input.cursor_anchor.is_none());
+            assert!(input.zoom_anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn font_scale_change_keeps_hovered_scrolled_text_anchored(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let input_slot = Rc::new(RefCell::new(None));
+        let capture = input_slot.clone();
+        let text = (0..180)
+            .map(|index| format!("line {index}: enough text to exercise pointer zoom anchoring"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (harness, cx) = cx.add_window_view(move |window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(false)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(input.clone());
+            ZoomHarness {
+                input,
+                font_size: px(14.),
+            }
+        });
+        let input = input_slot.borrow().clone().expect("input");
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let cursor = input.text.line_start_offset(5);
+                input.set_selections(vec![cursor..cursor], window, cx);
+            });
+        });
+        cx.run_until_parked();
+        input.update(&mut cx.cx, |input, cx| {
+            let scrolled_target = input.text.line_start_offset(100);
+            input.scroll_to(scrolled_target, None, cx);
+        });
+        cx.run_until_parked();
+
+        let (anchor_offset, before) = input.update(&mut cx.cx, |input, _| {
+            let pointer = point(
+                input.input_bounds.left() + px(140.),
+                input.input_bounds.top() + input.input_bounds.size.height / 2.,
+            );
+            let anchor_offset = input.index_for_mouse_position(pointer);
+            assert!(input.text.offset_to_position(anchor_offset).line > 50);
+            assert_eq!(input.cursor_position().line, 5);
+            let layout = input.last_layout.as_ref().expect("initial layout");
+            let display_point = input.text_wrapper.offset_to_display_point(anchor_offset);
+            let viewport_y =
+                display_point.row as f32 * layout.line_height + input.scroll_handle.offset().y;
+            assert!(input.preserve_zoom_anchor_at(pointer));
+            (anchor_offset, viewport_y)
+        });
+
+        harness.update(&mut cx.cx, |harness, cx| {
+            harness.font_size = px(24.);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        input.update(&mut cx.cx, |input, _| {
+            let layout = input.last_layout.as_ref().expect("scaled layout");
+            let display_point = input.text_wrapper.offset_to_display_point(anchor_offset);
+            let after =
+                display_point.row as f32 * layout.line_height + input.scroll_handle.offset().y;
+            assert!((after - before).abs() <= px(1.));
+            assert_eq!(input.cursor_position().line, 5);
+            assert!(input.zoom_anchor.is_none());
         });
     }
 }

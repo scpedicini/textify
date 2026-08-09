@@ -3555,7 +3555,7 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        document.editor.preserve_cursor_anchor(cx);
+        document.editor.preserve_zoom_anchor(event.position, cx);
         document.font_size_override = Some(next);
         self.status_message = Some(format!("Text size: {next} pt (this tab)"));
         self.persist_session(cx);

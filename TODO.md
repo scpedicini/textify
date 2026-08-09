@@ -52,7 +52,8 @@ Initial settings for a proper full-featured text editor:
   searches open files with fuzzy or `*` wildcard matching.
 - [x] Command overlays close directly from Escape or an outside click and return focus to the editor.
 - [x] Enabling word wrap immediately reflows against the usable text width without edge clipping.
-- [x] Command-scroll zoom preserves the visible caret position through the new layout.
+- [x] Command-scroll zoom preserves the document row under the pointer through every reflow, with
+  the visible caret as a fallback when the pointer is outside the editor.
 - [x] Editor Font is a searchable dropdown populated from installed font families.
 - [x] View → Toggle Title Bar hides or restores the complete Textify heading and persists the choice.
 - [x] Settings → Show Tagline independently hides or restores “A fast place for text.”

@@ -1,6 +1,6 @@
 //! The only module that knows how Textify configures GPUI Component's editor.
 
-use gpui::{App, AppContext as _, Entity, Styled as _, Window};
+use gpui::{App, AppContext as _, Entity, Pixels, Point, Styled as _, Window};
 use gpui_component::{
     highlighter::{Diagnostic, DiagnosticSeverity},
     input::{Input, InputState, Position, Rope, RopeExt as _, TabSize},
@@ -108,9 +108,10 @@ impl EditorBackend {
             .update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
     }
 
-    pub fn preserve_cursor_anchor(&self, cx: &mut App) -> bool {
-        self.state
-            .update(cx, |state, _| state.preserve_cursor_anchor())
+    pub fn preserve_zoom_anchor(&self, position: Point<Pixels>, cx: &mut App) -> bool {
+        self.state.update(cx, |state, _| {
+            state.preserve_zoom_anchor_at(position) || state.preserve_cursor_anchor()
+        })
     }
 
     pub fn select_position(
