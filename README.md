@@ -16,6 +16,16 @@ the visible/selected range as a temporary editable tab. The sparse line index, s
 navigation run in cancellable background tasks; the complete file is never loaded into the editor
 rope.
 
+## Multiple cursors
+
+- Command-click adds carets.
+- Option-drag creates a rectangular selection across physical lines.
+- Typing, Enter, Backspace, Delete, cut, copy, and paste operate on disjoint selections.
+- A clipboard with one line per selection distributes those lines; other clipboard text is repeated
+  at every selection.
+- A multicursor edit is one undo step. Starting an IME composition keeps the primary selection and
+  intentionally collapses secondary selections because macOS exposes one marked-text range.
+
 ## Run it
 
 The project currently targets Apple silicon macOS.

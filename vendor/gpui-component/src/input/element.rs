@@ -443,34 +443,85 @@ impl TextElement {
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
         cx: &mut App,
-    ) -> Option<Path<Pixels>> {
+    ) -> Vec<Path<Pixels>> {
         let state = self.state.read(cx);
-        let mut selected_range = state.selected_range;
+        let mut selections = state
+            .secondary_selected_ranges
+            .iter()
+            .copied()
+            .chain(std::iter::once(state.selected_range))
+            .collect::<Vec<_>>();
         if let Some(ime_marked_range) = &state.ime_marked_range {
             if !ime_marked_range.is_empty() {
-                selected_range = (ime_marked_range.end..ime_marked_range.end).into();
+                selections.clear();
+                selections.push((ime_marked_range.end..ime_marked_range.end).into());
             }
         }
-        if selected_range.is_empty() {
-            return None;
-        }
 
-        if state.masked {
-            // Because masked use `*`, 1 char with 1 byte.
-            selected_range.start = state.text.offset_to_char_index(selected_range.start);
-            selected_range.end = state.text.offset_to_char_index(selected_range.end);
-        }
+        selections
+            .into_iter()
+            .filter_map(|mut selected_range| {
+                if selected_range.is_empty() {
+                    return None;
+                }
+                if state.masked {
+                    // Because masked use `*`, 1 char with 1 byte.
+                    selected_range.start = state.text.offset_to_char_index(selected_range.start);
+                    selected_range.end = state.text.offset_to_char_index(selected_range.end);
+                }
+                let start = selected_range
+                    .start
+                    .max(last_layout.visible_range_offset.start);
+                let end = selected_range.end.min(last_layout.visible_range_offset.end);
+                Self::layout_match_range(start..end, last_layout, bounds)
+            })
+            .collect()
+    }
 
-        let (start_ix, end_ix) = if selected_range.start < selected_range.end {
-            (selected_range.start, selected_range.end)
-        } else {
-            (selected_range.end, selected_range.start)
-        };
-
-        let range = start_ix.max(last_layout.visible_range_offset.start)
-            ..end_ix.min(last_layout.visible_range_offset.end);
-
-        Self::layout_match_range(range, &last_layout, bounds)
+    fn layout_secondary_cursors(
+        &self,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        cx: &mut App,
+    ) -> Vec<Bounds<Pixels>> {
+        let state = self.state.read(cx);
+        let line_height = last_layout.line_height;
+        let cursor_height = match state.size {
+            crate::Size::Large => 1.,
+            crate::Size::Small => 0.75,
+            _ => 0.85,
+        } * line_height;
+        state
+            .secondary_selected_ranges
+            .iter()
+            .filter_map(|selection| {
+                let offset = selection.end;
+                if offset < last_layout.visible_range_offset.start
+                    || offset > last_layout.visible_range_offset.end
+                {
+                    return None;
+                }
+                let mut line_offset = last_layout.visible_range_offset.start;
+                let mut y = last_layout.visible_top;
+                for line in last_layout.lines.iter() {
+                    if let Some(position) =
+                        line.position_for_index(offset.saturating_sub(line_offset), line_height)
+                    {
+                        return Some(Bounds::new(
+                            bounds.origin
+                                + point(
+                                    last_layout.line_number_width + position.x,
+                                    y + position.y + (line_height - cursor_height) / 2.,
+                                ),
+                            size(CURSOR_WIDTH, cursor_height),
+                        ));
+                    }
+                    line_offset += line.len() + 1;
+                    y += line.size(line_height).height;
+                }
+                None
+            })
+            .collect()
     }
 
     /// Calculate the visible range of lines in the viewport.
@@ -803,7 +854,8 @@ pub(super) struct PrepaintState {
     cursor_scroll_offset: Point<Pixels>,
     /// row index (zero based), no wrap, same line as the cursor.
     current_row: Option<usize>,
-    selection_path: Option<Path<Pixels>>,
+    selection_paths: Vec<Path<Pixels>>,
+    secondary_cursor_bounds: Vec<Bounds<Pixels>>,
     hover_highlight_path: Option<Path<Pixels>>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
@@ -1163,7 +1215,8 @@ impl Element for TextElement {
         last_layout.cursor_bounds = cursor_bounds;
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
-        let selection_path = self.layout_selections(&last_layout, &mut bounds, cx);
+        let selection_paths = self.layout_selections(&last_layout, &mut bounds, cx);
+        let secondary_cursor_bounds = self.layout_secondary_cursors(&last_layout, &bounds, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds);
@@ -1227,7 +1280,8 @@ impl Element for TextElement {
             cursor_bounds,
             cursor_scroll_offset,
             current_row,
-            selection_path,
+            selection_paths,
+            secondary_cursor_bounds,
             search_match_paths,
             hover_highlight_path,
             hover_definition_hitbox,
@@ -1345,7 +1399,7 @@ impl Element for TextElement {
                 }
             }
 
-            if let Some(path) = prepaint.selection_path.take() {
+            for path in prepaint.selection_paths.drain(..) {
                 window.paint_path(path, cx.theme().selection);
             }
 
@@ -1404,6 +1458,9 @@ impl Element for TextElement {
         if focused && show_cursor {
             if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
                 window.paint_quad(fill(cursor_bounds, cx.theme().caret));
+            }
+            for cursor_bounds in &prepaint.secondary_cursor_bounds {
+                window.paint_quad(fill(*cursor_bounds, cx.theme().caret));
             }
         }
 

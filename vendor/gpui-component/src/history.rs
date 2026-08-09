@@ -88,6 +88,16 @@ where
         self.grouping = true;
     }
 
+    /// Start a group that is guaranteed to be a distinct undo step.
+    ///
+    /// This is useful for one user action that produces several model changes, such as a
+    /// multicursor edit. Unlike time-based typing groups, the new group never merges into the
+    /// action that immediately preceded it.
+    pub fn start_new_group(&mut self) {
+        self.version = self.version.wrapping_add(1);
+        self.grouping = true;
+    }
+
     /// End grouping changes, this will allow the version to be incremented again.
     pub fn end_grouping(&mut self) {
         self.grouping = false;
@@ -343,5 +353,21 @@ mod tests {
 
         assert_eq!(history.undos().len(), 1);
         assert_eq!(history.undos()[0].tab_index, 1);
+    }
+
+    #[test]
+    fn explicit_group_is_one_distinct_undo_step() {
+        let mut history: History<TabIndex> = History::new();
+        history.push(0.into());
+        history.start_new_group();
+        history.push(1.into());
+        history.push(2.into());
+        history.end_grouping();
+
+        let grouped = history.undo().expect("multichange group");
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].tab_index, 2);
+        assert_eq!(grouped[1].tab_index, 1);
+        assert_eq!(history.undo().expect("previous action").len(), 1);
     }
 }

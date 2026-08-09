@@ -52,6 +52,7 @@ impl InputState {
         };
 
         self.selected_range = (range.start..range.end).into();
+        self.secondary_selected_ranges.clear();
         self.selected_word_range = Some(self.selected_range);
         cx.notify()
     }

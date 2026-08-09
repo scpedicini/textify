@@ -18,8 +18,16 @@ use sum_tree::Bias;
 use unicode_segmentation::*;
 
 use super::{
-    blink_cursor::BlinkCursor, change::Change, element::TextElement, mask_pattern::MaskPattern,
-    mode::InputMode, number_input, text_wrapper::TextWrapper,
+    blink_cursor::BlinkCursor,
+    change::Change,
+    element::TextElement,
+    mask_pattern::MaskPattern,
+    mode::InputMode,
+    multicursor::{
+        TaggedSelection, normalized_selections, rectangular_selections, replacement_plan,
+    },
+    number_input,
+    text_wrapper::TextWrapper,
 };
 use crate::Size;
 use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
@@ -271,6 +279,9 @@ pub struct InputState {
     /// - "Hello 世界💝" = 16
     /// - "💝" = 4
     pub(super) selected_range: Selection,
+    /// Additional disjoint selections. The primary selection remains `selected_range` so the
+    /// platform input handler and upstream editor behavior continue to have one active IME range.
+    pub(super) secondary_selected_ranges: Vec<Selection>,
     pub(super) search_panel: Option<Entity<SearchPanel>>,
     pub(super) searchable: bool,
     pub(super) search_max_matches: usize,
@@ -287,6 +298,8 @@ pub struct InputState {
     pub(super) last_bounds: Option<Bounds<Pixels>>,
     pub(super) last_selected_range: Option<Selection>,
     pub(super) selecting: bool,
+    pub(super) rectangular_anchor: Option<usize>,
+    pub(super) batch_editing: bool,
     pub(super) size: Size,
     pub(super) disabled: bool,
     pub(super) masked: bool,
@@ -374,6 +387,7 @@ impl InputState {
             blink_cursor,
             history,
             selected_range: Selection::default(),
+            secondary_selected_ranges: Vec::new(),
             search_panel: None,
             searchable: false,
             search_max_matches: usize::MAX,
@@ -382,6 +396,8 @@ impl InputState {
             ime_marked_range: None,
             input_bounds: Bounds::default(),
             selecting: false,
+            rectangular_anchor: None,
+            batch_editing: false,
             disabled: false,
             masked: false,
             clean_on_escape: false,
@@ -629,6 +645,7 @@ impl InputState {
         } else {
             self.selected_range.clear();
         }
+        self.secondary_selected_ranges.clear();
 
         if self.mode.is_code_editor() {
             self._pending_update = true;
@@ -654,6 +671,96 @@ impl InputState {
         let range_utf16 = self.range_to_utf16(&(self.cursor()..self.cursor()));
         self.replace_text_in_range_silent(Some(range_utf16), &text, window, cx);
         self.selected_range = (self.selected_range.end..self.selected_range.end).into();
+    }
+
+    /// Return the primary and secondary selections in document order.
+    pub fn selections(&self) -> Vec<Selection> {
+        normalized_selections(self.selected_range, &self.secondary_selected_ranges)
+            .into_iter()
+            .map(|selection| selection.range)
+            .collect()
+    }
+
+    /// Replace the current selection set. The last supplied range is the primary selection.
+    pub fn set_selections(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut ranges = ranges
+            .into_iter()
+            .map(|range| {
+                Selection::new(
+                    self.text
+                        .clip_offset(range.start.min(self.text.len()), Bias::Left),
+                    self.text
+                        .clip_offset(range.end.min(self.text.len()), Bias::Left),
+                )
+            })
+            .collect::<Vec<_>>();
+        let primary = ranges.pop().unwrap_or(self.selected_range);
+        self.apply_selection_set(normalized_selections(primary, &ranges));
+        self.ime_marked_range = None;
+        self.pause_blink_cursor(cx);
+        cx.notify();
+    }
+
+    fn apply_selection_set(&mut self, selections: Vec<TaggedSelection>) {
+        self.secondary_selected_ranges.clear();
+        for selection in selections {
+            if selection.primary {
+                self.selected_range = selection.range;
+            } else {
+                self.secondary_selected_ranges.push(selection.range);
+            }
+        }
+    }
+
+    fn add_caret_at(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = self
+            .text
+            .clip_offset(offset.min(self.text.len()), Bias::Left);
+        let mut secondary = std::mem::take(&mut self.secondary_selected_ranges);
+        secondary.push(self.selected_range);
+        self.apply_selection_set(normalized_selections(
+            Selection::new(offset, offset),
+            &secondary,
+        ));
+        self.selection_reversed = false;
+        self.rectangular_anchor = None;
+        self.pause_blink_cursor(cx);
+        cx.notify();
+    }
+
+    fn replace_selection_set(
+        &mut self,
+        replacement_values: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selections =
+            normalized_selections(self.selected_range, &self.secondary_selected_ranges);
+        if selections.is_empty() {
+            return;
+        }
+        let plan = replacement_plan(&selections, &replacement_values);
+
+        self.history.start_new_group();
+        self.batch_editing = true;
+        let mut resulting = Vec::with_capacity(plan.len());
+        for replacement in plan {
+            let range_utf16 = self.range_to_utf16(&replacement.range);
+            self.replace_text_in_range_silent(Some(range_utf16), &replacement.value, window, cx);
+            resulting.push(replacement.resulting_selection);
+        }
+        self.batch_editing = false;
+        self.history.end_grouping();
+        self.apply_selection_set(resulting);
+        self.selection_reversed = false;
+        self.update_preferred_column();
+        self.scroll_to(self.cursor(), None, cx);
+        cx.notify();
     }
 
     /// Replace text at the current cursor position.
@@ -869,6 +976,7 @@ impl InputState {
 
     pub(super) fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.selected_range = (0..self.text.len()).into();
+        self.secondary_selected_ranges.clear();
         cx.notify();
     }
 
@@ -1043,6 +1151,17 @@ impl InputState {
     }
 
     pub(super) fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        let secondary = std::mem::take(&mut self.secondary_selected_ranges);
+        self.secondary_selected_ranges = secondary
+            .into_iter()
+            .map(|selection| {
+                if selection.is_empty() {
+                    Selection::new(self.previous_boundary(selection.start), selection.start)
+                } else {
+                    selection
+                }
+            })
+            .collect();
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor()), cx)
         }
@@ -1051,6 +1170,17 @@ impl InputState {
     }
 
     pub(super) fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        let secondary = std::mem::take(&mut self.secondary_selected_ranges);
+        self.secondary_selected_ranges = secondary
+            .into_iter()
+            .map(|selection| {
+                if selection.is_empty() {
+                    Selection::new(selection.start, self.next_boundary(selection.start))
+                } else {
+                    selection
+                }
+            })
+            .collect();
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor()), cx)
         }
@@ -1187,6 +1317,7 @@ impl InputState {
     pub(super) fn clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_text("", window, cx);
         self.selected_range = (0..0).into();
+        self.secondary_selected_ranges.clear();
         self.scroll_to(0, None, cx);
     }
 
@@ -1248,6 +1379,23 @@ impl InputState {
             return;
         }
 
+        if event.button == MouseButton::Left && self.mode.is_multi_line() {
+            if event.modifiers.platform {
+                self.selecting = false;
+                self.add_caret_at(offset, cx);
+                return;
+            }
+            if event.modifiers.alt {
+                self.secondary_selected_ranges.clear();
+                self.selected_range = Selection::new(offset, offset);
+                self.selection_reversed = false;
+                self.rectangular_anchor = Some(offset);
+                self.pause_blink_cursor(cx);
+                cx.notify();
+                return;
+            }
+        }
+
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else {
@@ -1265,6 +1413,7 @@ impl InputState {
             self.selection_reversed = false;
         }
         self.selecting = false;
+        self.rectangular_anchor = None;
         self.selected_word_range = None;
     }
 
@@ -1441,23 +1590,26 @@ impl InputState {
     }
 
     pub(super) fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
+        let selected = self
+            .selections()
+            .into_iter()
+            .filter(|selection| !selection.is_empty())
+            .map(|selection| self.text.slice(selection).to_string())
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
             return;
         }
 
-        let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+        cx.write_to_clipboard(ClipboardItem::new_string(selected.join("\n")));
     }
 
     pub(super) fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
+        if self.selections().iter().all(Selection::is_empty) {
             return;
         }
 
-        let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
-
-        self.replace_text_in_range_silent(None, "", window, cx);
+        self.copy(&Copy, window, cx);
+        self.replace_selection_set(vec![String::new()], window, cx);
     }
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
@@ -1467,7 +1619,16 @@ impl InputState {
                 new_text = new_text.replace('\n', "");
             }
 
-            self.replace_text_in_range_silent(None, &new_text, window, cx);
+            let selection_count = self.selections().len();
+            let distributed = new_text
+                .split('\n')
+                .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+                .collect::<Vec<_>>();
+            if selection_count > 1 && distributed.len() == selection_count {
+                self.replace_selection_set(distributed, window, cx);
+            } else {
+                self.replace_text_in_range_silent(None, &new_text, window, cx);
+            }
             self.scroll_to(self.cursor(), None, cx);
         }
     }
@@ -1485,6 +1646,7 @@ impl InputState {
     }
 
     pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        self.secondary_selected_ranges.clear();
         self.history.ignore = true;
         if let Some(changes) = self.history.undo() {
             for change in changes {
@@ -1496,6 +1658,7 @@ impl InputState {
     }
 
     pub(super) fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        self.secondary_selected_ranges.clear();
         self.history.ignore = true;
         if let Some(changes) = self.history.redo() {
             for change in changes {
@@ -1658,6 +1821,7 @@ impl InputState {
     pub fn unselect(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.cursor();
         self.selected_range = (offset..offset).into();
+        self.secondary_selected_ranges.clear();
         cx.notify()
     }
 
@@ -1772,6 +1936,23 @@ impl InputState {
         }
 
         let offset = self.index_for_mouse_position(event.position);
+        if let Some(anchor) = self.rectangular_anchor {
+            let (ranges, primary) = rectangular_selections(&self.text, anchor, offset);
+            self.apply_selection_set(
+                ranges
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, range)| TaggedSelection {
+                        range,
+                        primary: index == primary,
+                    })
+                    .collect(),
+            );
+            self.selection_reversed = false;
+            self.pause_blink_cursor(cx);
+            cx.notify();
+            return;
+        }
         self.select_to(offset, cx);
     }
 
@@ -1969,6 +2150,15 @@ impl EntityInputHandler for InputState {
             return;
         }
 
+        if range_utf16.is_none()
+            && self.ime_marked_range.is_none()
+            && !self.batch_editing
+            && !self.secondary_selected_ranges.is_empty()
+        {
+            self.replace_selection_set(vec![new_text.to_owned()], window, cx);
+            return;
+        }
+
         self.pause_blink_cursor(cx);
 
         let range = range_utf16
@@ -2003,7 +2193,9 @@ impl EntityInputHandler for InputState {
         }
 
         self.push_history(&old_text, &range, &new_text);
-        self.history.end_grouping();
+        if !self.batch_editing {
+            self.history.end_grouping();
+        }
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -2035,6 +2227,13 @@ impl EntityInputHandler for InputState {
     ) {
         if self.disabled {
             return;
+        }
+
+        // macOS exposes one marked-text range. Composition therefore continues only at the
+        // primary selection; secondary selections are intentionally collapsed before provisional
+        // IME text is inserted. A committed non-composing insertion still fans out normally.
+        if self.ime_marked_range.is_none() {
+            self.secondary_selected_ranges.clear();
         }
 
         self.lsp.reset();
@@ -2188,5 +2387,47 @@ impl Render for InputState {
             .children(self.diagnostic_popover.clone())
             .children(self.context_menu.as_ref().map(|menu| menu.render()))
             .children(self.hover_popover.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::ClipboardItem;
+
+    use super::*;
+
+    #[gpui::test]
+    fn multicursor_edit_paste_undo_and_ime_policy(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .default_value("alpha beta gamma")
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_selections(vec![0..5, 6..10], window, cx);
+                input.replace_selection_set(vec!["A".to_owned(), "B".to_owned()], window, cx);
+                assert_eq!(input.value().as_ref(), "A B gamma");
+                assert_eq!(
+                    input.selections(),
+                    vec![Selection::new(1, 1), Selection::new(3, 3)]
+                );
+
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.value().as_ref(), "alpha beta gamma");
+
+                input.set_selections(vec![0..5, 6..10], window, cx);
+                cx.write_to_clipboard(ClipboardItem::new_string("left\nright".to_owned()));
+                input.paste(&Paste, window, cx);
+                assert_eq!(input.value().as_ref(), "left right gamma");
+
+                input.set_selections(vec![0..0, 5..5], window, cx);
+                input.replace_and_mark_text_in_range(None, "あ", None, window, cx);
+                assert!(input.secondary_selected_ranges.is_empty());
+                assert!(input.ime_marked_range.is_some());
+            });
+        });
     }
 }

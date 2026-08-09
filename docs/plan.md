@@ -94,6 +94,8 @@ Implementation notes:
 
 ## Milestone 4 — multicursor architecture gate
 
+Status: implemented in the pinned GPUI Component fork and interaction tested on 2026-08-08.
+
 Before building IDE features, prototype the requirement most likely to force an editor fork:
 
 - Command-click to add carets.
@@ -105,6 +107,12 @@ Before building IDE features, prototype the requirement most likely to force an 
 Exit criteria: either upstream support passes the interaction suite, or the required changes are
 small and contained in Textify's GPUI Component fork. If neither is true, revisit STTextView
 before further coupling the application to the editor core.
+
+Decision: continue with GPUI. The fork now contains the complete selection-set implementation,
+rendering, mouse gestures, batch replacement planning, and undo grouping. The platform retains one
+primary marked-text range; starting IME composition intentionally collapses secondary selections,
+while ordinary committed text fans out to every selection. Textify's application/editor adapter
+remains unchanged.
 
 ## Milestone 5 — IDE workflows
 
