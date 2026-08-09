@@ -55,6 +55,7 @@ impl EditorBudgets {
 pub struct TextifySettings {
     pub appearance: AppearanceSettings,
     pub recovery: RecoverySettings,
+    pub recent_files: RecentFileSettings,
     pub editor: EditorBudgets,
     pub workspace: WorkspaceSettings,
     pub lsp: LspSettings,
@@ -67,6 +68,7 @@ impl TextifySettings {
                 let mut settings: Self = serde_json::from_slice(&bytes)
                     .with_context(|| format!("could not parse {}", path.display()))?;
                 settings.appearance.normalize();
+                settings.recent_files.normalize();
                 Ok(settings)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -77,6 +79,35 @@ impl TextifySettings {
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).context("could not serialize settings")?;
         save_atomic(path, &json)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentFileSettings {
+    pub enabled: bool,
+    pub max_files: usize,
+}
+
+impl Default for RecentFileSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_files: 10,
+        }
+    }
+}
+
+impl RecentFileSettings {
+    pub const MIN_FILES: usize = 1;
+    pub const MAX_FILES: usize = 100;
+
+    pub fn normalize(&mut self) {
+        self.max_files = self.max_files.clamp(Self::MIN_FILES, Self::MAX_FILES);
+    }
+
+    pub const fn limit(&self) -> usize {
+        if self.enabled { self.max_files } else { 0 }
     }
 }
 
@@ -273,6 +304,7 @@ mod tests {
         assert!(!settings.lsp.enabled);
         assert_eq!(settings.appearance, AppearanceSettings::default());
         assert_eq!(settings.recovery, RecoverySettings::default());
+        assert_eq!(settings.recent_files, RecentFileSettings::default());
     }
 
     #[test]
@@ -310,9 +342,23 @@ mod tests {
         settings.appearance.font_size = 18;
         settings.appearance.show_tagline = false;
         settings.recovery.keep_unsaved_changes = false;
+        settings.recent_files.max_files = 24;
 
         settings.save(&path).expect("save");
         assert_eq!(TextifySettings::load(&path).expect("load"), settings);
+    }
+
+    #[test]
+    fn recent_file_settings_are_bounded_and_can_disable_history() {
+        let mut recent = RecentFileSettings {
+            enabled: true,
+            max_files: usize::MAX,
+        };
+        recent.normalize();
+        assert_eq!(recent.limit(), RecentFileSettings::MAX_FILES);
+
+        recent.enabled = false;
+        assert_eq!(recent.limit(), 0);
     }
 
     #[test]

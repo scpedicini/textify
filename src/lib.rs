@@ -9,6 +9,7 @@ pub mod huge_viewer;
 pub mod lsp;
 pub mod performance;
 pub mod project;
+pub mod recent;
 pub mod recovery;
 pub mod session;
 pub mod settings;

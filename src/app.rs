@@ -26,6 +26,7 @@ use gpui_component::{
         Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
         RopeExt as _, SelectAll, Undo,
     },
+    scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectState},
     switch::Switch,
     tab::{Tab, TabBar},
@@ -46,6 +47,7 @@ use crate::{
     project::{
         ProjectIndex, SearchSummary, WorkspaceMatch, load_git_status, stream_workspace_search,
     },
+    recent::RecentFiles,
     recovery::{load_snapshot, remove_snapshot, write_snapshot},
     session::{SessionState, SessionTab, load_session, save_session},
     settings::{
@@ -69,6 +71,8 @@ actions!(
         ToggleSidebar,
         ShowCommandPalette,
         ShowOpenTabs,
+        ShowRecentFiles,
+        ClearRecentFiles,
         ShowQuickOpen,
         ShowWorkspaceSearch,
         ShowSettings,
@@ -328,6 +332,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
 enum OverlayMode {
     Commands,
     OpenTabs,
+    RecentFiles,
     QuickOpen,
     WorkspaceSearch,
 }
@@ -342,6 +347,8 @@ enum IdeCommand {
     NextTab,
     PreviousTab,
     OpenTabs,
+    OpenRecent,
+    ClearRecent,
     ToggleWordWrap,
     ToggleTitleBar,
     OpenFolder,
@@ -393,6 +400,7 @@ struct SettingsDraft {
     font_size: u16,
     show_tagline: bool,
     recovery: RecoverySettings,
+    recent_files: crate::settings::RecentFileSettings,
 }
 
 impl EditorDocument {
@@ -424,6 +432,10 @@ pub struct Workspace {
     next_untitled_number: usize,
     policy: FilePolicy,
     settings: TextifySettings,
+    recent_files: RecentFiles,
+    recent_files_path: PathBuf,
+    recent_files_revision: u64,
+    recent_files_persisting: bool,
     watcher: Option<FileWatcher>,
     session_path: PathBuf,
     restoring_session: bool,
@@ -475,6 +487,12 @@ impl Workspace {
             tracing::warn!(%error, "using default keymap");
             TextifyKeymap::default()
         });
+        let recent_files_path = data_dir.join("recent-files.json");
+        let recent_files = RecentFiles::load(&recent_files_path, settings.recent_files.limit())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "using empty recent-file history");
+                RecentFiles::default()
+            });
         let overlay_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command"));
         let font_families = editor_font_families(cx, &settings.appearance.font_family);
         let selected_font = font_families
@@ -512,6 +530,10 @@ impl Workspace {
             next_untitled_number: 1,
             policy: FilePolicy::default(),
             settings,
+            recent_files,
+            recent_files_path,
+            recent_files_revision: 0,
+            recent_files_persisting: false,
             watcher,
             session_path: data_dir.join("session.json"),
             restoring_session: false,
@@ -1553,6 +1575,7 @@ impl Workspace {
                     cx,
                 );
             }
+            self.record_recent_file(path, cx);
             return;
         }
         let policy = self.policy;
@@ -1564,6 +1587,7 @@ impl Workspace {
                 .update_in(window, |workspace, window, cx| match result {
                     Ok(opened) => {
                         workspace.push_opened(opened, window, cx);
+                        workspace.record_recent_file(path.clone(), cx);
                         if let Some(location) = location
                             && workspace.active_document().huge_viewer.is_none()
                         {
@@ -1594,6 +1618,7 @@ impl Workspace {
         let placeholder = match mode {
             OverlayMode::Commands => "Type a command",
             OverlayMode::OpenTabs => "Find an open tab",
+            OverlayMode::RecentFiles => "Find a recent file",
             OverlayMode::QuickOpen => "Quick open a project file",
             OverlayMode::WorkspaceSearch => "Search text in the workspace",
         };
@@ -1655,6 +1680,25 @@ impl Workspace {
                             subtitle,
                             target: OverlayTarget::Tab(document.id),
                         }
+                    })
+                    .collect();
+                self.overlay_items = matching_open_tab_items(items, &query);
+            }
+            OverlayMode::RecentFiles => {
+                let items = self
+                    .recent_files
+                    .paths
+                    .iter()
+                    .cloned()
+                    .map(|path| OverlayItem {
+                        title: path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("File")
+                            .to_owned(),
+                        subtitle: path.display().to_string(),
+                        search_text: path.display().to_string().to_lowercase(),
+                        target: OverlayTarget::File(path),
                     })
                     .collect();
                 self.overlay_items = matching_open_tab_items(items, &query);
@@ -1848,6 +1892,8 @@ impl Workspace {
             IdeCommand::NextTab => self.on_next(&NextDocument, window, cx),
             IdeCommand::PreviousTab => self.on_previous(&PreviousDocument, window, cx),
             IdeCommand::OpenTabs => self.on_open_tabs(&ShowOpenTabs, window, cx),
+            IdeCommand::OpenRecent => self.on_recent_files(&ShowRecentFiles, window, cx),
+            IdeCommand::ClearRecent => self.on_clear_recent_files(&ClearRecentFiles, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
             IdeCommand::ToggleTitleBar => self.on_toggle_title_bar(&ToggleTitleBar, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
@@ -1891,6 +1937,7 @@ impl Workspace {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
             recovery: self.settings.recovery.clone(),
+            recent_files: self.settings.recent_files.clone(),
         });
         let font_family = self.settings.appearance.font_family.clone();
         let font_families = editor_font_families(cx, &font_family);
@@ -1969,6 +2016,8 @@ impl Workspace {
         settings.appearance.show_tagline = draft.show_tagline;
         settings.appearance.normalize();
         settings.recovery = draft.recovery;
+        settings.recent_files = draft.recent_files;
+        settings.recent_files.normalize();
         let path = self.data_dir.join("settings.json");
         let task = cx.background_spawn({
             let settings = settings.clone();
@@ -1984,6 +2033,7 @@ impl Workspace {
                     Ok(()) => {
                         let lsp_changed = workspace.settings.lsp != settings.lsp;
                         workspace.settings = settings;
+                        workspace.apply_recent_file_settings(cx);
                         for document in &workspace.documents {
                             document.editor.set_budgets(
                                 workspace.settings.editor,
@@ -2033,6 +2083,31 @@ impl Workspace {
 
     fn on_open_tabs(&mut self, _: &ShowOpenTabs, window: &mut Window, cx: &mut Context<Self>) {
         self.show_overlay(OverlayMode::OpenTabs, window, cx);
+    }
+
+    fn on_recent_files(
+        &mut self,
+        _: &ShowRecentFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_overlay(OverlayMode::RecentFiles, window, cx);
+    }
+
+    fn on_clear_recent_files(
+        &mut self,
+        _: &ClearRecentFiles,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.recent_files.clear();
+        self.persist_recent_files(cx);
+        self.status_message = Some("Recent file history cleared".to_owned());
+        if self.overlay_mode == Some(OverlayMode::RecentFiles) {
+            self.overlay_items.clear();
+            self.overlay_selected_index = 0;
+        }
+        cx.notify();
     }
 
     fn on_workspace_search(
@@ -2098,6 +2173,60 @@ impl Workspace {
             if let Err(error) = settings.save(&path) {
                 tracing::warn!(%error, "could not persist settings");
             }
+        })
+        .detach();
+    }
+
+    fn record_recent_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let limit = self.settings.recent_files.limit();
+        if limit == 0 {
+            return;
+        }
+        self.recent_files.record(path, limit);
+        self.persist_recent_files(cx);
+    }
+
+    fn apply_recent_file_settings(&mut self, cx: &mut Context<Self>) {
+        self.recent_files
+            .normalize(self.settings.recent_files.limit());
+        self.persist_recent_files(cx);
+    }
+
+    fn persist_recent_files(&mut self, cx: &mut Context<Self>) {
+        self.recent_files_revision = self.recent_files_revision.wrapping_add(1);
+        self.start_recent_file_persist(cx);
+    }
+
+    fn start_recent_file_persist(&mut self, cx: &mut Context<Self>) {
+        if self.recent_files_persisting {
+            return;
+        }
+        self.recent_files_persisting = true;
+        let revision = self.recent_files_revision;
+        let history = self.recent_files.clone();
+        let path = self.recent_files_path.clone();
+        let task = cx.background_spawn(async move {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            history.save(&path)
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.recent_files_persisting = false;
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "could not persist recent-file history");
+                    }
+                    if workspace.recent_files_revision != revision {
+                        workspace.start_recent_file_persist(cx);
+                    }
+                })
+                .ok();
         })
         .detach();
     }
@@ -2219,6 +2348,7 @@ impl Workspace {
                                     cx,
                                 );
                             }
+                            workspace.apply_recent_file_settings(cx);
                             if lsp_changed {
                                 workspace.restart_lsp(window, cx);
                             }
@@ -2526,7 +2656,8 @@ impl Workspace {
                             elapsed_ms = elapsed.as_secs_f64() * 1000.0,
                             "opened document"
                         );
-                        workspace.push_opened(opened, window, cx)
+                        workspace.push_opened(opened, window, cx);
+                        workspace.record_recent_file(path, cx);
                     }
                     Err(error) => Self::show_error("Could not open file", error, window, cx),
                 })
@@ -2559,6 +2690,7 @@ impl Workspace {
                         match result {
                             Ok(file) => {
                                 workspace.push_opened(file, window, cx);
+                                workspace.record_recent_file(path, cx);
                                 opened += 1;
                             }
                             Err(error) => failures.push(format!("{}: {error}", path.display())),
@@ -2714,6 +2846,7 @@ impl Workspace {
                             "saved document"
                         );
                         workspace.update_window_title(window, cx);
+                        workspace.record_recent_file(path.clone(), cx);
                         if saved_clean {
                             workspace.clear_recovery(id, cx);
                         }
@@ -3282,6 +3415,7 @@ impl Workspace {
         let title = match self.overlay_mode {
             Some(OverlayMode::Commands) => "COMMAND PALETTE",
             Some(OverlayMode::OpenTabs) => "OPEN TABS",
+            Some(OverlayMode::RecentFiles) => "OPEN RECENT",
             Some(OverlayMode::QuickOpen) => "QUICK OPEN",
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
@@ -3386,13 +3520,17 @@ impl Workspace {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
             recovery: self.settings.recovery.clone(),
+            recent_files: self.settings.recent_files.clone(),
         });
         let temporary_enabled = draft.recovery.save_temporary_files;
         let unsaved_enabled = draft.recovery.keep_unsaved_changes;
         let tagline_enabled = draft.show_tagline;
+        let recent_enabled = draft.recent_files.enabled;
+        let recent_limit = draft.recent_files.max_files;
         let temporary_workspace = cx.entity();
         let unsaved_workspace = cx.entity();
         let tagline_workspace = cx.entity();
+        let recent_workspace = cx.entity();
 
         div()
             .absolute()
@@ -3437,6 +3575,7 @@ impl Workspace {
                         v_flex()
                             .flex_1()
                             .min_h_0()
+                            .overflow_y_scrollbar()
                             .p_5()
                             .gap_5()
                             .child(
@@ -3545,6 +3684,123 @@ impl Workspace {
                                                                     .min(AppearanceSettings::MAX_FONT_SIZE);
                                                             }
                                                             cx.notify();
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Remember Recent Files"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Keep a local Open Recent history; disabling this clears it."),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-remember-recent-files")
+                                            .checked(recent_enabled)
+                                            .on_click(move |checked, _, cx| {
+                                                recent_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.recent_files.enabled = *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Recent File Limit"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Maximum files shown by Open Recent."),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("settings-recent-fewer")
+                                                    .outline()
+                                                    .disabled(!recent_enabled)
+                                                    .label("−")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.recent_files.max_files = draft
+                                                                    .recent_files
+                                                                    .max_files
+                                                                    .saturating_sub(1)
+                                                                    .max(crate::settings::RecentFileSettings::MIN_FILES);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_12()
+                                                    .text_center()
+                                                    .child(recent_limit.to_string()),
+                                            )
+                                            .child(
+                                                Button::new("settings-recent-more")
+                                                    .outline()
+                                                    .disabled(!recent_enabled)
+                                                    .label("+")
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, _, cx| {
+                                                            if let Some(draft) =
+                                                                &mut workspace.settings_draft
+                                                            {
+                                                                draft.recent_files.max_files =
+                                                                    (draft.recent_files.max_files + 1)
+                                                                        .min(crate::settings::RecentFileSettings::MAX_FILES);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("settings-clear-recent")
+                                                    .outline()
+                                                    .label("Clear History")
+                                                    .disabled(self.recent_files.paths.is_empty())
+                                                    .on_click(cx.listener(
+                                                        |workspace, _, window, cx| {
+                                                            workspace.on_clear_recent_files(
+                                                                &ClearRecentFiles,
+                                                                window,
+                                                                cx,
+                                                            )
                                                         },
                                                     )),
                                             ),
@@ -3729,6 +3985,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_open_tabs))
+            .on_action(cx.listener(Self::on_recent_files))
+            .on_action(cx.listener(Self::on_clear_recent_files))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
@@ -3883,6 +4141,18 @@ fn command_items() -> Vec<OverlayItem> {
             "Search and activate an open document",
             "show every list find fuzzy wildcard switch focus reveal open tabs files documents",
             IdeCommand::OpenTabs,
+        ),
+        (
+            "Open Recent File",
+            "Find a file from local history",
+            "open recent history previous file document reopen",
+            IdeCommand::OpenRecent,
+        ),
+        (
+            "Clear Recent Files",
+            "Forget local file history",
+            "clear erase forget recent history files privacy",
+            IdeCommand::ClearRecent,
         ),
         (
             "Toggle Word Wrap",
@@ -4099,6 +4369,8 @@ fn native_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("New Tab", NewDocument),
                 MenuItem::action("Open File…", OpenDocument),
+                MenuItem::action("Open Recent…", ShowRecentFiles),
+                MenuItem::action("Clear Recent Files", ClearRecentFiles),
                 MenuItem::action("Open Folder…", OpenFolder),
                 MenuItem::separator(),
                 MenuItem::action("Save", SaveDocument),
@@ -4383,6 +4655,7 @@ mod tests {
                 workspace.settings.appearance.show_tagline
             );
             assert_eq!(draft.recovery, workspace.settings.recovery);
+            assert_eq!(draft.recent_files, workspace.settings.recent_files);
             workspace.documents[0].dirty = true;
             assert_eq!(workspace.documents[0].title(cx), "Untitled 1 •");
         });
@@ -4607,6 +4880,10 @@ mod tests {
             first_command("hide the top title bar"),
             Some(IdeCommand::ToggleTitleBar)
         );
+        assert_eq!(
+            first_command("open a recent file"),
+            Some(IdeCommand::OpenRecent)
+        );
     }
 
     #[test]
@@ -4751,6 +5028,88 @@ mod tests {
     }
 
     #[gpui::test]
+    fn recent_files_are_bounded_searchable_openable_and_clearable(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("history directory");
+        let paths = ["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]
+            .map(|name| directory.path().join(name));
+        for path in &paths {
+            fs::write(path, format!("contents of {}", path.display())).expect("fixture");
+        }
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let history_path = directory.path().join("recent-files.json");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.recent_files_path = history_path.clone();
+                workspace.recent_files.clear();
+                workspace.settings.recent_files.enabled = true;
+                workspace.settings.recent_files.max_files = 3;
+                workspace.record_recent_file(paths[0].clone(), cx);
+                workspace.record_recent_file(paths[1].clone(), cx);
+                workspace.record_recent_file(paths[2].clone(), cx);
+                workspace.record_recent_file(paths[0].clone(), cx);
+                workspace.record_recent_file(paths[3].clone(), cx);
+                workspace.show_overlay(OverlayMode::RecentFiles, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(
+                workspace.recent_files.paths,
+                vec![paths[3].clone(), paths[0].clone(), paths[2].clone()]
+            );
+            assert_eq!(workspace.overlay_items.len(), 3);
+        });
+        assert_eq!(
+            RecentFiles::load(&history_path, 3)
+                .expect("persisted history")
+                .paths,
+            vec![paths[3].clone(), paths[0].clone(), paths[2].clone()]
+        );
+
+        cx.simulate_input("alpha");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_items.len(), 1);
+            assert_eq!(workspace.overlay_items[0].title, "alpha.txt");
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_document().metadata.path.as_deref(),
+                Some(paths[0].as_path())
+            );
+        });
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.on_clear_recent_files(&ClearRecentFiles, window, cx)
+            });
+        });
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.recent_files.paths.is_empty());
+        });
+        assert!(
+            RecentFiles::load(&history_path, 3)
+                .expect("cleared history")
+                .paths
+                .is_empty()
+        );
+    }
+
+    #[gpui::test]
     fn command_palette_dismisses_from_escape_and_the_backdrop(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -4885,6 +5244,52 @@ mod tests {
         let saved =
             TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
         assert!(!saved.appearance.show_tagline);
+    }
+
+    #[gpui::test]
+    fn disabling_recent_files_in_settings_clears_local_history(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let history_path = directory.path().join("recent-files.json");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.recent_files_path = history_path.clone();
+                workspace.recent_files.paths = vec![PathBuf::from("private-note.txt")];
+                workspace.show_settings(window, cx);
+                let draft = workspace.settings_draft.as_mut().expect("settings draft");
+                draft.recent_files.enabled = false;
+                draft.recent_files.max_files = 25;
+                workspace.save_settings_window(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert!(!workspace.settings.recent_files.enabled);
+            assert_eq!(workspace.settings.recent_files.max_files, 25);
+            assert!(workspace.recent_files.paths.is_empty());
+        });
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(!saved.recent_files.enabled);
+        assert!(
+            RecentFiles::load(&history_path, 10)
+                .expect("cleared history")
+                .paths
+                .is_empty()
+        );
     }
 
     #[gpui::test]
