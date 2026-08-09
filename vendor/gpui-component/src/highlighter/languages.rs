@@ -7,6 +7,7 @@ use crate::highlighter::LanguageConfig;
 pub enum Language {
     Json,
     Plain,
+    Bash,
     Html,
     Markdown,
     MarkdownInline,
@@ -66,6 +67,7 @@ impl Language {
         return match self {
             Self::Json => "json",
             Self::Plain => "text",
+            Self::Bash => "bash",
             Self::Html => "html",
             Self::Markdown => "markdown",
             Self::MarkdownInline => "markdown_inline",
@@ -114,6 +116,7 @@ impl Language {
         #[cfg(not(feature = "tree-sitter-all-languages"))]
         return match s {
             "json" | "jsonc" => Self::Json,
+            "bash" | "sh" | "zsh" => Self::Bash,
             "html" | "htm" => Self::Html,
             "markdown" | "md" | "mdx" => Self::Markdown,
             "markdown_inline" | "markdown-inline" => Self::MarkdownInline,
@@ -199,6 +202,12 @@ impl Language {
         #[cfg(not(feature = "tree-sitter-all-languages"))]
         let (language, query, injection, locals) = match self {
             Self::Plain => (tree_sitter_json::LANGUAGE, "", "", ""),
+            Self::Bash => (
+                tree_sitter_bash::LANGUAGE,
+                tree_sitter_bash::HIGHLIGHT_QUERY,
+                "",
+                "",
+            ),
             Self::Json => (
                 tree_sitter_json::LANGUAGE,
                 include_str!("languages/json/highlights.scm"),
@@ -422,8 +431,19 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["json", "text", "html", "markdown", "markdown_inline"]
+            vec![
+                "json",
+                "text",
+                "bash",
+                "html",
+                "markdown",
+                "markdown_inline"
+            ]
         );
+        assert_eq!(Language::from_str("zsh"), Language::Bash);
+        let bash = Language::Bash.config();
+        assert_eq!(bash.name, "bash");
+        assert!(!bash.highlights.is_empty());
         assert_eq!(Language::from_str("html"), Language::Html);
         let html = Language::Html.config();
         assert_eq!(html.name, "html");

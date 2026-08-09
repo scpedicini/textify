@@ -6,6 +6,7 @@ pub enum Language {
     PlainText,
     Json,
     Html,
+    Shell,
     Markdown,
 }
 
@@ -14,6 +15,15 @@ impl Language {
         let Some(path) = path else {
             return Self::PlainText;
         };
+
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(filename.as_str(), ".bashrc" | ".zshrc" | ".profile") {
+            return Self::Shell;
+        }
 
         let extension = path
             .extension()
@@ -24,6 +34,7 @@ impl Language {
         match extension.as_str() {
             "json" | "jsonc" => Self::Json,
             "html" | "htm" => Self::Html,
+            "sh" | "bash" | "zsh" => Self::Shell,
             "md" | "markdown" | "mdown" | "mkd" => Self::Markdown,
             _ => Self::PlainText,
         }
@@ -34,6 +45,7 @@ impl Language {
             Self::PlainText => "Plain Text",
             Self::Json => "JSON",
             Self::Html => "HTML",
+            Self::Shell => "Shell",
             Self::Markdown => "Markdown",
         }
     }
@@ -43,6 +55,7 @@ impl Language {
             Self::PlainText => None,
             Self::Json => Some("json"),
             Self::Html => Some("html"),
+            Self::Shell => Some("bash"),
             Self::Markdown => Some("markdown"),
         }
     }
@@ -283,6 +296,10 @@ mod tests {
             Language::Html
         );
         assert_eq!(Language::Html.parser_name(), Some("html"));
+        for path in ["build.sh", "login.bash", "setup.zsh", ".bashrc", ".zshrc"] {
+            assert_eq!(Language::detect(Some(Path::new(path))), Language::Shell);
+        }
+        assert_eq!(Language::Shell.parser_name(), Some("bash"));
         assert_eq!(
             Language::detect(Some(Path::new("unknown.payload"))),
             Language::PlainText
@@ -346,5 +363,6 @@ mod tests {
             Some("markdown")
         );
         assert_eq!(policy.parser_for(Language::Html, analysis), Some("html"));
+        assert_eq!(policy.parser_for(Language::Shell, analysis), Some("bash"));
     }
 }

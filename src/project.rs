@@ -81,10 +81,13 @@ const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     "zsh",
 ];
 const SUPPORTED_TEXT_FILENAMES: &[&str] = &[
+    ".bashrc",
     ".editorconfig",
     ".env",
     ".gitattributes",
     ".gitignore",
+    ".profile",
+    ".zshrc",
     "changelog",
     "dockerfile",
     "gemfile",
@@ -449,6 +452,8 @@ mod tests {
             "page.html",
             "README",
             ".gitignore",
+            ".bashrc",
+            ".zshrc",
             "src/main.rs",
         ] {
             assert!(is_supported_text_file(Path::new(path)), "{path}");
