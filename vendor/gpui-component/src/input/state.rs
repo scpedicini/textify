@@ -310,6 +310,8 @@ pub struct InputState {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// A one-shot caret position to preserve across a font or layout scale change.
+    pub(crate) cursor_anchor: Option<Point<Pixels>>,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
 
@@ -413,6 +415,7 @@ impl InputState {
             scroll_handle: ScrollHandle::new(),
             scroll_size: gpui::size(px(0.), px(0.)),
             deferred_scroll_offset: None,
+            cursor_anchor: None,
             preferred_column: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -1522,6 +1525,32 @@ impl InputState {
         cx.notify();
     }
 
+    /// Preserve the visible caret position through the next text layout.
+    ///
+    /// Returns false when the caret is outside the viewport or layout has not completed yet.
+    pub fn preserve_cursor_anchor(&mut self) -> bool {
+        let Some(cursor_bounds) = self
+            .last_layout
+            .as_ref()
+            .and_then(|layout| layout.cursor_bounds)
+        else {
+            return false;
+        };
+        let scroll_offset = self.scroll_handle.offset();
+        let anchor = point(
+            cursor_bounds.left() - self.input_bounds.left(),
+            cursor_bounds.top() + scroll_offset.y - self.input_bounds.top(),
+        );
+        let visible = anchor.x >= px(0.)
+            && anchor.x <= self.input_bounds.size.width
+            && anchor.y >= px(0.)
+            && anchor.y <= self.input_bounds.size.height;
+        if visible {
+            self.cursor_anchor = Some(anchor);
+        }
+        visible
+    }
+
     /// Scroll to make the given offset visible.
     ///
     /// If `direction` is Some, will keep edges at the same side.
@@ -2413,7 +2442,9 @@ impl Render for InputState {
 
 #[cfg(test)]
 mod tests {
-    use gpui::ClipboardItem;
+    use std::{cell::RefCell, rc::Rc};
+
+    use gpui::{ClipboardItem, IntoElement, Render, Styled as _, div};
 
     use super::*;
 
@@ -2473,6 +2504,80 @@ mod tests {
 
                 assert_eq!(input.text_wrapper.wrap_width(), Some(expected));
             });
+        });
+    }
+
+    struct ZoomHarness {
+        input: Entity<InputState>,
+        font_size: Pixels,
+    }
+
+    impl Render for ZoomHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::input::Input::new(&self.input).text_size(self.font_size))
+        }
+    }
+
+    #[gpui::test]
+    fn font_scale_change_keeps_the_visible_caret_anchored(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let input_slot = Rc::new(RefCell::new(None));
+        let capture = input_slot.clone();
+        let text = (0..120)
+            .map(|index| format!("line {index}: enough text to exercise layout"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (harness, cx) = cx.add_window_view(move |window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(false)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(input.clone());
+            ZoomHarness {
+                input,
+                font_size: px(14.),
+            }
+        });
+        let input = input_slot.borrow().clone().expect("input");
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let offset = input.text.line_start_offset(70) + 6;
+                input.set_selections(vec![offset..offset], window, cx);
+                input.scroll_to(offset, None, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let before = input.update(&mut cx.cx, |input, _| {
+            let cursor = input
+                .last_layout
+                .as_ref()
+                .and_then(|layout| layout.cursor_bounds)
+                .expect("caret layout");
+            let y = cursor.top() + input.scroll_handle.offset().y - input.input_bounds.top();
+            assert!(input.preserve_cursor_anchor());
+            y
+        });
+        harness.update(&mut cx.cx, |harness, cx| {
+            harness.font_size = px(22.);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        input.update(&mut cx.cx, |input, _| {
+            let cursor = input
+                .last_layout
+                .as_ref()
+                .and_then(|layout| layout.cursor_bounds)
+                .expect("scaled caret layout");
+            let after = cursor.top() + input.scroll_handle.offset().y - input.input_bounds.top();
+            assert!((after - before).abs() <= px(1.));
+            assert!(input.cursor_anchor.is_none());
         });
     }
 }

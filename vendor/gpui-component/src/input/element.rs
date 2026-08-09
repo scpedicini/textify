@@ -228,6 +228,12 @@ impl TextElement {
                 _ => 0.85,
             } * line_height;
 
+            if let Some(anchor) = state.cursor_anchor {
+                scroll_offset.x = (anchor.x - cursor_pos.x - line_number_width).min(px(0.));
+                scroll_offset.y =
+                    (anchor.y - cursor_pos.y - ((line_height - cursor_height) / 2.)).min(px(0.));
+            }
+
             cursor_bounds = Some(Bounds::new(
                 point(
                     bounds.left() + cursor_pos.x + line_number_width + scroll_offset.x,
@@ -1519,6 +1525,7 @@ impl Element for TextElement {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
+            state.cursor_anchor = None;
 
             cx.notify();
         });

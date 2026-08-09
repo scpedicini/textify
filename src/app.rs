@@ -2761,6 +2761,11 @@ impl Workspace {
             AppearanceSettings::MIN_FONT_SIZE,
             AppearanceSettings::MAX_FONT_SIZE,
         );
+        if next == current {
+            cx.stop_propagation();
+            return;
+        }
+        document.editor.preserve_cursor_anchor(cx);
         document.font_size_override = Some(next);
         self.status_message = Some(format!("Text size: {next} pt (this tab)"));
         self.persist_session(cx);

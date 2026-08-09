@@ -80,6 +80,11 @@ impl EditorBackend {
             .update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
     }
 
+    pub fn preserve_cursor_anchor(&self, cx: &mut App) -> bool {
+        self.state
+            .update(cx, |state, _| state.preserve_cursor_anchor())
+    }
+
     pub fn select_position(
         &self,
         line: usize,
