@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub enum Language {
     PlainText,
     Json,
+    Html,
     Markdown,
 }
 
@@ -22,6 +23,7 @@ impl Language {
 
         match extension.as_str() {
             "json" | "jsonc" => Self::Json,
+            "html" | "htm" => Self::Html,
             "md" | "markdown" | "mdown" | "mkd" => Self::Markdown,
             _ => Self::PlainText,
         }
@@ -31,6 +33,7 @@ impl Language {
         match self {
             Self::PlainText => "Plain Text",
             Self::Json => "JSON",
+            Self::Html => "HTML",
             Self::Markdown => "Markdown",
         }
     }
@@ -39,6 +42,7 @@ impl Language {
         match self {
             Self::PlainText => None,
             Self::Json => Some("json"),
+            Self::Html => Some("html"),
             Self::Markdown => Some("markdown"),
         }
     }
@@ -275,6 +279,11 @@ mod tests {
             Language::Markdown
         );
         assert_eq!(
+            Language::detect(Some(Path::new("index.HTML"))),
+            Language::Html
+        );
+        assert_eq!(Language::Html.parser_name(), Some("html"));
+        assert_eq!(
             Language::detect(Some(Path::new("unknown.payload"))),
             Language::PlainText
         );
@@ -336,5 +345,6 @@ mod tests {
             policy.parser_for(Language::Markdown, analysis),
             Some("markdown")
         );
+        assert_eq!(policy.parser_for(Language::Html, analysis), Some("html"));
     }
 }

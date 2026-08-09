@@ -7,6 +7,7 @@ use crate::highlighter::LanguageConfig;
 pub enum Language {
     Json,
     Plain,
+    Html,
     Markdown,
     MarkdownInline,
 }
@@ -65,6 +66,7 @@ impl Language {
         return match self {
             Self::Json => "json",
             Self::Plain => "text",
+            Self::Html => "html",
             Self::Markdown => "markdown",
             Self::MarkdownInline => "markdown_inline",
         };
@@ -112,6 +114,7 @@ impl Language {
         #[cfg(not(feature = "tree-sitter-all-languages"))]
         return match s {
             "json" | "jsonc" => Self::Json,
+            "html" | "htm" => Self::Html,
             "markdown" | "md" | "mdx" => Self::Markdown,
             "markdown_inline" | "markdown-inline" => Self::MarkdownInline,
             _ => Self::Plain,
@@ -160,6 +163,7 @@ impl Language {
         #[cfg(not(feature = "tree-sitter-all-languages"))]
         return match self {
             Self::Markdown => vec!["markdown-inline".into()],
+            Self::Html => vec![],
             _ => vec![],
         };
 
@@ -198,6 +202,12 @@ impl Language {
             Self::Json => (
                 tree_sitter_json::LANGUAGE,
                 include_str!("languages/json/highlights.scm"),
+                "",
+                "",
+            ),
+            Self::Html => (
+                tree_sitter_html::LANGUAGE,
+                include_str!("languages/html/highlights.scm"),
                 "",
                 "",
             ),
@@ -410,7 +420,14 @@ mod tests {
         let names = Language::all()
             .map(|language| language.name())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["json", "text", "markdown", "markdown_inline"]);
+        assert_eq!(
+            names,
+            vec!["json", "text", "html", "markdown", "markdown_inline"]
+        );
+        assert_eq!(Language::from_str("html"), Language::Html);
+        let html = Language::Html.config();
+        assert_eq!(html.name, "html");
+        assert!(!html.highlights.is_empty());
         assert_eq!(Language::from_str("unknown"), Language::Plain);
     }
 

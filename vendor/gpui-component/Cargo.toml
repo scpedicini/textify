@@ -56,7 +56,6 @@ tree-sitter-all-languages = [
     "dep:tree-sitter-embedded-template",
     "dep:tree-sitter-go",
     "dep:tree-sitter-graphql",
-    "dep:tree-sitter-html",
     "dep:tree-sitter-java",
     "dep:tree-sitter-javascript",
     "dep:tree-sitter-jsdoc",
@@ -221,7 +220,6 @@ optional = true
 
 [dependencies.tree-sitter-html]
 version = "0.23.2"
-optional = true
 
 [dependencies.tree-sitter-java]
 version = "0.23.5"
