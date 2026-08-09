@@ -28,6 +28,14 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
+Run the generated large-file performance corpus with:
+
+```sh
+cargo run --release --bin textify-perf
+```
+
+The current measurements and methodology are in [docs/performance.md](docs/performance.md).
+
 ## Keyboard shortcuts
 
 | Command | Shortcut |
@@ -42,4 +50,3 @@ cargo clippy --all-targets -- -D warnings
 
 See [docs/plan.md](docs/plan.md) for the build plan and [docs/research.md](docs/research.md) for
 the technology evaluation.
-

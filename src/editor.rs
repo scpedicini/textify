@@ -6,7 +6,7 @@ use gpui_component::{
     input::{Input, InputState, Rope, TabSize},
 };
 
-use crate::document::FileMode;
+use crate::{document::FileMode, settings::EditorBudgets};
 
 #[derive(Clone)]
 pub struct EditorBackend {
@@ -18,14 +18,18 @@ impl EditorBackend {
         text: String,
         parser: Option<&'static str>,
         mode: FileMode,
+        budgets: EditorBudgets,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
         // `text` is GPUI Component's explicit plain-text language and never selects a parser.
         let language = parser.unwrap_or("text");
+        let (undo_bytes, search_matches) = budgets.for_mode(mode);
         let state = cx.new(|cx| {
             InputState::new(window, cx)
                 .code_editor(language)
+                .undo_max_bytes(undo_bytes)
+                .search_max_matches(search_matches)
                 .line_number(true)
                 .tab_size(TabSize {
                     tab_size: 4,
@@ -57,6 +61,11 @@ impl EditorBackend {
         self.state.update(cx, |state, cx| {
             state.set_highlighter(parser.unwrap_or("text"), cx);
         });
+    }
+
+    pub fn set_text(&self, text: String, window: &mut Window, cx: &mut App) {
+        self.state
+            .update(cx, |state, cx| state.set_value(text, window, cx));
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {

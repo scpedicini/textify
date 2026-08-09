@@ -5,11 +5,19 @@ edition = "2024"
 description = "A fast, focused native text editor for macOS"
 license = "MIT"
 
+[workspace]
+members = [".", "vendor/gpui-component"]
+resolver = "2"
+
 [dependencies]
 anyhow = "1"
 gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
-gpui-component = { version = "=0.5.1", features = ["tree-sitter-languages"] }
+gpui-component = { path = "vendor/gpui-component", version = "=0.5.1", features = ["tree-sitter-languages"] }
 gpui-component-assets = "=0.5.1"
+libc = "=0.2.189"
+notify = "=7.0.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

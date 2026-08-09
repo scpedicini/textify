@@ -50,6 +50,8 @@ Exit criteria:
 
 ## Milestone 2 — reliability and performance corpus
 
+Status: implemented and baselined on 2026-08-08.
+
 - Add external-change watching with Reload, Keep Mine, and Compare choices.
 - Restore the previous window and tabs asynchronously after first paint.
 - Preserve file permissions during atomic replacement.
@@ -104,4 +106,3 @@ before further coupling the application to the editor core.
 
 These services must initialize lazily. None may delay the first window or parse/index files that
 the user has not opened without an explicit workspace action.
-
