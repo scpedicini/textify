@@ -10,9 +10,9 @@ use anyhow::Context as _;
 
 use gpui::{
     App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, KeyBinding, Menu, MenuItem, OsAction, ParentElement as _, Render, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription,
-    SystemMenuType, Timer, Window, WindowBounds, WindowOptions, actions, div,
+    IntoElement, KeyBinding, Menu, MenuItem, MouseButton, OsAction, ParentElement as _, Render,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled,
+    Subscription, SystemMenuType, Timer, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
 };
 use gpui_component::{
@@ -22,7 +22,8 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{
-        Copy, Cut, Input, InputEvent, InputState, Paste, Redo, Rope, RopeExt as _, SelectAll, Undo,
+        Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
+        RopeExt as _, SelectAll, Undo,
     },
     switch::Switch,
     tab::{Tab, TabBar},
@@ -466,11 +467,7 @@ impl Workspace {
             tracing::warn!(%error, "using default keymap");
             TextifyKeymap::default()
         });
-        let overlay_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Type a command")
-                .clean_on_escape()
-        });
+        let overlay_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command"));
         let settings_font_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("SFMono-Regular"));
         let settings_location_input =
@@ -1597,6 +1594,13 @@ impl Workspace {
         cx.notify();
     }
 
+    fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hide_overlay(cx);
+        if self.active_document().huge_viewer.is_none() {
+            self.active_document().editor.focus(window, cx);
+        }
+    }
+
     fn refresh_overlay(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some(mode) = self.overlay_mode else {
             return;
@@ -2070,7 +2074,17 @@ impl Workspace {
         if self.settings_visible {
             self.hide_settings(window, cx);
         } else if self.overlay_mode.is_some() {
-            self.hide_overlay(cx);
+            self.dismiss_overlay(window, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn on_input_escape(&mut self, _: &InputEscape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_visible {
+            self.hide_settings(window, cx);
+        } else if self.overlay_mode.is_some() {
+            self.dismiss_overlay(window, cx);
         } else {
             cx.propagate();
         }
@@ -3118,7 +3132,8 @@ impl Workspace {
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
         };
-        v_flex()
+        let panel = v_flex()
+            .id("ide-overlay-panel")
             .absolute()
             .top(px(72.))
             .left(px(180.))
@@ -3129,6 +3144,7 @@ impl Workspace {
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 h_flex()
                     .h_8()
@@ -3176,7 +3192,17 @@ impl Workspace {
                     }),
                 )
                 .max_h(px(430.)),
+            );
+
+        div()
+            .id("ide-overlay-backdrop")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace, _, window, cx| workspace.dismiss_overlay(window, cx)),
             )
+            .child(panel)
     }
 
     fn render_settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3547,6 +3573,7 @@ impl Render for Workspace {
         div()
             .relative()
             .size_full()
+            .on_action(cx.listener(Self::on_input_escape))
             .child(workspace)
             .when(self.overlay_mode.is_some(), |root| {
                 root.child(self.render_overlay(cx))
@@ -4278,6 +4305,48 @@ mod tests {
             let offset = workspace.tab_scroll_handle.offset();
             assert!(tab.left() + offset.x >= viewport.left());
             assert!(tab.right() + offset.x <= viewport.right());
+        });
+    }
+
+    #[gpui::test]
+    fn command_palette_dismisses_from_escape_and_the_backdrop(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::Commands, window, cx);
+            });
+        });
+        cx.simulate_keystrokes("escape");
+        cx.simulate_input("x");
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(workspace.overlay_mode, None);
+            assert_eq!(workspace.active_document().editor.rope(cx).to_string(), "x");
+        });
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::Commands, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_click(gpui::point(px(200.), px(90.)), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, Some(OverlayMode::Commands));
+        });
+        cx.simulate_click(gpui::point(px(20.), px(180.)), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, None);
         });
     }
 
