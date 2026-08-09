@@ -4460,9 +4460,8 @@ impl Render for Workspace {
                             .justify_between()
                             .child(
                                 h_flex()
-                                    .gap_2()
+                                    .gap_1()
                                     .items_center()
-                                    .child(div().size_2().rounded_full().bg(cx.theme().primary))
                                     .child(div().text_sm().font_semibold().child("TEXTIFY"))
                                     .child(
                                         div()
