@@ -1781,7 +1781,7 @@ impl Workspace {
                 text: document.editor.rope(cx),
             })
             .collect::<Vec<_>>();
-        let max_matches = self.settings.workspace.search_max_matches;
+        let max_matches = self.settings.workspace.open_tab_search_results;
         let cancel = crate::huge_file::CancellationToken::default();
         let worker_cancel = cancel.clone();
         self.open_tab_search_cancel = Some(cancel);
@@ -4680,7 +4680,7 @@ fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &
 fn bind_ide_keymap(cx: &mut App, keymap: &TextifyKeymap) {
     let mut bindings = Vec::new();
     push_key_binding(&mut bindings, &keymap.command_palette, ShowCommandPalette);
-    push_key_binding(&mut bindings, &keymap.quick_open, SearchOpenTabs);
+    push_key_binding(&mut bindings, &keymap.search_open_tabs, SearchOpenTabs);
     push_key_binding(&mut bindings, &keymap.workspace_search, ShowWorkspaceSearch);
     push_key_binding(&mut bindings, &keymap.open_folder, OpenFolder);
     push_key_binding(&mut bindings, &keymap.toggle_sidebar, ToggleSidebar);

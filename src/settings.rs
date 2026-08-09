@@ -184,7 +184,8 @@ impl RecoverySettings {
 #[serde(default)]
 pub struct WorkspaceSettings {
     pub max_entries: usize,
-    pub quick_open_results: usize,
+    #[serde(alias = "quick_open_results")]
+    pub open_tab_search_results: usize,
     pub search_max_file_bytes: u64,
     pub search_max_matches: usize,
     pub git_enabled: bool,
@@ -194,7 +195,7 @@ impl Default for WorkspaceSettings {
     fn default() -> Self {
         Self {
             max_entries: 100_000,
-            quick_open_results: 100,
+            open_tab_search_results: 100,
             search_max_file_bytes: 8 * 1024 * 1024,
             search_max_matches: 2_000,
             git_enabled: true,
@@ -226,7 +227,8 @@ impl Default for LspSettings {
 #[serde(default)]
 pub struct TextifyKeymap {
     pub command_palette: String,
-    pub quick_open: String,
+    #[serde(alias = "quick_open")]
+    pub search_open_tabs: String,
     pub workspace_search: String,
     pub open_folder: String,
     pub toggle_sidebar: String,
@@ -237,7 +239,7 @@ impl Default for TextifyKeymap {
     fn default() -> Self {
         Self {
             command_palette: "cmd-shift-p".to_owned(),
-            quick_open: "cmd-p".to_owned(),
+            search_open_tabs: "cmd-p".to_owned(),
             workspace_search: "cmd-shift-f".to_owned(),
             open_folder: "cmd-shift-o".to_owned(),
             toggle_sidebar: "cmd-b".to_owned(),
@@ -359,6 +361,18 @@ mod tests {
 
         recent.enabled = false;
         assert_eq!(recent.limit(), 0);
+    }
+
+    #[test]
+    fn legacy_quick_open_configuration_migrates_to_open_tab_search() {
+        let settings: TextifySettings =
+            serde_json::from_str(r#"{"workspace":{"quick_open_results":42}}"#)
+                .expect("legacy settings");
+        assert_eq!(settings.workspace.open_tab_search_results, 42);
+
+        let keymap: TextifyKeymap =
+            serde_json::from_str(r#"{"quick_open":"cmd-k"}"#).expect("legacy keymap");
+        assert_eq!(keymap.search_open_tabs, "cmd-k");
     }
 
     #[test]
