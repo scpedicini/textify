@@ -20,11 +20,13 @@ and one code-generation unit. It creates `target/release/Textify.app`, then inst
 The executable inside the development app bundle is also a relative symlink to that release
 binary. Consequently, any later `cargo build --release --bin textify` updates both the command-line
 and app launch targets in place. Re-run `install-local.sh` when the package version or bundle
-metadata changes.
+metadata or icon changes. The editable icon source is `packaging/Textify.svg`; the bundle consumes
+the committed `packaging/Textify.icns`. Run `scripts/build-icon.sh` after editing the SVG to
+regenerate every macOS icon size.
 
 The bundle is deliberately local and unsigned. A build for another Mac should copy the executable
-into the bundle, add a real app icon, code sign with a Developer ID, notarize, and staple it instead
-of using the development symlink.
+into the bundle, code sign with a Developer ID, notarize, and staple it instead of using the
+development symlink.
 
 ## Raycast
 
@@ -51,6 +53,7 @@ inspect an installation manually:
 ```sh
 plutil -lint target/release/Textify.app/Contents/Info.plist
 file target/release/Textify.app/Contents/MacOS/Textify
+file target/release/Textify.app/Contents/Resources/Textify.icns
 readlink ~/bin/textify
 readlink ~/Applications/Textify.app
 ```

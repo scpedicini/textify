@@ -10,6 +10,8 @@
     <string>Textify</string>
     <key>CFBundleIdentifier</key>
     <string>com.shaun.textify</string>
+    <key>CFBundleIconFile</key>
+    <string>Textify.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

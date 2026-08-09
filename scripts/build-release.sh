@@ -9,11 +9,13 @@ bundle="${release_directory}/Textify.app"
 bundle_contents="${bundle}/Contents"
 bundle_executable="${bundle_contents}/MacOS/Textify"
 source_executable="${release_directory}/textify"
+source_icon="${repository_root}/packaging/Textify.icns"
 
 cargo build --manifest-path "${repository_root}/Cargo.toml" --release --bin textify
 
 mkdir -p "${bundle_contents}/MacOS" "${bundle_contents}/Resources"
 cp "${repository_root}/packaging/Info.plist" "${bundle_contents}/Info.plist"
+cp "${source_icon}" "${bundle_contents}/Resources/Textify.icns"
 
 version="$(awk -F\" '/^version = / { print $2; exit }' "${repository_root}/Cargo.toml")"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${version}" "${bundle_contents}/Info.plist"
@@ -25,6 +27,7 @@ ln -sfn ../../../textify "${bundle_executable}"
 
 plutil -lint "${bundle_contents}/Info.plist"
 test -x "${bundle_executable}"
+test -s "${bundle_contents}/Resources/Textify.icns"
 touch "${bundle}"
 
 print "Built ${bundle}"
