@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use crate::{ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex};
+use crate::{
+    ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex, tooltip::Tooltip,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Div, Edges, ElementId, Hsla, InteractiveElement, IntoElement,
@@ -388,6 +390,7 @@ pub struct Tab {
     icon: Option<Icon>,
     prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
+    tooltip: Option<SharedString>,
     children: Vec<AnyElement>,
     variant: TabVariant,
     size: Size,
@@ -438,6 +441,7 @@ impl Default for Tab {
             selected: false,
             prefix: None,
             suffix: None,
+            tooltip: None,
             variant: TabVariant::default(),
             size: Size::default(),
             on_click: None,
@@ -454,6 +458,12 @@ impl Tab {
     /// Set label for the tab.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Set hover text for the tab.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -592,6 +602,9 @@ impl RenderOnce for Tab {
             .overflow_hidden()
             .h(height)
             .overflow_hidden()
+            .when_some(self.tooltip, |this, tooltip| {
+                this.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            })
             .text_color(tab_style.fg)
             .map(|this| match self.size {
                 Size::XSmall => this.text_xs(),
@@ -627,7 +640,8 @@ impl RenderOnce for Tab {
                     .justify_center()
                     .overflow_hidden()
                     .margins(inner_margins)
-                    .flex_shrink_0()
+                    .min_w_0()
+                    .flex_shrink()
                     .map(|this| match self.icon {
                         Some(icon) => {
                             this.w(inner_height * 1.25)
@@ -641,7 +655,7 @@ impl RenderOnce for Tab {
                         None => this
                             .paddings(inner_paddings)
                             .map(|this| match self.label {
-                                Some(label) => this.child(label),
+                                Some(label) => this.child(div().min_w_0().truncate().child(label)),
                                 None => this,
                             })
                             .children(self.children),

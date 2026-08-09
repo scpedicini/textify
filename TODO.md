@@ -50,6 +50,8 @@ Initial settings for a proper full-featured text editor:
 
 - [x] Overflowed tabs scroll, every activation reveals the selected tab, and Command-Option-P
   searches open files with fuzzy or `*` wildcard matching.
+- [x] Exceptionally long filenames use a bounded tab width and middle ellipsis that preserves the
+  identifying beginning, extension, dirty marker, and full-name hover tooltip.
 - [x] Command overlays close directly from Escape or an outside click and return focus to the editor.
 - [x] Enabling word wrap immediately reflows against the usable text width without edge clipping.
 - [x] Command-scroll zoom preserves the document row under the pointer through every reflow, with

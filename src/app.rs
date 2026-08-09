@@ -92,6 +92,9 @@ const WINDOW_TITLE: &str = "Textify IDE";
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
 const UNTITLED_TITLE_CHARS: usize = 36;
 const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
+const TAB_TITLE_MAX_CHARS: usize = 40;
+const TAB_TITLE_SUFFIX_CHARS: usize = 16;
+const TAB_MAX_WIDTH: f32 = 320.;
 
 fn tab_toolbar_leading_inset(show_title_bar: bool) -> f32 {
     #[cfg(target_os = "macos")]
@@ -252,6 +255,26 @@ fn first_line_title(chars: impl IntoIterator<Item = char>) -> Option<String> {
         }
         Some(title)
     }
+}
+
+fn bounded_tab_title(title: &str) -> String {
+    let (name, dirty_marker) = title
+        .strip_suffix(" •")
+        .map_or((title, ""), |name| (name, " •"));
+    let marker_chars = dirty_marker.chars().count();
+    let name_budget = TAB_TITLE_MAX_CHARS.saturating_sub(marker_chars);
+    let characters = name.chars().collect::<Vec<_>>();
+    if characters.len() <= name_budget {
+        return title.to_owned();
+    }
+
+    let suffix_chars = TAB_TITLE_SUFFIX_CHARS.min(name_budget.saturating_sub(2));
+    let prefix_chars = name_budget.saturating_sub(suffix_chars + 1);
+    let mut bounded = characters[..prefix_chars].iter().collect::<String>();
+    bounded.push('…');
+    bounded.extend(characters[characters.len() - suffix_chars..].iter());
+    bounded.push_str(dirty_marker);
+    bounded
 }
 
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
@@ -3584,22 +3607,27 @@ impl Workspace {
                 let id = document.id;
                 let is_active = id == active_id;
                 let close_workspace = workspace.clone();
-                Tab::new().label(document.title(cx)).suffix(
-                    Button::new(("close-tab", id))
-                        .ghost()
-                        .xsmall()
-                        .compact()
-                        .icon(IconName::Close)
-                        .tooltip("Close")
-                        .when(is_active, |button| {
-                            button.debug_selector(|| "active-tab-close".to_owned())
-                        })
-                        .on_click(move |_, window, cx| {
-                            close_workspace.update(cx, |workspace, cx| {
-                                workspace.request_close(id, window, cx)
-                            });
-                        }),
-                )
+                let title = document.title(cx);
+                Tab::new()
+                    .label(bounded_tab_title(&title))
+                    .tooltip(title)
+                    .max_w(px(TAB_MAX_WIDTH))
+                    .suffix(
+                        Button::new(("close-tab", id))
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .icon(IconName::Close)
+                            .tooltip("Close")
+                            .when(is_active, |button| {
+                                button.debug_selector(|| "active-tab-close".to_owned())
+                            })
+                            .on_click(move |_, window, cx| {
+                                close_workspace.update(cx, |workspace, cx| {
+                                    workspace.request_close(id, window, cx)
+                                });
+                            }),
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -6012,6 +6040,20 @@ mod tests {
         let title = first_line_title(long.chars()).expect("title");
         assert_eq!(title.chars().count(), UNTITLED_TITLE_CHARS + 1);
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn exceptionally_long_tab_titles_keep_both_identifying_ends() {
+        let filename = format!("{}CODEPAGE_437.TXT", "a".repeat(240));
+        let bounded = bounded_tab_title(&filename);
+        assert_eq!(bounded.chars().count(), TAB_TITLE_MAX_CHARS);
+        assert!(bounded.contains('…'));
+        assert!(bounded.ends_with("CODEPAGE_437.TXT"));
+
+        let dirty = bounded_tab_title(&format!("{filename} •"));
+        assert_eq!(dirty.chars().count(), TAB_TITLE_MAX_CHARS);
+        assert!(dirty.ends_with("CODEPAGE_437.TXT •"));
+        assert_eq!(bounded_tab_title("short.txt"), "short.txt");
     }
 
     #[test]
