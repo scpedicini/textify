@@ -10,9 +10,10 @@ use anyhow::Context as _;
 
 use gpui::{
     App, AppContext as _, Application, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, KeyBinding, ParentElement as _, Render, ScrollDelta, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled, Subscription, Timer, Window, WindowBounds,
-    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size, uniform_list,
+    IntoElement, KeyBinding, Menu, MenuItem, OsAction, ParentElement as _, Render, ScrollDelta,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
+    Window, WindowBounds, WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, StyledExt as _, Theme,
@@ -20,7 +21,7 @@ use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
-    input::{Input, InputEvent, InputState, RopeExt as _},
+    input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, RopeExt as _, SelectAll, Undo},
     switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
@@ -65,8 +66,10 @@ actions!(
         ShowQuickOpen,
         ShowWorkspaceSearch,
         ShowSettings,
+        ToggleWordWrap,
         GoToDefinition,
-        DismissOverlay
+        DismissOverlay,
+        QuitTextify
     ]
 );
 
@@ -205,6 +208,7 @@ struct EditorDocument {
     recovery_revision: u64,
     font_size_override: Option<u16>,
     zoom_accumulator: f32,
+    word_wrap: bool,
 }
 
 struct DocumentSeed {
@@ -216,6 +220,7 @@ struct DocumentSeed {
     dirty: bool,
     recovery_path: Option<PathBuf>,
     font_size_override: Option<u16>,
+    word_wrap: bool,
 }
 
 enum OpenedFile {
@@ -227,7 +232,7 @@ enum OpenedFile {
 }
 
 enum RestoredFile {
-    Opened(OpenedFile, Option<u16>),
+    Opened(OpenedFile, Option<u16>, bool),
     Recovered(DocumentSeed),
 }
 
@@ -251,12 +256,13 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
             dirty: tab.dirty,
             recovery_path: Some(recovery_path),
             font_size_override: tab.font_size_override,
+            word_wrap: tab.word_wrap,
         }));
     }
 
     if let Some(path) = tab.path {
         return open_file(&path, policy)
-            .map(|opened| RestoredFile::Opened(opened, tab.font_size_override));
+            .map(|opened| RestoredFile::Opened(opened, tab.font_size_override, tab.word_wrap));
     }
 
     let metadata = DocumentMetadata::new(None, FileAnalysis::from_bytes(b""), policy);
@@ -269,6 +275,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
         dirty: false,
         recovery_path: None,
         font_size_override: tab.font_size_override,
+        word_wrap: tab.word_wrap,
     }))
 }
 
@@ -288,6 +295,7 @@ enum IdeCommand {
     CloseFile,
     NextTab,
     PreviousTab,
+    ToggleWordWrap,
     OpenFolder,
     QuickOpen,
     WorkspaceSearch,
@@ -511,6 +519,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
+                word_wrap: false,
                 metadata,
             },
             window,
@@ -537,6 +546,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
+                word_wrap: false,
             },
             window,
             cx,
@@ -588,6 +598,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
+                word_wrap: false,
             },
             window,
             cx,
@@ -618,6 +629,7 @@ impl Workspace {
             dirty,
             recovery_path,
             font_size_override,
+            word_wrap,
         } = seed;
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
@@ -627,6 +639,7 @@ impl Workspace {
             metadata.parser_name(self.policy),
             metadata.mode,
             self.settings.editor,
+            word_wrap,
             window,
             cx,
         );
@@ -678,6 +691,7 @@ impl Workspace {
             recovery_revision: 0,
             font_size_override,
             zoom_accumulator: 0.0,
+            word_wrap,
         });
         self.active_index = self.documents.len() - 1;
         self.update_window_title(window, cx);
@@ -737,6 +751,7 @@ impl Workspace {
                             && recovery_enabled
                             && document.recovery_path.is_some(),
                         font_size_override: document.font_size_override,
+                        word_wrap: document.word_wrap,
                     },
                 )
             })
@@ -976,10 +991,20 @@ impl Workspace {
                             }
                             for result in loaded {
                                 match result {
-                                    Ok(RestoredFile::Opened(opened, font_size_override)) => {
+                                    Ok(RestoredFile::Opened(
+                                        opened,
+                                        font_size_override,
+                                        word_wrap,
+                                    )) => {
                                         workspace.push_opened(opened, window, cx);
-                                        workspace.active_document_mut().font_size_override =
-                                            font_size_override;
+                                        let document = workspace.active_document_mut();
+                                        document.font_size_override = font_size_override;
+                                        document.word_wrap = word_wrap;
+                                        if document.metadata.mode == FileMode::Normal
+                                            && document.huge_viewer.is_none()
+                                        {
+                                            document.editor.set_soft_wrap(word_wrap, window, cx);
+                                        }
                                     }
                                     Ok(RestoredFile::Recovered(seed)) => {
                                         workspace.next_untitled_number = workspace
@@ -1197,6 +1222,7 @@ impl Workspace {
                         };
                         let editor = workspace.documents[index].editor.clone();
                         let parser = loaded.metadata.parser_name(workspace.policy);
+                        let normal_mode = loaded.metadata.mode == FileMode::Normal;
                         let document = &mut workspace.documents[index];
                         document.programmatic_change = true;
                         editor.set_text(loaded.text, window, cx);
@@ -1207,6 +1233,7 @@ impl Workspace {
                         document.external_changed = false;
                         document.dirty = false;
                         document.revision = document.revision.wrapping_add(1);
+                        editor.set_soft_wrap(document.word_wrap && normal_mode, window, cx);
                         workspace.update_window_title(window, cx);
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
@@ -1258,6 +1285,7 @@ impl Workspace {
                             dirty: false,
                             recovery_path: None,
                             font_size_override: None,
+                            word_wrap: false,
                         },
                         window,
                         cx,
@@ -1304,6 +1332,7 @@ impl Workspace {
                                 dirty: true,
                                 recovery_path: None,
                                 font_size_override: None,
+                                word_wrap: false,
                             },
                             window,
                             cx,
@@ -1660,6 +1689,7 @@ impl Workspace {
             IdeCommand::CloseFile => self.on_close(&CloseDocument, window, cx),
             IdeCommand::NextTab => self.on_next(&NextDocument, window, cx),
             IdeCommand::PreviousTab => self.on_previous(&PreviousDocument, window, cx),
+            IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
             IdeCommand::WorkspaceSearch => {
@@ -1846,6 +1876,31 @@ impl Workspace {
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
+    }
+
+    fn on_toggle_word_wrap(
+        &mut self,
+        _: &ToggleWordWrap,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let document = self.active_document();
+        if document.metadata.mode != FileMode::Normal || document.huge_viewer.is_some() {
+            self.status_message = Some("Word wrap is disabled by large-file policy".to_owned());
+            cx.notify();
+            return;
+        }
+        let document = self.active_document_mut();
+        document.word_wrap = !document.word_wrap;
+        let enabled = document.word_wrap;
+        document.editor.set_soft_wrap(enabled, window, cx);
+        self.status_message = Some(if enabled {
+            "Word wrap enabled for this tab".to_owned()
+        } else {
+            "Word wrap disabled for this tab".to_owned()
+        });
+        self.persist_session(cx);
         cx.notify();
     }
 
@@ -2359,6 +2414,7 @@ impl Workspace {
                         let metadata =
                             DocumentMetadata::new(Some(path.clone()), analysis, workspace.policy);
                         let parser = metadata.parser_name(policy);
+                        let normal_mode = metadata.mode == FileMode::Normal;
                         let editor = workspace.documents[index].editor.clone();
                         let document = &mut workspace.documents[index];
                         document.metadata = metadata;
@@ -2370,6 +2426,7 @@ impl Workspace {
                             document.dirty = false;
                         }
                         editor.set_parser(parser, cx);
+                        editor.set_soft_wrap(document.word_wrap && normal_mode, window, cx);
                         if let Some(watcher) = &mut workspace.watcher
                             && let Err(error) = watcher.watch_file(&path)
                         {
@@ -2744,6 +2801,13 @@ impl Workspace {
                     .child(position_summary)
                     .children(project_status)
                     .children(self.status_message.clone())
+                    .child(
+                        if document.word_wrap && document.metadata.mode == FileMode::Normal {
+                            "WRAP"
+                        } else {
+                            "NO WRAP"
+                        },
+                    )
                     .child("UTF-8")
                     .child(document.metadata.analysis.line_ending.label())
                     .child(document.metadata.language.label()),
@@ -3250,6 +3314,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
+            .on_action(cx.listener(Self::on_toggle_word_wrap))
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
             .on_drop(cx.listener(|workspace, paths: &ExternalPaths, window, cx| {
@@ -3361,6 +3426,12 @@ fn command_items() -> Vec<OverlayItem> {
             "Activate the previous document",
             "previous back switch cycle tab document",
             IdeCommand::PreviousTab,
+        ),
+        (
+            "Toggle Word Wrap",
+            "Wrap long lines in the current tab",
+            "toggle turn on off enable disable word wrap long lines current tab",
+            IdeCommand::ToggleWordWrap,
         ),
         (
             "Open Folder…",
@@ -3486,6 +3557,68 @@ fn fuzzy_command_token_score(candidate: &str, token: &str) -> Option<i64> {
     None
 }
 
+fn native_menus() -> Vec<Menu> {
+    vec![
+        Menu {
+            name: "Textify".into(),
+            items: vec![
+                MenuItem::action("Settings…", ShowSettings),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit Textify", QuitTextify),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("New Tab", NewDocument),
+                MenuItem::action("Open File…", OpenDocument),
+                MenuItem::action("Open Folder…", OpenFolder),
+                MenuItem::separator(),
+                MenuItem::action("Save", SaveDocument),
+                MenuItem::action("Save As…", SaveDocumentAs),
+                MenuItem::separator(),
+                MenuItem::action("Close Tab", CloseDocument),
+            ],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Command Palette…", ShowCommandPalette),
+                MenuItem::action("Quick Open…", ShowQuickOpen),
+                MenuItem::action("Search Workspace…", ShowWorkspaceSearch),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
+                MenuItem::action("Toggle File Explorer", ToggleSidebar),
+            ],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Next Tab", NextDocument),
+                MenuItem::action("Previous Tab", PreviousDocument),
+            ],
+        },
+    ]
+}
+
+fn quit_textify(_: &QuitTextify, cx: &mut App) {
+    cx.quit();
+}
+
 fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &str, action: A) {
     if !shortcut.trim().is_empty()
         && shortcut
@@ -3529,10 +3662,14 @@ pub fn run() {
             KeyBinding::new("cmd-shift-s", SaveDocumentAs, None),
             KeyBinding::new("cmd-w", CloseDocument, None),
             KeyBinding::new("cmd-,", ShowSettings, None),
+            KeyBinding::new("alt-z", ToggleWordWrap, None),
             KeyBinding::new("ctrl-tab", NextDocument, None),
             KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
             KeyBinding::new("escape", DismissOverlay, None),
+            KeyBinding::new("cmd-q", QuitTextify, None),
         ]);
+        cx.on_action(quit_textify);
+        cx.set_menus(native_menus());
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
@@ -3667,6 +3804,7 @@ mod tests {
                 label_override: None,
                 dirty: true,
                 font_size_override: Some(17),
+                word_wrap: true,
             },
             FilePolicy::default(),
         )
@@ -3681,6 +3819,7 @@ mod tests {
         assert!(seed.disk_revision.is_some());
         assert!(seed.dirty);
         assert_eq!(seed.font_size_override, Some(17));
+        assert!(seed.word_wrap);
         assert_eq!(seed.recovery_path.as_deref(), Some(recovery_path.as_path()));
     }
 
@@ -3780,6 +3919,65 @@ mod tests {
             first_command("preferences for font"),
             Some(IdeCommand::OpenSettings)
         );
+    }
+
+    #[test]
+    fn native_menu_bar_exposes_editor_commands_without_window_chrome() {
+        let menus = native_menus();
+        assert_eq!(
+            menus
+                .iter()
+                .map(|menu| menu.name.as_ref())
+                .collect::<Vec<_>>(),
+            ["Textify", "File", "Edit", "View", "Window"]
+        );
+        let view = menus
+            .iter()
+            .find(|menu| menu.name == "View")
+            .expect("View menu");
+        let actions = view
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(actions.contains(&"Toggle Word Wrap"));
+        assert!(actions.contains(&"Command Palette…"));
+    }
+
+    #[gpui::test]
+    fn word_wrap_is_per_tab_and_blocked_for_large_files(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                workspace.on_toggle_word_wrap(&ToggleWordWrap, window, cx);
+                assert!(workspace.documents[0].word_wrap);
+
+                workspace.add_untitled(window, cx);
+                assert!(!workspace.documents[1].word_wrap);
+                workspace.documents[1].metadata.mode = FileMode::Large;
+                workspace.on_toggle_word_wrap(&ToggleWordWrap, window, cx);
+                assert!(!workspace.documents[1].word_wrap);
+                assert_eq!(
+                    workspace.status_message.as_deref(),
+                    Some("Word wrap is disabled by large-file policy")
+                );
+            });
+        });
     }
 
     #[gpui::test]

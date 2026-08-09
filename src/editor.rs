@@ -19,6 +19,7 @@ impl EditorBackend {
         parser: Option<&'static str>,
         mode: FileMode,
         budgets: EditorBudgets,
+        soft_wrap: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
@@ -35,9 +36,8 @@ impl EditorBackend {
                     tab_size: 4,
                     hard_tabs: false,
                 })
-                // Wrapping is disabled in all modes initially; it is especially important for
-                // pathological long lines in large-file mode.
-                .soft_wrap(false)
+                // Large-file policy always wins over a restored per-tab preference.
+                .soft_wrap(soft_wrap && mode == FileMode::Normal)
                 .default_value(text)
                 .placeholder(if mode == FileMode::Large {
                     "Large-file mode"
@@ -73,6 +73,11 @@ impl EditorBackend {
         self.state.update(cx, |state, cx| {
             state.set_resource_budgets(undo_bytes, search_matches, cx)
         });
+    }
+
+    pub fn set_soft_wrap(&self, wrap: bool, window: &mut Window, cx: &mut App) {
+        self.state
+            .update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
     }
 
     pub fn select_position(
