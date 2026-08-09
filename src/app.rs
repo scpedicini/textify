@@ -97,6 +97,13 @@ const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
 const TAB_TITLE_MAX_CHARS: usize = 40;
 const TAB_TITLE_SUFFIX_CHARS: usize = 16;
 const TAB_MAX_WIDTH: f32 = 320.;
+const OVERLAY_VISIBLE_ROW_COUNT: usize = 10;
+const OVERLAY_ROW_HEIGHT: f32 = 48.;
+const OVERLAY_PANEL_MAX_HEIGHT: f32 = 600.;
+
+fn overlay_results_height(count: usize) -> f32 {
+    count.min(OVERLAY_VISIBLE_ROW_COUNT) as f32 * OVERLAY_ROW_HEIGHT
+}
 
 fn tab_toolbar_leading_inset(show_title_bar: bool) -> f32 {
     #[cfg(target_os = "macos")]
@@ -4144,7 +4151,7 @@ impl Workspace {
             .top(px(72.))
             .left(px(180.))
             .right(px(180.))
-            .max_h(px(520.))
+            .max_h(px(OVERLAY_PANEL_MAX_HEIGHT))
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
@@ -4187,11 +4194,15 @@ impl Workspace {
                                     Some(
                                         v_flex()
                                             .id(("overlay-item", index))
-                                            .h_10()
+                                            .debug_selector(move || format!("overlay-row-{index}"))
+                                            .w_full()
+                                            .h(px(OVERLAY_ROW_HEIGHT))
                                             .px_3()
-                                            .py_1()
+                                            .py(px(6.))
+                                            .gap(px(2.))
+                                            .overflow_hidden()
                                             .cursor_pointer()
-                                            .border_t_1()
+                                            .border_b_1()
                                             .border_color(cx.theme().border.opacity(0.55))
                                             .when(
                                                 index == workspace.overlay_selected_index,
@@ -4203,10 +4214,23 @@ impl Workspace {
                                                     workspace.accept_overlay(index, window, cx)
                                                 },
                                             ))
-                                            .child(div().text_sm().child(item.title))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_sm()
+                                                    .child(item.title),
+                                            )
                                             .when(!item.subtitle.is_empty(), |row| {
                                                 row.child(
                                                     div()
+                                                        .debug_selector(move || {
+                                                            format!("overlay-subtitle-{index}")
+                                                        })
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .truncate()
                                                         .text_xs()
                                                         .text_color(cx.theme().muted_foreground)
                                                         .child(item.subtitle),
@@ -4218,7 +4242,7 @@ impl Workspace {
                         }),
                     )
                     .track_scroll(self.overlay_scroll_handle.clone())
-                    .h(px(count.min(10) as f32 * 40.)),
+                    .h(px(overlay_results_height(count))),
                 )
             });
 
@@ -5535,6 +5559,48 @@ mod tests {
         assert!(!narrow.path);
         assert!(!narrow.cursor_position);
         assert!(!narrow.language);
+    }
+
+    #[test]
+    fn overlay_results_height_uses_roomy_rows_and_stops_at_ten() {
+        assert_eq!(overlay_results_height(0), 0.);
+        assert_eq!(overlay_results_height(1), OVERLAY_ROW_HEIGHT);
+        assert_eq!(overlay_results_height(10), 480.);
+        assert_eq!(overlay_results_height(250), 480.);
+    }
+
+    #[gpui::test]
+    fn two_line_overlay_rows_keep_subtitles_above_their_dividers(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.simulate_resize(size(px(1180.), px(780.)));
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::Commands, window, cx)
+            });
+        });
+        cx.run_until_parked();
+
+        let first_row = cx.debug_bounds("overlay-row-0").expect("first row");
+        let first_subtitle = cx
+            .debug_bounds("overlay-subtitle-0")
+            .expect("first subtitle");
+        let second_row = cx.debug_bounds("overlay-row-1").expect("second row");
+
+        assert_eq!(first_row.size.height, px(OVERLAY_ROW_HEIGHT));
+        assert!(first_subtitle.bottom() + px(4.) <= first_row.bottom());
+        assert!(first_subtitle.bottom() < second_row.top());
+        assert!(first_row.bottom() <= second_row.top());
+        assert_eq!(first_row.size.width, second_row.size.width);
     }
 
     #[gpui::test]
