@@ -28,6 +28,24 @@ Command-Option-P opens the tab navigator with up to ten visible rows. It lists e
 supports arrows across longer lists, filters with fuzzy text or ordered `*` fragments, and opens the
 highlighted tab with Enter.
 
+## File-dialog context and text encodings
+
+Open File, Open Folder, and Save As use the active saved document's parent directory. When the
+active tab is untitled, they fall back to the open workspace and then the process directory. A
+normal Save writes directly to the document's existing path and therefore opens no dialog.
+
+Valid UTF-8 always opens as UTF-8. When UTF-8 validation fails, Textify recognizes CP437 only when
+the bytes look like text; data with NUL bytes or excessive control characters remains rejected as
+binary. The encoding label in the status bar is a button. It opens a searchable, keyboard-driven
+UTF-8 / CP437 list and reloads a clean saved document from disk using the chosen decoder. Textify
+blocks this destructive reload for dirty tabs. The choice is stored in the session, used for
+external reload and comparison, and retained by Save and Save As. CP437 saves stream through the
+atomic writer; a character outside the CP437 repertoire produces an error without replacing the
+file. The read-only huge-file viewer remains UTF-8-only.
+
+Shell detection covers `.sh`, `.bash`, `.zsh`, `.bashrc`, `.zshrc`, and `.profile`; all use the
+bundled Tree-sitter Bash grammar.
+
 ## Settings
 
 Textify creates `settings.json` and `keymap.json` in its application-data directory after the first

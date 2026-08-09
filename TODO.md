@@ -91,3 +91,16 @@ Initial settings for a proper full-featured text editor:
   slot.
 - [x] The redundant right-side Save button was removed from the tab ribbon; File → Save and
   Command-S remain available.
+
+# File context, shell highlighting, and DOS text
+
+- [x] Open File, Open Folder, and Save As start beside the active saved document, falling back to
+  the open workspace for an untitled tab.
+- [x] `.sh`, `.bash`, `.zsh`, `.bashrc`, `.zshrc`, and `.profile` use the bundled Tree-sitter Bash
+  grammar and display as Shell.
+- [x] Text-like invalid UTF-8 can be detected and decoded as CP437; binary-looking files remain
+  rejected.
+- [x] The clickable encoding status opens a keyboard-driven UTF-8 / CP437 “Reopen With Encoding”
+  picker for clean saved files, and the explicit choice survives session restore.
+- [x] CP437 documents save atomically back to CP437 without a document-sized conversion buffer;
+  unrepresentable edits fail without replacing the original file.

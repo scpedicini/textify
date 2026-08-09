@@ -3,7 +3,7 @@
 Textify is a fast, focused native text editor for macOS, built in Rust with GPUI and
 GPUI Component.
 
-Textify provides safe file handling, HTML, Markdown, and JSON highlighting, multiple tabs,
+Textify provides safe file handling, HTML, Markdown, JSON, and shell highlighting, multiple tabs,
 external-change detection, session restore, multicursor editing, measured large-file behavior, and
 a bounded-memory viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project
 explorer, live search across open tabs, a command palette, cancellable workspace search,
@@ -52,6 +52,12 @@ be disabled. Language-server support is opt-in; configure an executable and exte
 F12 for go-to-definition. See [docs/ide-workflows.md](docs/ide-workflows.md) for the full schema.
 Textify installs no application network client or telemetry; see [docs/privacy.md](docs/privacy.md)
 for local storage and the explicit optional-LSP boundary.
+
+Open File, Open Folder, and Save As begin in the active saved tab's directory; an untitled tab falls
+back to the open workspace. Textify automatically opens valid UTF-8 and recognizes text-like CP437
+DOS files. The clickable UTF-8 / CP437 status control can reopen a clean saved file with an explicit
+decoder. Saves retain the tab's encoding and fail safely if a CP437 edit contains an unrepresentable
+character.
 
 ## Run it
 

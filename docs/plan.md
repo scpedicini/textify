@@ -15,7 +15,7 @@ Textify Application
 ├── Document[] (path, language, file mode, dirty revision)
 │   └── EditorBackend (the GPUI Component boundary)
 ├── FilePolicy (normal / large / huge, parser budgets)
-└── File I/O (UTF-8 loading and chunked atomic saving)
+└── File I/O (UTF-8/CP437 detection and chunked atomic saving)
 ```
 
 Each tab owns one editor entity. Switching tabs therefore retains selections, scroll position,
@@ -23,7 +23,7 @@ folds, search state, and undo history. Only `editor.rs` configures GPUI Componen
 pre-1.0 API out of the rest of the application.
 
 Dependencies are exact-version pinned and `Cargo.lock` is committed. Textify's tested GPUI
-Component fork bundles only JSON, Markdown, and HTML grammars for the languages it highlights.
+Component fork bundles only JSON, Markdown, HTML, and Bash grammars for the languages it highlights.
 
 ## Milestone 1 — editor MVP
 
@@ -227,11 +227,25 @@ Status: implemented and regression tested on 2026-08-09.
 - The tab ribbon no longer spends overflow space on a redundant Save button; the native File menu
   and Command-S remain the canonical save controls.
 
+## Milestone 10 — contextual dialogs, shell syntax, and CP437
+
+Status: implemented and regression tested on 2026-08-09.
+
+- Native Open File and Open Folder panels are primed with the active saved document's directory;
+  Save As shares the same active-document/workspace fallback resolver.
+- The minimal parser bundle includes Tree-sitter Bash for common Bash, sh, and zsh filenames.
+- File loading distinguishes valid UTF-8, text-like CP437, and binary-looking invalid data. CP437
+  decoding covers the complete high-byte character table and recognizes DOS line endings.
+- The status encoding label opens a focused UTF-8 / CP437 picker. Explicit choices are race-safe,
+  dirty-buffer-safe, used for external reload/compare, and persisted with the tab session.
+- CP437 saves use a bounded streaming encoder inside the existing conflict-checked atomic writer;
+  unrepresentable Unicode aborts before the destination is replaced.
+
 ## Feature-complete verification
 
 Status: all planned milestones implemented, tested, documented, and committed on 2026-08-09.
 
-- 81 Textify tests and 113 pinned-fork tests pass.
+- 88 Textify tests and 113 pinned-fork tests pass.
 - All targets compile; formatting and Clippy with warnings denied are clean.
 - The final optimized performance corpus remains within the Milestone 2 baseline envelope.
 - The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.
