@@ -9,6 +9,10 @@ viewer for files at or above 512 MiB. Its IDE layer adds a virtualized project e
 command palette, cancellable workspace search, live settings/keymap reload, lazy Git decorations,
 and optional language-server diagnostics and go-to-definition.
 
+All milestones in the current build plan are implemented. The feature-complete verification record
+and optimized measurements are in [docs/plan.md](docs/plan.md) and
+[docs/performance.md](docs/performance.md).
+
 ## Huge files
 
 Files at or above 512 MiB open in a separate read-only paged viewer. Its toolbar supports page

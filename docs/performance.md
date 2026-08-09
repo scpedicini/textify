@@ -43,3 +43,22 @@ a document-sized string or rope, so resident memory is independent of the file's
 Core tests cover bounded pages, sparse line/byte navigation, search matches that cross read-buffer
 boundaries, cancellation, UTF-8 range validation, and copy/edit limits. Repeat the UI measurement
 with a real multi-gigabyte log when changing the page layout, indexing stride, or viewer controls.
+
+## Feature-complete regression — 2026-08-08
+
+The optimized corpus was repeated after the multicursor and lazy IDE phases. This run confirms that
+the new services do not affect the production file path when no folder or language server is open:
+
+| Fixture | Open | Save |
+| --- | ---: | ---: |
+| 1 MiB JSON | 1.13 ms | 21.46 ms |
+| 25 MiB minified JSON | 26.61 ms | 26.97 ms |
+| 100 MiB minified JSON | 107.32 ms | 71.41 ms |
+| 200,000 lines | 6.60 ms | 18.00 ms |
+| One 5 MiB line | 5.09 ms | 18.35 ms |
+| Unicode/IME sample | 0.03 ms | 10.09 ms |
+
+Peak resident memory was 143.27 MiB. The 25/100 MiB JSON files and 5 MiB line again selected the
+parser-free large-file policy. Textify's native headless smoke test rendered an indexed project
+sidebar and command palette while asserting that the initial shell owns neither a project index nor
+an LSP process.

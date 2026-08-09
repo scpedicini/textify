@@ -143,3 +143,14 @@ Implementation notes:
 - The restored session now includes the workspace root. None of these services is constructed in
   the first-window path; the headless native render test asserts that the initial shell has no
   project or language-server state.
+
+## Feature-complete verification
+
+Status: all planned milestones implemented, tested, documented, and committed on 2026-08-08.
+
+- 34 Textify tests and 111 pinned-fork tests pass.
+- All targets compile; formatting and Clippy with warnings denied are clean.
+- The final optimized performance corpus remains within the Milestone 2 baseline envelope.
+- The 512 MiB paged-viewer smoke test remains bounded at 63.4 MiB RSS.
+- Native UI construction, project explorer virtualization, and command overlay rendering pass in a
+  headless GPUI window, so verification does not create duplicate on-screen application instances.
