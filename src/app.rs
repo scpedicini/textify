@@ -279,10 +279,15 @@ enum OverlayMode {
     WorkspaceSearch,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum IdeCommand {
     NewFile,
     OpenFile,
+    SaveFile,
+    SaveFileAs,
+    CloseFile,
+    NextTab,
+    PreviousTab,
     OpenFolder,
     QuickOpen,
     WorkspaceSearch,
@@ -304,6 +309,7 @@ enum OverlayTarget {
 struct OverlayItem {
     title: String,
     subtitle: String,
+    search_text: String,
     target: OverlayTarget,
 }
 
@@ -1506,14 +1512,7 @@ impl Workspace {
         let query = self.overlay_input.read(cx).value().trim().to_lowercase();
         match mode {
             OverlayMode::Commands => {
-                self.overlay_items = command_items()
-                    .into_iter()
-                    .filter(|item| {
-                        query.is_empty()
-                            || item.title.to_lowercase().contains(&query)
-                            || item.subtitle.to_lowercase().contains(&query)
-                    })
-                    .collect();
+                self.overlay_items = matching_command_items(&query);
             }
             OverlayMode::QuickOpen => {
                 self.overlay_items = self
@@ -1534,6 +1533,7 @@ impl Workspace {
                                     .unwrap_or(&path)
                                     .display()
                                     .to_string(),
+                                search_text: path.display().to_string(),
                                 target: OverlayTarget::File(path),
                             })
                             .collect()
@@ -1598,6 +1598,7 @@ impl Workspace {
                     self.overlay_items.push(OverlayItem {
                         title: item.preview.clone(),
                         subtitle,
+                        search_text: item.preview.clone(),
                         target: OverlayTarget::Search(item),
                     });
                 }
@@ -1654,6 +1655,11 @@ impl Workspace {
         match command {
             IdeCommand::NewFile => self.on_new(&NewDocument, window, cx),
             IdeCommand::OpenFile => self.on_open(&OpenDocument, window, cx),
+            IdeCommand::SaveFile => self.on_save(&SaveDocument, window, cx),
+            IdeCommand::SaveFileAs => self.on_save_as(&SaveDocumentAs, window, cx),
+            IdeCommand::CloseFile => self.on_close(&CloseDocument, window, cx),
+            IdeCommand::NextTab => self.on_next(&NextDocument, window, cx),
+            IdeCommand::PreviousTab => self.on_previous(&PreviousDocument, window, cx),
             IdeCommand::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             IdeCommand::QuickOpen => self.on_quick_open(&ShowQuickOpen, window, cx),
             IdeCommand::WorkspaceSearch => {
@@ -3314,56 +3320,170 @@ impl Render for Workspace {
 
 fn command_items() -> Vec<OverlayItem> {
     [
-        ("New File", "Create an untitled editor", IdeCommand::NewFile),
-        ("Open File…", "Open a file from disk", IdeCommand::OpenFile),
+        (
+            "New File",
+            "Create an untitled editor",
+            "new tab document make create blank note",
+            IdeCommand::NewFile,
+        ),
+        (
+            "Open File…",
+            "Open a file from disk",
+            "open load browse choose existing document",
+            IdeCommand::OpenFile,
+        ),
+        (
+            "Save File",
+            "Save changes to disk",
+            "save write keep changes current document",
+            IdeCommand::SaveFile,
+        ),
+        (
+            "Save File As…",
+            "Save under a different name",
+            "save as copy another different rename somewhere else",
+            IdeCommand::SaveFileAs,
+        ),
+        (
+            "Close Tab",
+            "Close the current document",
+            "close remove dismiss tab file document current",
+            IdeCommand::CloseFile,
+        ),
+        (
+            "Next Tab",
+            "Activate the next document",
+            "next forward switch cycle tab document",
+            IdeCommand::NextTab,
+        ),
+        (
+            "Previous Tab",
+            "Activate the previous document",
+            "previous back switch cycle tab document",
+            IdeCommand::PreviousTab,
+        ),
         (
             "Open Folder…",
             "Index a project lazily",
+            "open folder directory project workspace load browse",
             IdeCommand::OpenFolder,
         ),
         (
             "Quick Open",
             "Find an indexed project file",
+            "quick open find locate project file fuzzy",
             IdeCommand::QuickOpen,
         ),
         (
             "Search Workspace",
             "Stream text matches from project files",
+            "search find text content across project workspace files",
             IdeCommand::WorkspaceSearch,
         ),
         (
             "Toggle File Explorer",
             "Show or hide the project sidebar",
+            "toggle show hide file list tree explorer sidebar project",
             IdeCommand::ToggleSidebar,
         ),
         (
             "Refresh Project",
             "Rescan files and Git decorations",
+            "refresh reload rescan project git status files",
             IdeCommand::RefreshProject,
         ),
         (
             "Open Settings",
             "Change fonts and crash recovery",
+            "open show settings preferences options configure font size recovery temporary unsaved",
             IdeCommand::OpenSettings,
         ),
         (
             "Open Keymap",
             "Edit keymap.json (reloads on save)",
+            "open edit keyboard shortcuts hotkeys bindings keymap configure",
             IdeCommand::OpenKeymap,
         ),
         (
             "Go to Definition",
             "Ask the configured language server",
+            "go jump navigate definition symbol declaration lsp language server",
             IdeCommand::GoToDefinition,
         ),
     ]
     .into_iter()
-    .map(|(title, subtitle, command)| OverlayItem {
+    .map(|(title, subtitle, keywords, command)| OverlayItem {
         title: title.to_owned(),
         subtitle: subtitle.to_owned(),
+        search_text: format!("{title} {subtitle} {keywords}").to_lowercase(),
         target: OverlayTarget::Command(command),
     })
     .collect()
+}
+
+fn matching_command_items(query: &str) -> Vec<OverlayItem> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return command_items();
+    }
+    let stop_words = [
+        "a", "an", "the", "to", "please", "i", "want", "can", "you", "me", "my", "this", "that",
+        "for", "of",
+    ];
+    let tokens = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty() && !stop_words.contains(token))
+        .collect::<Vec<_>>();
+
+    let mut matches = command_items()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let mut score = if item.title.to_lowercase().contains(&query) {
+                500
+            } else {
+                0
+            };
+            for token in &tokens {
+                score += fuzzy_command_token_score(&item.search_text, token)?;
+            }
+            Some((score, index, item))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(
+        |(left_score, left_index, _), (right_score, right_index, _)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_index.cmp(right_index))
+        },
+    );
+    matches.into_iter().map(|(_, _, item)| item).collect()
+}
+
+fn fuzzy_command_token_score(candidate: &str, token: &str) -> Option<i64> {
+    if let Some(index) = candidate.find(token) {
+        return Some(120 - (index as i64 / 8));
+    }
+
+    let mut score = 0i64;
+    let mut wanted = token.chars();
+    let mut current = wanted.next()?;
+    let mut previous_match = None;
+    for (index, character) in candidate.char_indices() {
+        if character != current {
+            continue;
+        }
+        score += 8;
+        if previous_match.is_some_and(|previous| previous + character.len_utf8() == index) {
+            score += 5;
+        }
+        previous_match = Some(index);
+        let Some(next) = wanted.next() else {
+            return Some(score);
+        };
+        current = next;
+    }
+    None
 }
 
 fn push_key_binding<A: gpui::Action>(bindings: &mut Vec<KeyBinding>, shortcut: &str, action: A) {
@@ -3630,6 +3750,36 @@ mod tests {
         let title = first_line_title(long.chars()).expect("title");
         assert_eq!(title.chars().count(), UNTITLED_TITLE_CHARS + 1);
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn command_palette_understands_natural_language_intent() {
+        let first_command = |query: &str| {
+            matching_command_items(query)
+                .into_iter()
+                .next()
+                .and_then(|item| match item.target {
+                    OverlayTarget::Command(command) => Some(command),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(
+            first_command("please make a new tab"),
+            Some(IdeCommand::NewFile)
+        );
+        assert_eq!(
+            first_command("save this somewhere else"),
+            Some(IdeCommand::SaveFileAs)
+        );
+        assert_eq!(
+            first_command("hide the file list"),
+            Some(IdeCommand::ToggleSidebar)
+        );
+        assert_eq!(
+            first_command("preferences for font"),
+            Some(IdeCommand::OpenSettings)
+        );
     }
 
     #[gpui::test]
