@@ -32,31 +32,27 @@ development symlink.
 
 ## Raycast
 
-The installer prints the repository's `raycast` directory. In Raycast:
+Raycast indexes Textify as a normal macOS application. After running the local installer:
 
-1. Open **Settings → Script Commands**.
-2. Choose **Add Script Directory** and select `/Users/shaun/dev/textify/raycast`.
-3. Search for **Textify** in Raycast. Optionally use **Configure Command** to assign a hotkey.
+1. Open Raycast and search for **Textify**.
+2. Choose the application result. Depending on Raycast's resolved symlinks, its path can appear as
+   `~/Applications/Textify.app` or `/Users/shaun/dev/textify/target/release/Textify.app`.
+3. Optionally configure a hotkey for that application result.
 
-Keep `/Users/shaun/dev/textify/raycast/textify.sh`. It is not a second build and it does not invoke
-Cargo. It is the stable Raycast entry point for this optimized release chain:
+No repository-specific Raycast Script Command is required. The direct application result already
+uses macOS Launch Services, so invoking it focuses a running Textify instance and launches one only
+when needed. It follows the optimized release chain:
 
 ```text
-raycast/textify.sh
-  -> open ~/Applications/Textify.app
-  -> target/release/Textify.app
+Raycast application result
+  -> ~/Applications/Textify.app or target/release/Textify.app
   -> target/release/textify (Cargo release profile)
 ```
 
-The Script Command asks Launch Services to open the app bundle. This focuses an existing Textify
-window instead of creating duplicate raw processes. Pointing Raycast directly at the Mach-O binary
-would lose that application lifecycle behavior; relying only on Raycast's application index would
-also give up the explicit Script Command and its stable configurable hotkey. The script therefore
-remains the preferred setup.
-
-The command launches the already-built binary and intentionally does not compile during a Raycast
-invocation. After code changes, run `scripts/build-release.sh`, quit any running Textify instance,
-and invoke Textify from Raycast again.
+If an older setup still shows a second Textify Script Command, remove
+`/Users/shaun/dev/textify/raycast` from **Raycast Settings → Script Commands**. The folder and script
+are no longer part of Textify. After code changes, run `scripts/build-release.sh`, quit any running
+Textify instance, and invoke the application result from Raycast again.
 
 For terminal use, run `textify` after ensuring `~/bin` is on `PATH`. Development still uses
 `cargo run`; Cargo's `default-run = "textify"` keeps that command unambiguous even though the
@@ -83,7 +79,6 @@ inspect an installation manually:
 plutil -lint target/release/Textify.app/Contents/Info.plist
 file target/release/Textify.app/Contents/MacOS/Textify
 file target/release/Textify.app/Contents/Resources/Textify.icns
-zsh -n raycast/textify.sh
 readlink ~/bin/textify
 readlink ~/Applications/Textify.app
 readlink ~/Applications/Textify.app/Contents/MacOS/Textify

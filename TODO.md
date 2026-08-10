@@ -117,5 +117,5 @@ Initial settings for a proper full-featured text editor:
 - [x] The optimized GUI has a recorded native `ps`, `vmmap`, and `leaks` baseline; its bounded idle
   soak stayed flat, and UTF-8 loading no longer duplicates the complete file buffer.
 - [x] A thin-LTO release build creates a valid local macOS app bundle. Safe installer symlinks expose
-  it at `~/Applications/Textify.app` and `~/bin/textify`, and the Raycast Script Command launches or
-  focuses the one existing app instance.
+  it at `~/Applications/Textify.app` and `~/bin/textify`; Raycast launches the indexed application
+  directly and macOS focuses the existing app instance.

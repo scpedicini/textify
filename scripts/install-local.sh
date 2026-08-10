@@ -30,6 +30,6 @@ fi
 print "Installed local Textify links:"
 print "  ${binary_link} -> ${binary_target}"
 print "  ${bundle_link} -> ${bundle_target}"
-print "Raycast Script Command: ${repository_root}/raycast/textify.sh"
-print "Add ${repository_root}/raycast as a Raycast Script Directory once and keep it configured."
+print "Raycast can launch the indexed ${bundle_link} application directly."
+print "No Raycast Script Command directory is required."
 print "After future release rebuilds, quit a running Textify instance before launching it again."
