@@ -44,6 +44,30 @@ Core tests cover bounded pages, sparse line/byte navigation, search matches that
 boundaries, cancellation, UTF-8 range validation, and copy/edit limits. Repeat the UI measurement
 with a real multi-gigabyte log when changing the page layout, indexing stride, or viewer controls.
 
+## Pathological JSON line profile — 2026-08-10
+
+The generated corpus also includes a valid 30-line JSON document whose middle row has a
+50-character key and an exactly 30,000-byte minified nested object assembled from deterministic
+lorem ipsum text. The performance runner measures its parser setup and 20 repeated full-line style
+passes to model the work triggered while scrolling a visible physical line.
+
+Profiling isolated a quadratic highlight-range normalization loop, compounded by cumulative spans
+incorrectly merged across JSON punctuation. Replacing it with a boundary sweep, retaining only
+currently overlapping captures, and caching the unwrapped longest-line width produced this release
+comparison on the same Apple M1 Max:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Parse | 1.39 ms | 1.27 ms |
+| 20 syntax-style passes | 349.08 ms | 54.67 ms |
+| Per syntax-style pass | 17.45 ms | 2.73 ms |
+
+The style hot path is 6.4× faster on the reported shape while preserving highlighting. Unit tests
+compare the sweep against the prior reference semantics over overlapping ranges, bound raw capture
+overlap for a generated nested JSON line, validate the lorem fixture as JSON, and verify that edits
+invalidate the longest-line width cache. UI layout and glyph painting remain separate from these
+timings, so interaction profiling should still be repeated when changing GPUI's text shaper.
+
 ## Feature-complete regression — 2026-08-08
 
 The optimized corpus was repeated after the multicursor and lazy IDE phases. This run confirms that

@@ -1133,24 +1133,32 @@ impl Element for TextElement {
         // 1. Single line
         // 2. Multi-line with soft wrap disabled.
         if state.mode.is_single_line() || !state.soft_wrap {
-            let longest_row = state.text_wrapper.longest_row.row;
-            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
-            longest_line_width = window
-                .text_system()
-                .shape_line(
-                    longest_line.clone(),
-                    text_size,
-                    &[TextRun {
-                        len: longest_line.len(),
-                        font: style.font(),
-                        color: gpui::black(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    wrap_width,
-                )
-                .width;
+            longest_line_width = state
+                .text_wrapper
+                .cached_longest_line_width()
+                .unwrap_or_else(|| {
+                    let longest_row = state.text_wrapper.longest_row.row;
+                    let longest_line: SharedString =
+                        state.text.slice_line(longest_row).to_string().into();
+                    let width = window
+                        .text_system()
+                        .shape_line(
+                            longest_line.clone(),
+                            text_size,
+                            &[TextRun {
+                                len: longest_line.len(),
+                                font: style.font(),
+                                color: gpui::black(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            wrap_width,
+                        )
+                        .width;
+                    state.text_wrapper.cache_longest_line_width(width);
+                    width
+                });
         }
         last_layout.lines = Rc::new(lines);
 

@@ -6,7 +6,7 @@ use gpui::{HighlightStyle, SharedString};
 
 use ropey::{ChunkCursor, Rope};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ops::Range,
     usize,
 };
@@ -395,29 +395,21 @@ impl SyntaxHighlighter {
                 let node_range: Range<usize> = node.start_byte()..node.end_byte();
                 let highlight_name = SharedString::from(highlight_name.to_string());
 
-                // Merge near range and same highlight name
-                let last_item = highlights.last();
-                let last_range = last_item.map(|item| &item.range).unwrap_or(&(0..0));
-                let last_highlight_name = last_item.map(|item| item.name.clone());
-
-                if last_range.end <= node_range.start
-                    && last_highlight_name.as_ref() == Some(&highlight_name)
-                {
-                    highlights.push(HighlightItem::new(
-                        last_range.start..node_range.end,
-                        highlight_name.clone(),
-                    ));
-                } else if last_range == &node_range {
-                    // case:
-                    // last_range: 213..220, last_highlight_name: Some("property")
-                    // last_range: 213..220, last_highlight_name: Some("string")
-                    highlights.push(HighlightItem::new(
-                        node_range,
-                        last_highlight_name.unwrap_or(highlight_name),
-                    ));
-                } else {
-                    highlights.push(HighlightItem::new(node_range, highlight_name.clone()));
+                if let Some(last_item) = highlights.last_mut() {
+                    // Preserve the first capture for an identical range (for example JSON
+                    // properties are also strings). Adjacent captures with the same style can
+                    // share one item, but gaps must remain unhighlighted. The old implementation
+                    // appended cumulative ranges across gaps, creating thousands of overlapping
+                    // spans on minified JSON.
+                    if last_item.range == node_range {
+                        continue;
+                    }
+                    if last_item.range.end == node_range.start && last_item.name == highlight_name {
+                        last_item.range.end = node_range.end;
+                        continue;
+                    }
                 }
+                highlights.push(HighlightItem::new(node_range, highlight_name.clone()));
             }
         }
 
@@ -648,55 +640,76 @@ pub(crate) fn unique_styles(
     total_range: &Range<usize>,
     styles: Vec<(Range<usize>, HighlightStyle)>,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
-    if styles.is_empty() {
-        return styles;
+    if styles.is_empty() || total_range.is_empty() {
+        return vec![];
     }
 
-    let mut intervals = BTreeSet::new();
+    #[derive(Default)]
+    struct Events {
+        starts: Vec<usize>,
+        ends: Vec<usize>,
+    }
+
+    let mut events = BTreeMap::<usize, Events>::new();
     let mut significant_intervals = BTreeSet::new();
 
-    // For example
-    //
-    // from: [(6..11), (6..11), (11..17), (17..25), (16..19), (25..59))]
-    // to:   [6, 11, 16, 17, 19, 25, 59]
-    intervals.insert(total_range.start);
-    intervals.insert(total_range.end);
-    for (range, _) in &styles {
-        intervals.insert(range.start);
-        intervals.insert(range.end);
-        significant_intervals.insert(range.end); // End points are significant for merging decisions
+    // Minified source can produce thousands of captures for one visible physical line. Walking
+    // every capture for every interval made normalization quadratic on every scroll repaint.
+    // Sweep the boundaries while retaining only captures that overlap the current interval.
+    events.entry(total_range.start).or_default();
+    events.entry(total_range.end).or_default();
+    for (index, (range, _)) in styles.iter().enumerate() {
+        let start = range.start.max(total_range.start);
+        let end = range.end.min(total_range.end);
+        if start >= end {
+            continue;
+        }
+        events.entry(start).or_default().starts.push(index);
+        events.entry(end).or_default().ends.push(index);
+        significant_intervals.insert(end);
     }
 
-    let intervals: Vec<usize> = intervals.into_iter().collect();
-    let mut result = Vec::with_capacity(intervals.len().saturating_sub(1));
+    let positions = events.keys().copied().collect::<Vec<_>>();
+    let mut active = BTreeSet::<usize>::new();
+    let mut result: Vec<(Range<usize>, HighlightStyle)> =
+        Vec::with_capacity(positions.len().saturating_sub(1));
 
     // For each interval between boundaries, find the top-most style
     //
     // Result e.g.:
     //
     // [(6..11, red), (11..16, green), (16..17, blue), (17..19, red), (19..25, clean), (25..59, blue)]
-    for i in 0..intervals.len().saturating_sub(1) {
-        let interval = intervals[i]..intervals[i + 1];
-        if interval.start >= interval.end {
+    for (position_index, &position) in positions.iter().enumerate() {
+        let boundary = &events[&position];
+        for index in &boundary.ends {
+            active.remove(index);
+        }
+        for &index in &boundary.starts {
+            active.insert(index);
+        }
+
+        let Some(&next_position) = positions.get(position_index + 1) else {
+            break;
+        };
+        if position >= next_position {
             continue;
         }
 
         // Find the last (top-most) style that covers this interval
         let mut top_style: Option<HighlightStyle> = None;
-        for (range, style) in &styles {
-            if range.start <= interval.start && interval.end <= range.end {
-                if let Some(top_style) = &mut top_style {
-                    merge_highlight_style(top_style, style);
-                } else {
-                    top_style = Some(*style);
-                }
+        for &index in &active {
+            let style = &styles[index].1;
+            if let Some(top_style) = &mut top_style {
+                merge_highlight_style(top_style, style);
+            } else {
+                top_style = Some(*style);
             }
         }
 
         if let Some(style) = top_style {
-            result.push((interval, style));
+            result.push((position..next_position, style));
         } else {
-            result.push((interval, HighlightStyle::default()));
+            result.push((position..next_position, HighlightStyle::default()));
         }
     }
 
@@ -837,5 +850,105 @@ mod tests {
                 (60..65, clean),
             ],
         );
+    }
+
+    fn unique_styles_reference(
+        total_range: &Range<usize>,
+        styles: &[(Range<usize>, HighlightStyle)],
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let mut intervals = BTreeSet::from([total_range.start, total_range.end]);
+        let mut significant_intervals = BTreeSet::new();
+        for (range, _) in styles {
+            intervals.insert(range.start.max(total_range.start));
+            intervals.insert(range.end.min(total_range.end));
+            significant_intervals.insert(range.end.min(total_range.end));
+        }
+        let intervals = intervals.into_iter().collect::<Vec<_>>();
+        let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+        for pair in intervals.windows(2) {
+            let range = pair[0]..pair[1];
+            if range.is_empty() {
+                continue;
+            }
+            let mut top_style: Option<HighlightStyle> = None;
+            for (candidate, style) in styles {
+                if candidate.start <= range.start && range.end <= candidate.end {
+                    if let Some(top_style) = &mut top_style {
+                        merge_highlight_style(top_style, style);
+                    } else {
+                        top_style = Some(*style);
+                    }
+                }
+            }
+            let style = top_style.unwrap_or_default();
+            if let Some((last_range, last_style)) = result.last_mut()
+                && last_range.end == range.start
+                && *last_style == style
+                && !significant_intervals.contains(&range.start)
+            {
+                last_range.end = range.end;
+                continue;
+            }
+            result.push((range, style));
+        }
+        result
+    }
+
+    #[test]
+    fn sweep_style_normalization_matches_reference_for_overlaps() {
+        let palette = [
+            HighlightStyle::default(),
+            color_style(gpui::red()),
+            color_style(gpui::green()),
+            color_style(gpui::blue()),
+        ];
+        let styles = (0..200)
+            .map(|index| {
+                let start = (index * 37) % 503;
+                let length = 1 + (index * 19) % 80;
+                (
+                    start..(start + length).min(512),
+                    palette[index % palette.len()],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            unique_styles(&(0..512), styles.clone()),
+            unique_styles_reference(&(0..512), &styles)
+        );
+    }
+
+    #[test]
+    fn long_nested_json_style_pass_stays_bounded() {
+        let mut fields = Vec::new();
+        for index in 0..250 {
+            fields.push(format!(
+                "\"item_{index:04}\":{{\"text\":\"lorem ipsum dolor sit amet consectetur adipiscing elit\",\"active\":true}}"
+            ));
+        }
+        let source = format!("{{{}}}", fields.join(","));
+        assert!(source.len() >= 20_000);
+
+        let rope = Rope::from(source.as_str());
+        let mut highlighter = SyntaxHighlighter::new("json");
+        highlighter.update(None, &rope);
+        let raw_styles = highlighter.match_styles(0..rope.len());
+        let mut boundaries = raw_styles
+            .iter()
+            .flat_map(|item| [(item.range.start, 1isize), (item.range.end, -1isize)])
+            .collect::<Vec<_>>();
+        boundaries.sort_unstable_by_key(|(position, delta)| (*position, *delta));
+        let mut overlap = 0isize;
+        let mut maximum_overlap = 0isize;
+        for (_, delta) in boundaries {
+            overlap += delta;
+            maximum_overlap = maximum_overlap.max(overlap);
+        }
+        let styles = highlighter.styles(&(0..rope.len()), &HighlightTheme::default_dark());
+
+        assert!(!styles.is_empty());
+        assert!(styles.len() < 5_000);
+        assert!(maximum_overlap <= 8);
     }
 }

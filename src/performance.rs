@@ -6,6 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use gpui_component::{
+    highlighter::{HighlightTheme, SyntaxHighlighter},
+    input::Rope,
+};
 
 use crate::{
     document::{FileMode, FilePolicy},
@@ -20,6 +24,7 @@ pub struct CorpusSpec {
     pub json_bytes: [usize; 3],
     pub line_count: usize,
     pub long_line_bytes: usize,
+    pub nested_json_line_bytes: usize,
     pub tab_count: usize,
 }
 
@@ -29,6 +34,7 @@ impl CorpusSpec {
             json_bytes: [MIB, 25 * MIB, 100 * MIB],
             line_count: 200_000,
             long_line_bytes: 5 * MIB,
+            nested_json_line_bytes: 30_000,
             tab_count: 100,
         }
     }
@@ -39,6 +45,7 @@ impl CorpusSpec {
             json_bytes: [128, 256, 512],
             line_count: 20,
             long_line_bytes: 1_024,
+            nested_json_line_bytes: 2_000,
             tab_count: 5,
         }
     }
@@ -57,6 +64,9 @@ pub struct FileMeasurement {
     pub mode: FileMode,
     pub open: Duration,
     pub save: Duration,
+    pub syntax_parse: Option<Duration>,
+    pub syntax_style_20x: Option<Duration>,
+    pub syntax_style_count: Option<usize>,
 }
 
 pub fn peak_rss_bytes() -> Option<u64> {
@@ -100,6 +110,13 @@ pub fn generate_corpus(root: &Path, spec: CorpusSpec) -> Result<GeneratedCorpus>
     long_line.flush()?;
     files.push(long_line_path);
 
+    let nested_json_path = root.join(format!(
+        "30-row-lorem-{}-byte-json-line.json",
+        spec.nested_json_line_bytes
+    ));
+    write_long_line_json(&nested_json_path, 30, spec.nested_json_line_bytes)?;
+    files.push(nested_json_path);
+
     let unicode_path = root.join("unicode-ime.txt");
     fs::write(
         &unicode_path,
@@ -134,6 +151,32 @@ pub fn measure_corpus(corpus: &GeneratedCorpus) -> Result<Vec<FileMeasurement>> 
             let loaded = load_text(path, policy)?;
             let open = open_started.elapsed();
 
+            let (syntax_parse, syntax_style_20x, syntax_style_count) =
+                if loaded.metadata.analysis.longest_line_bytes <= 64 * 1024 {
+                    if let Some(parser) = loaded.metadata.parser_name(policy) {
+                        let rope = Rope::from(loaded.text.as_str());
+                        let mut highlighter = SyntaxHighlighter::new(parser);
+                        let parse_started = Instant::now();
+                        highlighter.update(None, &rope);
+                        let syntax_parse = parse_started.elapsed();
+                        let theme = HighlightTheme::default_dark();
+                        let style_started = Instant::now();
+                        let mut style_count = 0;
+                        for _ in 0..20 {
+                            style_count = highlighter.styles(&(0..rope.len()), &theme).len();
+                        }
+                        (
+                            Some(syntax_parse),
+                            Some(style_started.elapsed()),
+                            Some(style_count),
+                        )
+                    } else {
+                        (None, None, None)
+                    }
+                } else {
+                    (None, None, None)
+                };
+
             let save_path = path.with_extension("textify-save.tmp");
             let save_started = Instant::now();
             save_atomic_chunks(&save_path, [loaded.text.as_str()])?;
@@ -151,9 +194,107 @@ pub fn measure_corpus(corpus: &GeneratedCorpus) -> Result<Vec<FileMeasurement>> 
                 mode: loaded.metadata.mode,
                 open,
                 save,
+                syntax_parse,
+                syntax_style_20x,
+                syntax_style_count,
             })
         })
         .collect()
+}
+
+const LOREM_WORDS: &[&str] = &[
+    "lorem",
+    "ipsum",
+    "dolor",
+    "sit",
+    "amet",
+    "consectetur",
+    "adipiscing",
+    "elit",
+    "sed",
+    "do",
+    "eiusmod",
+    "tempor",
+    "incididunt",
+    "ut",
+    "labore",
+    "et",
+    "dolore",
+    "magna",
+    "aliqua",
+];
+
+#[derive(Default)]
+struct LoremGenerator {
+    cursor: usize,
+}
+
+impl LoremGenerator {
+    fn fill(&mut self, bytes: usize) -> String {
+        let mut output = String::with_capacity(bytes);
+        while output.len() < bytes {
+            if !output.is_empty() {
+                output.push(' ');
+            }
+            let word = LOREM_WORDS[self.cursor % LOREM_WORDS.len()];
+            self.cursor += 1;
+            output.push_str(word);
+        }
+        output.truncate(bytes);
+        output
+    }
+}
+
+fn write_long_line_json(path: &Path, lines: usize, target_line_bytes: usize) -> Result<()> {
+    let rows = lines.saturating_sub(2).max(1);
+    let nested_row = rows / 2;
+    let long_key = "k".repeat(50);
+    let mut lorem = LoremGenerator::default();
+    let mut output = String::from("{\n");
+
+    for row in 0..rows {
+        let line = if row == nested_row {
+            let prefix = format!("  \"{long_key}\": ");
+            let trailing_bytes = usize::from(row + 1 != rows);
+            let value_bytes = target_line_bytes.saturating_sub(prefix.len() + trailing_bytes);
+            format!("{prefix}{}", lorem_json_object(value_bytes, &mut lorem))
+        } else {
+            format!("  \"row_{row:02}\": \"{}\"", lorem.fill(48))
+        };
+        output.push_str(&line);
+        output.push_str(if row + 1 == rows { "\n" } else { ",\n" });
+    }
+    output.push('}');
+    fs::write(path, output).with_context(|| format!("could not write {}", path.display()))
+}
+
+fn lorem_json_object(target_bytes: usize, lorem: &mut LoremGenerator) -> String {
+    const SUFFIX_OVERHEAD: usize = r#","remainder":""}"#.len();
+    let target_bytes = target_bytes.max(2 + SUFFIX_OVERHEAD);
+    let mut value = String::from("{");
+    let mut item = 0usize;
+
+    loop {
+        let separator = if item == 0 { "" } else { "," };
+        let entry = format!(
+            "{separator}\"item_{item:04}\":{{\"text\":\"{}\",\"index\":{item},\"active\":true}}",
+            lorem.fill(72)
+        );
+        if value.len() + entry.len() + SUFFIX_OVERHEAD > target_bytes {
+            break;
+        }
+        value.push_str(&entry);
+        item += 1;
+    }
+
+    let separator = if item == 0 { "" } else { "," };
+    let remainder_overhead = separator.len() + r#""remainder":""}"#.len();
+    let remainder_bytes = target_bytes.saturating_sub(value.len() + remainder_overhead);
+    value.push_str(separator);
+    value.push_str(r#""remainder":""#);
+    value.push_str(&lorem.fill(remainder_bytes));
+    value.push_str("\"}");
+    value
 }
 
 fn write_sized_json(path: &Path, bytes: usize) -> Result<()> {
@@ -206,6 +347,7 @@ mod tests {
         assert_eq!(spec.json_bytes, [MIB, 25 * MIB, 100 * MIB]);
         assert_eq!(spec.line_count, 200_000);
         assert_eq!(spec.long_line_bytes, 5 * MIB);
+        assert_eq!(spec.nested_json_line_bytes, 30_000);
         assert_eq!(spec.tab_count, 100);
     }
 
@@ -213,12 +355,17 @@ mod tests {
     fn generated_corpus_exercises_parser_and_large_file_policy() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let corpus = generate_corpus(directory.path(), CorpusSpec::tiny()).expect("corpus");
-        assert_eq!(corpus.files.len(), 6);
+        assert_eq!(corpus.files.len(), 7);
 
         let json = load_text(&corpus.files[0], FilePolicy::default()).expect("json");
         assert_eq!(json.metadata.language, Language::Json);
         let long_line = load_text(&corpus.files[4], FilePolicy::default()).expect("line");
         assert_eq!(long_line.metadata.analysis.longest_line_bytes, 1_024);
+        let nested_json = load_text(&corpus.files[5], FilePolicy::default()).expect("nested JSON");
+        assert_eq!(nested_json.metadata.language, Language::Json);
+        assert_eq!(nested_json.metadata.analysis.lines, 30);
+        assert_eq!(nested_json.metadata.analysis.longest_line_bytes, 2_000);
+        serde_json::from_str::<serde_json::Value>(&nested_json.text).expect("valid JSON fixture");
         assert!(corpus.session_path.is_file());
     }
 }

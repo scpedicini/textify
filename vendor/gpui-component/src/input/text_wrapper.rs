@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{cell::Cell, ops::Range};
 
 use gpui::{App, Font, LineFragment, Pixels, Point, ShapedLine, Size, Window, point, px, size};
 use ropey::Rope;
@@ -57,6 +57,8 @@ pub(super) struct TextWrapper {
     wrap_width: Option<Pixels>,
     /// The longest (row, bytes len) in characters, used to calculate the horizontal scroll width.
     pub(super) longest_row: LongestRow,
+    /// Cached unwrapped width of `longest_row`, avoiding repeated pathological-line shaping.
+    longest_line_width: Cell<Option<Pixels>>,
     /// The lines by split \n
     pub(super) lines: Vec<LineItem>,
 
@@ -73,6 +75,7 @@ impl TextWrapper {
             wrap_width,
             soft_lines: 0,
             longest_row: LongestRow::default(),
+            longest_line_width: Cell::new(None),
             lines: Vec::new(),
             _initialized: false,
         }
@@ -81,6 +84,7 @@ impl TextWrapper {
     #[inline]
     pub(super) fn set_default_text(&mut self, text: &Rope) {
         self.text = text.clone();
+        self.longest_line_width.set(None);
     }
 
     /// Get the total number of lines including wrapped lines.
@@ -116,6 +120,7 @@ impl TextWrapper {
 
         self.font = font;
         self.font_size = font_size;
+        self.longest_line_width.set(None);
         self.update_all(&self.text.clone(), cx);
     }
 
@@ -167,6 +172,7 @@ impl TextWrapper {
     ) where
         F: FnMut(&str, Pixels) -> Vec<gpui::Boundary>,
     {
+        self.longest_line_width.set(None);
         // Remove the old changed lines.
         let start_row = self.text.offset_to_point(range.start).row;
         let start_row = start_row.min(self.lines.len().saturating_sub(1));
@@ -239,6 +245,14 @@ impl TextWrapper {
             row: longest_row_ix,
             len: longest_row_len,
         }
+    }
+
+    pub(super) fn cached_longest_line_width(&self) -> Option<Pixels> {
+        self.longest_line_width.get()
+    }
+
+    pub(super) fn cache_longest_line_width(&self, width: Pixels) {
+        self.longest_line_width.set(Some(width));
     }
 
     /// Update the text wrapper and recalculate the wrapped lines.
@@ -545,6 +559,8 @@ mod tests {
 
         wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
         assert_eq!(wrapper.lines.len(), 4);
+        wrapper.cache_longest_line_width(px(123.));
+        assert_eq!(wrapper.cached_longest_line_width(), Some(px(123.)));
         assert_wrapper_lines(
             &text,
             &wrapper,
@@ -561,6 +577,7 @@ mod tests {
         let new_text = "New text";
         text.replace(range.clone(), new_text);
         wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        assert_eq!(wrapper.cached_longest_line_width(), None);
         assert_eq!(
             text.to_string(),
             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"

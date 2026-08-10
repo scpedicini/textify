@@ -12,15 +12,27 @@ fn main() -> Result<()> {
     let measurements = measure_corpus(&generated)?;
 
     println!("Textify core performance corpus: {}", root.display());
-    println!("fixture\tbytes\tmode\topen_ms\tsave_ms");
+    println!("fixture\tbytes\tmode\topen_ms\tsave_ms\tparse_ms\tstyle_20x_ms\tstyles");
     for measurement in measurements {
         println!(
-            "{}\t{}\t{:?}\t{:.2}\t{:.2}",
+            "{}\t{}\t{:?}\t{:.2}\t{:.2}\t{}\t{}\t{}",
             measurement.name,
             measurement.bytes,
             measurement.mode,
             measurement.open.as_secs_f64() * 1_000.0,
             measurement.save.as_secs_f64() * 1_000.0,
+            measurement
+                .syntax_parse
+                .map(|duration| format!("{:.2}", duration.as_secs_f64() * 1_000.0))
+                .unwrap_or_else(|| "-".to_owned()),
+            measurement
+                .syntax_style_20x
+                .map(|duration| format!("{:.2}", duration.as_secs_f64() * 1_000.0))
+                .unwrap_or_else(|| "-".to_owned()),
+            measurement
+                .syntax_style_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
         );
     }
     if let Some(bytes) = peak_rss_bytes() {
