@@ -320,7 +320,7 @@ impl SearchPanel {
     fn prev(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(range) = self.matcher.next_back() {
             self.editor.update(cx, |state, cx| {
-                state.scroll_to(range.start, Some(MoveDirection::Up), cx);
+                state.scroll_to(range.start, None, cx);
             });
         }
     }
@@ -328,7 +328,7 @@ impl SearchPanel {
     fn next(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(range) = self.matcher.next() {
             self.editor.update(cx, |state, cx| {
-                state.scroll_to(range.end, Some(MoveDirection::Down), cx);
+                state.scroll_to(range.end, None, cx);
             });
         }
     }
@@ -574,6 +574,16 @@ impl Render for SearchPanel {
 mod tests {
     use super::*;
 
+    struct SearchHarness {
+        state: Entity<InputState>,
+    }
+
+    impl Render for SearchHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Input::new(&self.state).size_full()
+        }
+    }
+
     #[test]
     fn test_search() {
         let mut matcher = SearchMatcher::new(usize::MAX);
@@ -649,5 +659,70 @@ mod tests {
 
         matcher.update_cursor_by_offset(31);
         assert_eq!(matcher.current_match_ix, 2);
+    }
+
+    #[gpui::test]
+    fn next_match_wrap_scrolls_back_to_the_first_result(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let text = format!(
+            "tip first\n{}tip second\n{}tip third\n",
+            "ordinary line\n".repeat(80),
+            "ordinary line\n".repeat(80)
+        );
+        let text_rope = Rope::from(text.as_str());
+        let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let capture = state_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(false)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(state.clone());
+            let harness = cx.new(|_| SearchHarness { state });
+            crate::Root::new(harness, window, cx)
+        });
+        let state = state_slot.borrow().clone().expect("input state");
+
+        let panel = cx.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                state.on_action_search(&Search, window, cx);
+                state.search_panel.clone().expect("search panel")
+            })
+        });
+        let third_match = panel.update(&mut cx.cx, |panel, _| {
+            panel.matcher.update(&text_rope);
+            panel.matcher.update_query("tip", false);
+            panel.matcher.current_match_ix = 2;
+            panel.matcher.matched_ranges[2].clone()
+        });
+        state.update(&mut cx.cx, |state, cx| {
+            state.scroll_to(third_match.end, None, cx);
+        });
+        cx.run_until_parked();
+        let before = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
+        assert!(before < Pixels::ZERO);
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.next(window, cx));
+        });
+        cx.run_until_parked();
+
+        let (after, visible_range, first_match_start) = cx.update(|_, cx| {
+            let state = state.read(cx);
+            (
+                state.scroll_handle.offset().y,
+                state
+                    .last_layout
+                    .as_ref()
+                    .expect("layout")
+                    .visible_range_offset
+                    .clone(),
+                panel.read(cx).matcher.matched_ranges[0].start,
+            )
+        });
+        assert!(after > before);
+        assert!(visible_range.contains(&first_match_start));
     }
 }
