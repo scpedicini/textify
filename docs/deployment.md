@@ -44,6 +44,17 @@ For terminal use, run `textify` after ensuring `~/bin` is on `PATH`. Development
 `cargo run`; Cargo's `default-run = "textify"` keeps that command unambiguous even though the
 repository also contains the performance binary.
 
+## Finder and Open With
+
+The app bundle registers as an editor for plain text, source code, JSON, XML, HTML, CSS, and shell
+scripts. Finder can deliver files both when Textify is closed and when it is already running.
+
+The local installer places the app in the current user's `~/Applications` folder, not the system
+`/Applications` folder. To choose it manually from Finder's **Open With → Other…** dialog, press
+**Command-Shift-G**, enter `~/Applications`, and select **Textify.app**. To make it the default for
+an extension, select a file in Finder, choose **File → Get Info**, select Textify under **Open
+with**, then click **Change All…**. macOS stores that choice per document type.
+
 ## Verification
 
 The packaging scripts refuse to overwrite a non-symlink at either installation path. They also

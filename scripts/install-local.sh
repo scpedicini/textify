@@ -8,6 +8,7 @@ binary_target="${repository_root}/target/release/textify"
 bundle_target="${repository_root}/target/release/Textify.app"
 binary_link="${HOME}/bin/textify"
 bundle_link="${HOME}/Applications/Textify.app"
+launch_services="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 "${script_directory}/build-release.sh"
 
@@ -22,6 +23,9 @@ done
 
 ln -sfn "${binary_target}" "${binary_link}"
 ln -sfn "${bundle_target}" "${bundle_link}"
+if [[ -x "${launch_services}" ]]; then
+    "${launch_services}" -f "${bundle_link}"
+fi
 
 print "Installed local Textify links:"
 print "  ${binary_link} -> ${binary_target}"

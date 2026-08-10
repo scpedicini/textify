@@ -35,6 +35,7 @@ use gpui_component::{
     v_flex,
 };
 use gpui_component_assets::Assets;
+use url::Url;
 
 use crate::{
     document::{
@@ -347,7 +348,17 @@ fn open_file_with_encoding(
     .map(OpenedFile::Editable)
 }
 
-fn load_dropped_paths(
+fn application_file_paths(urls: impl IntoIterator<Item = String>) -> Vec<PathBuf> {
+    urls.into_iter()
+        .filter_map(|value| match Url::parse(&value) {
+            Ok(url) if url.scheme() == "file" => url.to_file_path().ok(),
+            Ok(_) => None,
+            Err(_) => Some(PathBuf::from(value)),
+        })
+        .collect()
+}
+
+fn load_external_paths(
     paths: Vec<PathBuf>,
     policy: FilePolicy,
 ) -> Vec<(PathBuf, anyhow::Result<OpenedFile>)> {
@@ -636,6 +647,7 @@ pub struct Workspace {
     watcher: Option<FileWatcher>,
     session_path: PathBuf,
     restoring_session: bool,
+    application_open_urls: Option<mpsc::Receiver<Vec<String>>>,
     external_scan_in_progress: bool,
     created_at: Instant,
     first_paint_logged: bool,
@@ -737,6 +749,7 @@ impl Workspace {
             watcher,
             session_path: data_dir.join("session.json"),
             restoring_session: false,
+            application_open_urls: None,
             external_scan_in_progress: false,
             created_at: Instant::now(),
             first_paint_logged: false,
@@ -1246,6 +1259,7 @@ impl Workspace {
                 Timer::after(Duration::from_millis(100)).await;
                 if workspace
                     .update_in(window, |workspace, window, cx| {
+                        workspace.poll_application_open_urls(window, cx);
                         workspace.poll_workspace_search(cx);
                         workspace.poll_lsp(window, cx);
                         workspace.flush_recovery_due(cx);
@@ -1257,6 +1271,23 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn poll_application_open_urls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.restoring_session {
+            return;
+        }
+        let urls = self
+            .application_open_urls
+            .as_ref()
+            .map(|receiver| receiver.try_iter().flatten().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let paths = application_file_paths(urls);
+        if paths.is_empty() {
+            return;
+        }
+        window.activate_window();
+        self.open_external_paths(paths, window, cx);
     }
 
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3227,7 +3258,7 @@ impl Workspace {
         .detach();
     }
 
-    fn open_dropped_paths(
+    fn open_external_paths(
         &mut self,
         paths: Vec<PathBuf>,
         window: &mut Window,
@@ -3237,9 +3268,9 @@ impl Workspace {
             return;
         }
         let count = paths.len();
-        self.status_message = Some(format!("Opening {count} dropped path(s)…"));
+        self.status_message = Some(format!("Opening {count} file(s)…"));
         let policy = self.policy;
-        let task = cx.background_spawn(async move { load_dropped_paths(paths, policy) });
+        let task = cx.background_spawn(async move { load_external_paths(paths, policy) });
         cx.notify();
         cx.spawn_in(window, async move |workspace, window| {
             let results = task.await;
@@ -3258,8 +3289,8 @@ impl Workspace {
                         }
                     }
                     workspace.status_message = Some(match (opened, failures.len()) {
-                        (opened, 0) => format!("Opened {opened} dropped file(s)"),
-                        (0, failed) => format!("Could not open {failed} dropped path(s)"),
+                        (opened, 0) => format!("Opened {opened} file(s)"),
+                        (0, failed) => format!("Could not open {failed} path(s)"),
                         (opened, failed) => {
                             format!("Opened {opened} file(s); skipped {failed} path(s)")
                         }
@@ -3268,7 +3299,7 @@ impl Workspace {
                         && let Some(message) = failures.into_iter().next()
                     {
                         Self::show_error(
-                            "Could not open dropped file",
+                            "Could not open file",
                             anyhow::anyhow!(message),
                             window,
                             cx,
@@ -4891,7 +4922,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_go_to_definition))
             .on_action(cx.listener(Self::on_dismiss_overlay))
             .on_drop(cx.listener(|workspace, paths: &ExternalPaths, window, cx| {
-                workspace.open_dropped_paths(paths.paths().to_vec(), window, cx)
+                workspace.open_external_paths(paths.paths().to_vec(), window, cx)
             }))
             .when(self.settings.appearance.show_title_bar, |workspace| {
                 workspace.child(
@@ -5466,7 +5497,14 @@ pub fn run() {
         .compact()
         .init();
 
-    Application::new().with_assets(Assets).run(|cx| {
+    let (open_url_sender, open_url_receiver) = mpsc::channel();
+    let application = Application::new().with_assets(Assets);
+    application.on_open_urls(move |urls| {
+        if open_url_sender.send(urls).is_err() {
+            tracing::warn!("could not queue files requested by the operating system");
+        }
+    });
+    application.run(move |cx| {
         gpui_component::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewDocument, None),
@@ -5493,11 +5531,14 @@ pub fn run() {
         };
 
         cx.spawn(async move |cx| {
-            cx.open_window(options, |window, cx| {
+            cx.open_window(options, move |window, cx| {
                 window.activate_window();
                 window.set_window_title(WINDOW_TITLE);
                 Theme::change(ThemeMode::Dark, Some(window), cx);
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
+                workspace.update(cx, |workspace, _| {
+                    workspace.application_open_urls = Some(open_url_receiver)
+                });
                 let services = workspace.clone();
                 window.defer(cx, move |window, cx| {
                     services.update(cx, |workspace, cx| {
@@ -5526,6 +5567,24 @@ mod tests {
             PathBuf::from("/tmp/textify-active/src")
         );
         assert_eq!(preferred_dialog_directory(None, Some(workspace)), workspace);
+    }
+
+    #[test]
+    fn application_file_urls_decode_paths_and_ignore_web_urls() {
+        let encoded = Url::from_file_path("/tmp/Textify notes #1.txt")
+            .expect("file URL")
+            .to_string();
+        assert_eq!(
+            application_file_paths([
+                encoded,
+                "https://example.com/not-a-local-file.txt".to_owned(),
+                "/tmp/direct-path.md".to_owned(),
+            ]),
+            vec![
+                PathBuf::from("/tmp/Textify notes #1.txt"),
+                PathBuf::from("/tmp/direct-path.md"),
+            ]
+        );
     }
 
     #[test]
@@ -5820,14 +5879,14 @@ mod tests {
     }
 
     #[test]
-    fn dropped_paths_are_deduplicated_and_validated_off_the_ui_path() {
+    fn external_paths_are_deduplicated_and_validated_off_the_ui_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let valid = directory.path().join("valid.txt");
         let invalid = directory.path().join("invalid.txt");
         fs::write(&valid, "hello\n").expect("valid fixture");
         fs::write(&invalid, [0x89, b'P', b'N', b'G', 0, 0xff]).expect("invalid fixture");
 
-        let results = load_dropped_paths(
+        let results = load_external_paths(
             vec![
                 valid.clone(),
                 directory.path().to_path_buf(),
@@ -5845,6 +5904,59 @@ mod tests {
             results.iter().filter(|(_, result)| result.is_err()).count(),
             2
         );
+    }
+
+    #[gpui::test]
+    fn finder_open_event_waits_for_session_restore_then_opens_the_file(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("application-open directory");
+        let path = directory.path().join("Finder opened notes.txt");
+        fs::write(&path, "opened through Finder\n").expect("fixture");
+        let (sender, receiver) = mpsc::channel();
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.recent_files_path = directory.path().join("recent-files.json");
+                workspace.application_open_urls = Some(receiver);
+                workspace.restoring_session = true;
+                sender
+                    .send(vec![
+                        Url::from_file_path(&path).expect("file URL").to_string(),
+                    ])
+                    .expect("queued open event");
+
+                workspace.poll_application_open_urls(window, cx);
+                assert!(workspace.active_document().metadata.path.is_none());
+                workspace.restoring_session = false;
+                workspace.poll_application_open_urls(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_document().metadata.path.as_deref(),
+                Some(path.as_path())
+            );
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Opened 1 file(s)")
+            );
+        });
     }
 
     #[test]
