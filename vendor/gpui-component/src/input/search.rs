@@ -23,6 +23,11 @@ use crate::{
 };
 
 const CONTEXT: &'static str = "SearchPanel";
+const MATCH_CASE_TOOLTIP: &str = "Match case (Aa)";
+const REPLACE_MODE_TOOLTIP: &str = "Show or hide replace controls";
+const PREVIOUS_MATCH_TOOLTIP: &str = "Previous match (Shift+Enter)";
+const NEXT_MATCH_TOOLTIP: &str = "Next match (Enter)";
+const CLOSE_FIND_TOOLTIP: &str = "Close find (Escape)";
 
 actions!(input, [Tab]);
 
@@ -453,6 +458,7 @@ impl Render for SearchPanel {
                                             .compact()
                                             .ghost()
                                             .icon(IconName::CaseSensitive)
+                                            .tooltip(MATCH_CASE_TOOLTIP)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.case_insensitive = !this.case_insensitive;
                                                 this.update_search_query(cx);
@@ -485,6 +491,7 @@ impl Render for SearchPanel {
                             .ghost()
                             .icon(IconName::Replace)
                             .selected(self.replace_mode)
+                            .tooltip(REPLACE_MODE_TOOLTIP)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.replace_mode = !this.replace_mode;
                                 if this.replace_mode {
@@ -501,6 +508,7 @@ impl Render for SearchPanel {
                             .ghost()
                             .icon(IconName::ChevronLeft)
                             .disabled(!has_matches)
+                            .tooltip(PREVIOUS_MATCH_TOOLTIP)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.prev(window, cx);
                             })),
@@ -511,6 +519,7 @@ impl Render for SearchPanel {
                             .ghost()
                             .icon(IconName::ChevronRight)
                             .disabled(!has_matches)
+                            .tooltip(NEXT_MATCH_TOOLTIP)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.next(window, cx);
                             })),
@@ -529,6 +538,7 @@ impl Render for SearchPanel {
                             .xsmall()
                             .ghost()
                             .icon(IconName::Close)
+                            .tooltip(CLOSE_FIND_TOOLTIP)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_action_escape(&Escape, window, cx);
                             })),
@@ -627,6 +637,15 @@ mod tests {
 
         matcher.update_query("IS", false);
         assert_eq!(matcher.label(), "0/0");
+    }
+
+    #[test]
+    fn search_icon_tooltips_explain_controls_and_shortcuts() {
+        assert_eq!(MATCH_CASE_TOOLTIP, "Match case (Aa)");
+        assert!(REPLACE_MODE_TOOLTIP.contains("replace"));
+        assert!(PREVIOUS_MATCH_TOOLTIP.contains("Shift+Enter"));
+        assert!(NEXT_MATCH_TOOLTIP.contains("Enter"));
+        assert!(CLOSE_FIND_TOOLTIP.contains("Escape"));
     }
 
     #[test]
