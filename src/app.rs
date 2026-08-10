@@ -100,7 +100,7 @@ const TAB_TITLE_MAX_CHARS: usize = 40;
 const TAB_TITLE_SUFFIX_CHARS: usize = 16;
 const TAB_MAX_WIDTH: f32 = 320.;
 const OVERLAY_VISIBLE_ROW_COUNT: usize = 10;
-const OVERLAY_ROW_HEIGHT: f32 = 48.;
+const OVERLAY_ROW_HEIGHT: f32 = 52.;
 const OVERLAY_PANEL_MAX_HEIGHT: f32 = 600.;
 
 fn overlay_results_height(count: usize) -> f32 {
@@ -4308,7 +4308,7 @@ impl Workspace {
                                             .w_full()
                                             .h(px(OVERLAY_ROW_HEIGHT))
                                             .px_3()
-                                            .py(px(6.))
+                                            .py(px(5.))
                                             .gap(px(2.))
                                             .overflow_hidden()
                                             .cursor_pointer()
@@ -4326,10 +4326,15 @@ impl Workspace {
                                             ))
                                             .child(
                                                 div()
+                                                    .debug_selector(move || {
+                                                        format!("overlay-title-{index}")
+                                                    })
                                                     .w_full()
                                                     .min_w_0()
-                                                    .truncate()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
                                                     .text_sm()
+                                                    .line_height(gpui::relative(1.35))
                                                     .child(item.title),
                                             )
                                             .when(!item.subtitle.is_empty(), |row| {
@@ -4340,8 +4345,10 @@ impl Workspace {
                                                         })
                                                         .w_full()
                                                         .min_w_0()
-                                                        .truncate()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
                                                         .text_xs()
+                                                        .line_height(gpui::relative(1.4))
                                                         .text_color(cx.theme().muted_foreground)
                                                         .child(item.subtitle),
                                                 )
@@ -5710,8 +5717,8 @@ mod tests {
     fn overlay_results_height_uses_roomy_rows_and_stops_at_ten() {
         assert_eq!(overlay_results_height(0), 0.);
         assert_eq!(overlay_results_height(1), OVERLAY_ROW_HEIGHT);
-        assert_eq!(overlay_results_height(10), 480.);
-        assert_eq!(overlay_results_height(250), 480.);
+        assert_eq!(overlay_results_height(10), 520.);
+        assert_eq!(overlay_results_height(250), 520.);
     }
 
     #[gpui::test]
@@ -5746,6 +5753,52 @@ mod tests {
         assert!(first_subtitle.bottom() < second_row.top());
         assert!(first_row.bottom() <= second_row.top());
         assert_eq!(first_row.size.width, second_row.size.width);
+    }
+
+    #[gpui::test]
+    fn command_palette_title_bar_labels_have_descender_safe_line_boxes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let index = cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::Commands, window, cx);
+                workspace.overlay_input.update(cx, |input, cx| {
+                    input.set_value("Toggle Title Bar", window, cx);
+                });
+                workspace.refresh_overlay(window, cx);
+                workspace
+                    .overlay_items
+                    .iter()
+                    .position(|item| item.title == "Toggle Title Bar")
+                    .expect("title bar command")
+            })
+        });
+        cx.run_until_parked();
+
+        let row_selector = Box::leak(format!("overlay-row-{index}").into_boxed_str());
+        let title_selector = Box::leak(format!("overlay-title-{index}").into_boxed_str());
+        let subtitle_selector = Box::leak(format!("overlay-subtitle-{index}").into_boxed_str());
+        let row = cx.debug_bounds(row_selector).expect("command row");
+        let title = cx.debug_bounds(title_selector).expect("command title");
+        let subtitle = cx
+            .debug_bounds(subtitle_selector)
+            .expect("command subtitle");
+
+        assert!(title.size.height >= px(18.));
+        assert!(subtitle.size.height >= px(16.));
+        assert!(title.top() >= row.top() + px(4.));
+        assert!(subtitle.bottom() + px(4.) <= row.bottom());
     }
 
     #[gpui::test]
