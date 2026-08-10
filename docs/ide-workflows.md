@@ -114,6 +114,10 @@ snapshot before exiting. Recent Files controls a newest-first local Open Recent 
 default 10); disabling it clears the list, and Clear History is also available independently. See
 [privacy.md](privacy.md) for the complete local-data boundary.
 
+File → Revert… presents a destructive-action confirmation before reloading the active saved file
+from disk. Cancel leaves the buffer and its recovery copy untouched; confirming discards unsaved
+edits, clears the recovery copy, refreshes document metadata, and keeps tab-local display choices.
+
 View → Toggle Line Numbers and the matching Settings switch control the gutter for every open and
 future editor tab. The choice is persisted in `appearance.show_line_numbers` and defaults to true.
 Settings also exposes Minimap On By Default for newly opened tabs. View → Toggle Minimap and the

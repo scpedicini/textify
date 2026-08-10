@@ -69,6 +69,7 @@ actions!(
         OpenDocument,
         SaveDocument,
         SaveDocumentAs,
+        RevertDocument,
         CloseDocument,
         NextDocument,
         PreviousDocument,
@@ -1548,7 +1549,7 @@ impl Workspace {
                 })
                 .on_ok(move |_, window, cx| {
                     reload_workspace.update(cx, |workspace, cx| {
-                        workspace.reload_document(id, window, cx)
+                        workspace.reload_document(id, None, window, cx)
                     });
                     true
                 })
@@ -1571,7 +1572,13 @@ impl Workspace {
         });
     }
 
-    fn reload_document(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn reload_document(
+        &mut self,
+        id: u64,
+        completion_message: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.document_index(id) else {
             return;
         };
@@ -1580,6 +1587,7 @@ impl Workspace {
         };
         let policy = self.policy;
         let encoding = self.documents[index].metadata.encoding;
+        let requested_revision = self.documents[index].revision;
         let task = cx.background_spawn(async move { load_text_as(&path, policy, encoding) });
         cx.spawn_in(window, async move |workspace, window| {
             let loaded = task.await;
@@ -1589,6 +1597,14 @@ impl Workspace {
                         let Some(index) = workspace.document_index(id) else {
                             return;
                         };
+                        if workspace.documents[index].revision != requested_revision {
+                            workspace.status_message = Some(
+                                "Reload canceled because the document changed while reading disk"
+                                    .to_owned(),
+                            );
+                            cx.notify();
+                            return;
+                        }
                         let editor = workspace.documents[index].editor.clone();
                         let parser = if workspace.documents[index].syntax_highlighting {
                             loaded.metadata.parser_name(workspace.policy)
@@ -1614,6 +1630,11 @@ impl Workspace {
                                 }
                             });
                         });
+                        workspace.lsp_dirty.insert(id, Instant::now());
+                        workspace.clear_recovery(id, cx);
+                        if let Some(message) = completion_message {
+                            workspace.status_message = Some(message);
+                        }
                         workspace.update_window_title(window, cx);
                         workspace.persist_session(cx);
                         workspace.refresh_git(window, cx);
@@ -3428,6 +3449,54 @@ impl Workspace {
         self.prompt_save_as(self.active_id(), window, cx);
     }
 
+    fn on_revert(&mut self, _: &RevertDocument, window: &mut Window, cx: &mut Context<Self>) {
+        let document = self.active_document();
+        if document.huge_viewer.is_some() {
+            self.status_message = Some("Revert is unavailable in the huge-file viewer".to_owned());
+            cx.notify();
+            return;
+        }
+        if document.saving {
+            self.status_message = Some("Wait for the current save before reverting".to_owned());
+            cx.notify();
+            return;
+        }
+        if document.metadata.path.is_none() {
+            self.status_message = Some("Save this tab before reverting it".to_owned());
+            cx.notify();
+            return;
+        }
+
+        let id = document.id;
+        let name = document.display_name(cx);
+        let workspace = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let workspace = workspace.clone();
+            let completion_message = format!("Reverted {name} to the version on disk");
+            dialog
+                .title(format!("Revert changes to {name}?"))
+                .child("This reloads the file from disk and permanently discards all unsaved changes in this tab.")
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Revert")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel"),
+                )
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.reload_document(
+                            id,
+                            Some(completion_message.clone()),
+                            window,
+                            cx,
+                        );
+                    });
+                    true
+                })
+        });
+    }
+
     fn prompt_save_as(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.document_index(id) else {
             return;
@@ -5076,6 +5145,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
+            .on_action(cx.listener(Self::on_revert))
             .on_action(cx.listener(Self::on_close))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_previous))
@@ -5611,6 +5681,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Save", SaveDocument),
                 MenuItem::action("Save As…", SaveDocumentAs),
+                MenuItem::action("Revert…", RevertDocument),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseDocument),
             ],
@@ -6414,6 +6485,83 @@ mod tests {
     }
 
     #[gpui::test]
+    fn file_revert_warns_then_reloads_disk_and_clears_recovery(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("document directory");
+        let path = directory.path().join("revert-me.txt");
+        fs::write(&path, "original disk text\n").expect("fixture");
+        let loaded = load_text(&path, FilePolicy::default()).expect("loaded fixture");
+        let recovery_path = write_snapshot(directory.path(), 91, 1, ["local recovery text\n"])
+            .expect("recovery snapshot");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.session_path = directory.path().join("session.json");
+                workspace.push_loaded(loaded, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input("unsaved local text");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            let document = workspace.active_document_mut();
+            assert!(document.dirty);
+            document.recovery_path = Some(recovery_path.clone());
+        });
+        fs::write(&path, "latest disk text\n").expect("updated disk fixture");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.on_revert(&RevertDocument, window, cx)
+            });
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("active-dialog").is_some());
+        cx.simulate_keystrokes("escape");
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert!(workspace.active_document().dirty);
+            assert_eq!(
+                workspace.active_document().editor.rope(cx).to_string(),
+                "unsaved local text"
+            );
+        });
+        assert!(recovery_path.exists());
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.on_revert(&RevertDocument, window, cx)
+            });
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("active-dialog").is_some());
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            let document = workspace.active_document();
+            assert_eq!(document.editor.rope(cx).to_string(), "latest disk text\n");
+            assert!(!document.dirty);
+            assert!(!document.external_changed);
+            assert!(document.recovery_path.is_none());
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Reverted revert-me.txt to the version on disk")
+            );
+        });
+        assert!(!recovery_path.exists());
+    }
+
+    #[gpui::test]
     fn command_w_prompts_and_save_closes_a_dirty_named_tab(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -7077,6 +7225,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(actions.contains(&"Toggle Word Wrap"));
+        assert!(actions.contains(&"Toggle Minimap"));
         assert!(actions.contains(&"Toggle Line Numbers"));
         assert!(actions.contains(&"Toggle Title Bar"));
         assert!(actions.contains(&"Command Palette…"));
@@ -7096,6 +7245,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(file_actions.contains(&"Save"));
         assert!(file_actions.contains(&"Save As…"));
+        assert!(file_actions.contains(&"Revert…"));
         assert!(file_actions.contains(&"Open Recent…"));
         assert!(file_actions.contains(&"Clear Recent Files"));
     }
