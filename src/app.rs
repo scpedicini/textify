@@ -7071,6 +7071,7 @@ mod tests {
         );
 
         cx.simulate_input("alpha");
+        cx.run_until_parked();
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_eq!(workspace.overlay_items.len(), 1);
             assert_eq!(workspace.overlay_items[0].title, "alpha.txt");
