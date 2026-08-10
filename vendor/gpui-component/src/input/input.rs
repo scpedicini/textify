@@ -2,7 +2,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, InteractiveElement as _,
     IntoElement, IsZero, MouseButton, ParentElement as _, Rems, RenderOnce, StyleRefinement,
-    Styled, Window, div, px, relative,
+    Styled, Window, div, point, px, relative,
 };
 
 use crate::button::{Button, ButtonVariants as _};
@@ -15,7 +15,56 @@ use crate::{IconName, Size};
 use crate::{Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
 
-use super::InputState;
+use super::{InputState, RopeExt as _};
+
+const MINIMAP_WIDTH: f32 = 88.;
+const MINIMAP_MAX_SAMPLES: usize = 120;
+const MINIMAP_MAX_LINE_LENGTH: usize = 160;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MinimapSample {
+    row: usize,
+    width: f32,
+}
+
+fn minimap_sample_rows(line_count: usize) -> Vec<usize> {
+    let line_count = line_count.max(1);
+    let sample_count = line_count.min(MINIMAP_MAX_SAMPLES);
+    (0..sample_count)
+        .map(|index| {
+            if sample_count == 1 {
+                0
+            } else {
+                index.saturating_mul(line_count - 1) / (sample_count - 1)
+            }
+        })
+        .collect()
+}
+
+fn minimap_samples(state: &InputState) -> Vec<MinimapSample> {
+    minimap_sample_rows(state.text.lines_len())
+        .into_iter()
+        .map(|row| {
+            let line_length = state.text.line_len(row).min(MINIMAP_MAX_LINE_LENGTH);
+            let width =
+                2. + line_length as f32 / MINIMAP_MAX_LINE_LENGTH as f32 * (MINIMAP_WIDTH - 10.);
+            MinimapSample { row, width }
+        })
+        .collect()
+}
+
+fn minimap_viewport(state: &InputState) -> (f32, f32) {
+    let content_height = state.scroll_size.height;
+    let viewport_height = state.input_bounds.size.height;
+    if content_height <= px(0.) || viewport_height >= content_height {
+        return (0., 1.);
+    }
+
+    let height = (viewport_height / content_height).clamp(0.03, 1.);
+    let scroll_top = (-state.scroll_handle.offset().y).max(px(0.));
+    let top = (scroll_top / content_height).clamp(0., 1. - height);
+    (top, height)
+}
 
 /// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
@@ -32,6 +81,7 @@ pub struct Input {
     disabled: bool,
     bordered: bool,
     focus_bordered: bool,
+    minimap: bool,
     tab_index: isize,
     selected: bool,
 }
@@ -70,6 +120,7 @@ impl Input {
             disabled: false,
             bordered: true,
             focus_bordered: true,
+            minimap: false,
             tab_index: 0,
             selected: false,
         }
@@ -118,6 +169,17 @@ impl Input {
     pub fn focus_bordered(mut self, bordered: bool) -> Self {
         self.focus_bordered = bordered;
         self
+    }
+
+    /// Show a compact, clickable document overview beside a code editor.
+    pub fn minimap(mut self, minimap: bool) -> Self {
+        self.minimap = minimap;
+        self
+    }
+
+    /// Returns whether the editor minimap is enabled for this element.
+    pub fn has_minimap(&self) -> bool {
+        self.minimap
     }
 
     /// Set whether to show the clear button when the input field is not empty, default is false.
@@ -173,8 +235,9 @@ impl Input {
         paddings: EdgesRefinement<DefiniteLength>,
         input_state: &Entity<InputState>,
         state: &InputState,
+        minimap: bool,
         window: &Window,
-        _cx: &App,
+        cx: &App,
     ) -> impl IntoElement {
         let base_size = window.text_style().font_size;
         let rem_size = window.rem_size();
@@ -198,10 +261,12 @@ impl Input {
                 .unwrap_or(px(0.)),
         };
 
-        v_flex()
-            .size_full()
-            .children(state.search_panel.clone())
-            .child(div().flex_1().child(input_state.clone()).map(|this| {
+        let editor = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(input_state.clone())
+            .map(|this| {
                 if let Some(last_layout) = state.last_layout.as_ref() {
                     let left = if last_layout.line_number_width.is_zero() {
                         px(0.)
@@ -233,7 +298,86 @@ impl Input {
                 } else {
                     this
                 }
-            }))
+            });
+
+        let minimap_element = minimap.then(|| {
+            let samples = minimap_samples(state);
+            let sample_count = samples.len();
+            let line_count = state.text.lines_len().max(1);
+            let (viewport_top, viewport_height) = minimap_viewport(state);
+            let state_for_rows = input_state.clone();
+
+            div()
+                .id("editor-minimap")
+                .debug_selector(|| "editor-minimap".to_owned())
+                .relative()
+                .h_full()
+                .w(px(MINIMAP_WIDTH))
+                .flex_none()
+                .overflow_hidden()
+                .border_l_1()
+                .border_color(cx.theme().border.opacity(0.45))
+                .bg(cx.theme().editor_background())
+                .child(
+                    div()
+                        .id("editor-minimap-viewport")
+                        .debug_selector(|| "editor-minimap-viewport".to_owned())
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(relative(viewport_top))
+                        .h(relative(viewport_height))
+                        .bg(cx.theme().muted_foreground.opacity(0.12)),
+                )
+                .children(samples.into_iter().enumerate().map(move |(index, sample)| {
+                    let state = state_for_rows.clone();
+                    let top = index as f32 / sample_count as f32;
+                    let height = 1. / sample_count as f32;
+                    let scroll_fraction = if line_count == 1 {
+                        0.
+                    } else {
+                        sample.row as f32 / (line_count - 1) as f32
+                    };
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(relative(top))
+                        .h(relative(height))
+                        .pl(px(4.))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            state.update(cx, |state, cx| {
+                                let scrollable = (state.scroll_size.height
+                                    - state.input_bounds.size.height)
+                                    .max(px(0.));
+                                let mut offset = state.scroll_handle.offset();
+                                offset.y = -scrollable * scroll_fraction;
+                                state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
+                            });
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .mt(px(1.))
+                                .h(px(2.))
+                                .w(px(sample.width))
+                                .bg(cx.theme().muted_foreground.opacity(0.58)),
+                        )
+                }))
+        });
+
+        v_flex()
+            .size_full()
+            .children(state.search_panel.clone())
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(editor)
+                    .children(minimap_element),
+            )
     }
 }
 
@@ -391,6 +535,7 @@ impl RenderOnce for Input {
                     paddings,
                     &self.state,
                     &state,
+                    self.minimap && state.mode.is_code_editor(),
                     window,
                     cx,
                 ))
@@ -425,5 +570,70 @@ impl RenderOnce for Input {
                         .children(suffix),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::AppContext as _;
+
+    struct MinimapHarness {
+        state: Entity<InputState>,
+    }
+
+    impl gpui::Render for MinimapHarness {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            Input::new(&self.state).minimap(true).size_full()
+        }
+    }
+
+    #[test]
+    fn minimap_sampling_is_bounded_and_spans_the_document() {
+        assert_eq!(minimap_sample_rows(0), vec![0]);
+        assert_eq!(minimap_sample_rows(1), vec![0]);
+        assert_eq!(minimap_sample_rows(3), vec![0, 1, 2]);
+
+        let rows = minimap_sample_rows(10_000);
+        assert_eq!(rows.len(), MINIMAP_MAX_SAMPLES);
+        assert_eq!(rows.first(), Some(&0));
+        assert_eq!(rows.last(), Some(&9_999));
+        assert!(rows.windows(2).all(|rows| rows[0] < rows[1]));
+    }
+
+    #[gpui::test]
+    fn clicking_the_minimap_navigates_the_editor(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let text = (0..500)
+            .map(|line| format!("line {line}: minimap navigation target\n"))
+            .collect::<String>();
+        let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let capture = state_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(false)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(state.clone());
+            let harness = cx.new(|_| MinimapHarness { state });
+            crate::Root::new(harness, window, cx)
+        });
+        let state = state_slot.borrow().clone().expect("input state");
+        cx.simulate_resize(gpui::size(px(800.), px(420.)));
+        cx.run_until_parked();
+
+        let minimap = cx.debug_bounds("editor-minimap").expect("minimap");
+        let before = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
+        cx.simulate_click(
+            point(minimap.center().x, minimap.bottom() - px(3.)),
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+        let after = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
+
+        assert_eq!(before, px(0.));
+        assert!(after < before);
     }
 }

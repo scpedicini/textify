@@ -145,6 +145,7 @@ impl RecentFileSettings {
 pub struct AppearanceSettings {
     pub font_family: String,
     pub font_size: u16,
+    pub minimap_on_by_default: bool,
     pub show_line_numbers: bool,
     pub show_title_bar: bool,
     pub show_tagline: bool,
@@ -155,6 +156,7 @@ impl Default for AppearanceSettings {
         Self {
             font_family: "SFMono-Regular".to_owned(),
             font_size: 14,
+            minimap_on_by_default: false,
             show_line_numbers: true,
             show_title_bar: true,
             show_tagline: true,
@@ -336,6 +338,7 @@ mod tests {
         assert_eq!(settings.workspace.max_entries, 100_000);
         assert!(!settings.lsp.enabled);
         assert_eq!(settings.appearance, AppearanceSettings::default());
+        assert!(!settings.appearance.minimap_on_by_default);
         assert_eq!(settings.indentation, IndentationSettings::default());
         assert_eq!(settings.recovery, RecoverySettings::default());
         assert_eq!(settings.recent_files, RecentFileSettings::default());
@@ -375,6 +378,7 @@ mod tests {
         let mut settings = TextifySettings::default();
         settings.appearance.font_size = 18;
         settings.appearance.show_tagline = false;
+        settings.appearance.minimap_on_by_default = true;
         settings.indentation = IndentationSettings {
             tab_width: 2,
             hard_tabs: true,

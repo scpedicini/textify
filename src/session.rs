@@ -29,6 +29,8 @@ pub struct SessionTab {
     pub font_size_override: Option<u16>,
     #[serde(default)]
     pub word_wrap: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimap: Option<bool>,
 }
 
 impl SessionTab {
@@ -42,6 +44,7 @@ impl SessionTab {
             encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
+            minimap: None,
         }
     }
 }
@@ -182,6 +185,7 @@ mod tests {
             encoding: TextEncoding::Cp437,
             font_size_override: Some(18),
             word_wrap: true,
+            minimap: Some(true),
         };
         let state = SessionState::from_tabs(0, vec![tab.clone()]);
         save_session(&path, &state).expect("save");

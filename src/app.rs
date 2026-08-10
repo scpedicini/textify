@@ -83,6 +83,7 @@ actions!(
         ShowWorkspaceSearch,
         ShowSettings,
         ToggleWordWrap,
+        ToggleMinimap,
         ToggleSyntaxHighlighting,
         ToggleLineNumbers,
         ToggleTitleBar,
@@ -437,6 +438,7 @@ struct EditorDocument {
     font_size_override: Option<u16>,
     zoom_accumulator: f32,
     word_wrap: bool,
+    minimap: bool,
     syntax_highlighting: bool,
 }
 
@@ -450,6 +452,7 @@ struct DocumentSeed {
     recovery_path: Option<PathBuf>,
     font_size_override: Option<u16>,
     word_wrap: bool,
+    minimap: Option<bool>,
 }
 
 enum OpenedFile {
@@ -461,7 +464,7 @@ enum OpenedFile {
 }
 
 enum RestoredFile {
-    Opened(OpenedFile, Option<u16>, bool),
+    Opened(OpenedFile, Option<u16>, bool, Option<bool>),
     Recovered(DocumentSeed),
 }
 
@@ -487,12 +490,14 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
             recovery_path: Some(recovery_path),
             font_size_override: tab.font_size_override,
             word_wrap: tab.word_wrap,
+            minimap: tab.minimap,
         }));
     }
 
     if let Some(path) = tab.path {
-        return open_file_with_encoding(&path, policy, Some(tab.encoding))
-            .map(|opened| RestoredFile::Opened(opened, tab.font_size_override, tab.word_wrap));
+        return open_file_with_encoding(&path, policy, Some(tab.encoding)).map(|opened| {
+            RestoredFile::Opened(opened, tab.font_size_override, tab.word_wrap, tab.minimap)
+        });
     }
 
     let metadata = DocumentMetadata::new(None, FileAnalysis::from_bytes(b""), policy);
@@ -506,6 +511,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
         recovery_path: None,
         font_size_override: tab.font_size_override,
         word_wrap: tab.word_wrap,
+        minimap: tab.minimap,
     }))
 }
 
@@ -532,6 +538,7 @@ enum IdeCommand {
     OpenRecent,
     ClearRecent,
     ToggleWordWrap,
+    ToggleMinimap,
     ToggleSyntaxHighlighting,
     ToggleLineNumbers,
     ToggleTitleBar,
@@ -609,6 +616,7 @@ struct SettingsDraft {
     font_size: u16,
     show_tagline: bool,
     show_line_numbers: bool,
+    minimap_on_by_default: bool,
     indentation: IndentationSettings,
     recovery: RecoverySettings,
     recent_files: crate::settings::RecentFileSettings,
@@ -826,6 +834,7 @@ impl Workspace {
                 recovery_path: None,
                 font_size_override: None,
                 word_wrap: false,
+                minimap: None,
                 metadata,
             },
             window,
@@ -853,6 +862,7 @@ impl Workspace {
                 recovery_path: None,
                 font_size_override: None,
                 word_wrap: false,
+                minimap: None,
             },
             window,
             cx,
@@ -905,6 +915,7 @@ impl Workspace {
                 recovery_path: None,
                 font_size_override: None,
                 word_wrap: false,
+                minimap: None,
             },
             window,
             cx,
@@ -936,7 +947,9 @@ impl Workspace {
             recovery_path,
             font_size_override,
             word_wrap,
+            minimap,
         } = seed;
+        let minimap = minimap.unwrap_or(self.settings.appearance.minimap_on_by_default);
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
         self.next_id += 1;
@@ -1002,6 +1015,7 @@ impl Workspace {
             font_size_override,
             zoom_accumulator: 0.0,
             word_wrap,
+            minimap,
             syntax_highlighting: true,
         });
         self.active_index = self.documents.len() - 1;
@@ -1082,6 +1096,7 @@ impl Workspace {
                         encoding: document.metadata.encoding,
                         font_size_override: document.font_size_override,
                         word_wrap: document.word_wrap,
+                        minimap: Some(document.minimap),
                     },
                 )
             })
@@ -1339,11 +1354,15 @@ impl Workspace {
                                         opened,
                                         font_size_override,
                                         word_wrap,
+                                        minimap,
                                     )) => {
                                         workspace.push_opened(opened, window, cx);
                                         let document = workspace.active_document_mut();
                                         document.font_size_override = font_size_override;
                                         document.word_wrap = word_wrap;
+                                        if let Some(minimap) = minimap {
+                                            document.minimap = minimap;
+                                        }
                                         if document.metadata.mode == FileMode::Normal
                                             && document.huge_viewer.is_none()
                                         {
@@ -1648,6 +1667,7 @@ impl Workspace {
                             recovery_path: None,
                             font_size_override: None,
                             word_wrap: false,
+                            minimap: None,
                         },
                         window,
                         cx,
@@ -1695,6 +1715,7 @@ impl Workspace {
                                 recovery_path: None,
                                 font_size_override: None,
                                 word_wrap: false,
+                                minimap: None,
                             },
                             window,
                             cx,
@@ -2314,6 +2335,7 @@ impl Workspace {
             IdeCommand::OpenRecent => self.on_recent_files(&ShowRecentFiles, window, cx),
             IdeCommand::ClearRecent => self.on_clear_recent_files(&ClearRecentFiles, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
+            IdeCommand::ToggleMinimap => self.on_toggle_minimap(&ToggleMinimap, window, cx),
             IdeCommand::ToggleSyntaxHighlighting => {
                 self.on_toggle_syntax_highlighting(&ToggleSyntaxHighlighting, window, cx)
             }
@@ -2363,6 +2385,7 @@ impl Workspace {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
             show_line_numbers: self.settings.appearance.show_line_numbers,
+            minimap_on_by_default: self.settings.appearance.minimap_on_by_default,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -2443,6 +2466,7 @@ impl Workspace {
         settings.appearance.font_size = draft.font_size;
         settings.appearance.show_tagline = draft.show_tagline;
         settings.appearance.show_line_numbers = draft.show_line_numbers;
+        settings.appearance.minimap_on_by_default = draft.minimap_on_by_default;
         settings.appearance.normalize();
         settings.indentation = draft.indentation;
         settings.indentation.normalize();
@@ -2736,6 +2760,25 @@ impl Workspace {
         } else {
             "Syntax highlighting disabled for this tab".to_owned()
         });
+        cx.notify();
+    }
+
+    fn on_toggle_minimap(&mut self, _: &ToggleMinimap, _: &mut Window, cx: &mut Context<Self>) {
+        if self.active_document().huge_viewer.is_some() {
+            self.status_message = Some("Minimap is unavailable for huge-file tabs".to_owned());
+            cx.notify();
+            return;
+        }
+
+        let document = self.active_document_mut();
+        document.minimap = !document.minimap;
+        let enabled = document.minimap;
+        self.status_message = Some(if enabled {
+            "Minimap enabled for this tab".to_owned()
+        } else {
+            "Minimap disabled for this tab".to_owned()
+        });
+        self.persist_session(cx);
         cx.notify();
     }
 
@@ -4379,6 +4422,7 @@ impl Workspace {
             font_size: self.settings.appearance.font_size,
             show_tagline: self.settings.appearance.show_tagline,
             show_line_numbers: self.settings.appearance.show_line_numbers,
+            minimap_on_by_default: self.settings.appearance.minimap_on_by_default,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -4387,6 +4431,7 @@ impl Workspace {
         let unsaved_enabled = draft.recovery.keep_unsaved_changes;
         let tagline_enabled = draft.show_tagline;
         let line_numbers_enabled = draft.show_line_numbers;
+        let minimap_on_by_default = draft.minimap_on_by_default;
         let tab_width = draft.indentation.tab_width;
         let hard_tabs = draft.indentation.hard_tabs;
         let recent_enabled = draft.recent_files.enabled;
@@ -4395,6 +4440,7 @@ impl Workspace {
         let unsaved_workspace = cx.entity();
         let tagline_workspace = cx.entity();
         let line_numbers_workspace = cx.entity();
+        let minimap_workspace = cx.entity();
         let indentation_workspace = cx.entity();
         let recent_workspace = cx.entity();
 
@@ -4494,6 +4540,42 @@ impl Workspace {
                                                         cx.notify();
                                                     },
                                                 );
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Minimap On By Default"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(
+                                                        "Show the document overview in newly opened tabs.",
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-minimap-default")
+                                            .checked(minimap_on_by_default)
+                                            .on_click(move |checked, _, cx| {
+                                                minimap_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.minimap_on_by_default = *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
                                             }),
                                     ),
                             )
@@ -4967,6 +5049,7 @@ impl Render for Workspace {
             .active_document()
             .font_size_override
             .unwrap_or(self.settings.appearance.font_size);
+        let minimap = self.active_document().minimap;
         let content = self
             .active_document()
             .huge_viewer
@@ -4974,7 +5057,12 @@ impl Render for Workspace {
             .map(|viewer| viewer.into_any_element())
             .unwrap_or_else(|| {
                 editor
-                    .render(&self.settings.appearance.font_family, font_size, cx)
+                    .render(
+                        &self.settings.appearance.font_family,
+                        font_size,
+                        minimap,
+                        cx,
+                    )
                     .size_full()
                     .into_any_element()
             });
@@ -5002,6 +5090,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
+            .on_action(cx.listener(Self::on_toggle_minimap))
             .on_action(cx.listener(Self::on_toggle_syntax_highlighting))
             .on_action(cx.listener(Self::on_toggle_line_numbers))
             .on_action(cx.listener(Self::on_toggle_title_bar))
@@ -5283,6 +5372,12 @@ fn command_items() -> Vec<OverlayItem> {
             IdeCommand::ToggleWordWrap,
         ),
         (
+            "Toggle Minimap",
+            "Show or hide the document overview in the current tab",
+            "toggle show hide minimap map overview current individual tab",
+            IdeCommand::ToggleMinimap,
+        ),
+        (
             "Toggle Syntax Highlighting",
             "Enable or disable colors in the current tab",
             "toggle turn on off enable disable syntax highlighting colors parser current tab",
@@ -5540,6 +5635,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Search Workspace…", ShowWorkspaceSearch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
+                MenuItem::action("Toggle Minimap", ToggleMinimap),
                 MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
                 MenuItem::action("Toggle Title Bar", ToggleTitleBar),
                 MenuItem::action("Toggle File Explorer", ToggleSidebar),
@@ -6115,6 +6211,7 @@ mod tests {
                 encoding: TextEncoding::Cp437,
                 font_size_override: Some(17),
                 word_wrap: true,
+                minimap: Some(true),
             },
             FilePolicy::default(),
         )
@@ -6131,6 +6228,7 @@ mod tests {
         assert!(seed.dirty);
         assert_eq!(seed.font_size_override, Some(17));
         assert!(seed.word_wrap);
+        assert_eq!(seed.minimap, Some(true));
         assert_eq!(seed.recovery_path.as_deref(), Some(recovery_path.as_path()));
     }
 
@@ -6150,12 +6248,13 @@ mod tests {
                 encoding: TextEncoding::Cp437,
                 font_size_override: None,
                 word_wrap: false,
+                minimap: None,
             },
             FilePolicy::default(),
         )
         .expect("restore");
 
-        let RestoredFile::Opened(OpenedFile::Editable(loaded), None, false) = restored else {
+        let RestoredFile::Opened(OpenedFile::Editable(loaded), None, false, None) = restored else {
             panic!("expected editable restored file");
         };
         assert_eq!(loaded.metadata.encoding, TextEncoding::Cp437);
@@ -6200,6 +6299,10 @@ mod tests {
             assert_eq!(
                 draft.show_line_numbers,
                 workspace.settings.appearance.show_line_numbers
+            );
+            assert_eq!(
+                draft.minimap_on_by_default,
+                workspace.settings.appearance.minimap_on_by_default
             );
             assert_eq!(draft.indentation, workspace.settings.indentation);
             assert_eq!(draft.recovery, workspace.settings.recovery);
@@ -6375,6 +6478,7 @@ mod tests {
             encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
+            minimap: None,
         };
         let snapshots = vec![QuitSnapshot {
             id: 42,
@@ -6576,6 +6680,10 @@ mod tests {
         assert_eq!(
             first_command("turn off syntax colors in this tab"),
             Some(IdeCommand::ToggleSyntaxHighlighting)
+        );
+        assert_eq!(
+            first_command("hide the minimap in this tab"),
+            Some(IdeCommand::ToggleMinimap)
         );
         assert_eq!(
             first_command("open a recent file"),
@@ -7241,6 +7349,74 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn minimap_default_and_palette_toggle_are_independent_per_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                assert!(!workspace.documents[0].minimap);
+                workspace.show_settings(window, cx);
+                workspace
+                    .settings_draft
+                    .as_mut()
+                    .expect("settings draft")
+                    .minimap_on_by_default = true;
+                workspace.save_settings_window(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let disabled_tab = cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                assert!(workspace.settings.appearance.minimap_on_by_default);
+                workspace.add_untitled(window, cx);
+                assert!(workspace.active_document().minimap);
+                workspace.run_ide_command(IdeCommand::ToggleMinimap, window, cx);
+                assert!(!workspace.active_document().minimap);
+                let disabled_tab = workspace.active_index;
+
+                workspace.add_untitled(window, cx);
+                assert!(workspace.active_document().minimap);
+                disabled_tab
+            })
+        });
+        cx.run_until_parked();
+        let minimap = cx.debug_bounds("editor-minimap").expect("visible minimap");
+        let viewport = cx
+            .debug_bounds("editor-minimap-viewport")
+            .expect("minimap viewport");
+        assert_eq!(minimap.size.width, px(88.));
+        assert!(viewport.size.height > px(0.));
+        assert!(viewport.top() >= minimap.top());
+        assert!(viewport.bottom() <= minimap.bottom());
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_active_index(disabled_tab, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("editor-minimap").is_none());
+
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(saved.appearance.minimap_on_by_default);
     }
 
     #[gpui::test]

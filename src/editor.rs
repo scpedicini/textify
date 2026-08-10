@@ -164,10 +164,11 @@ impl EditorBackend {
         self.state.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    pub fn render(&self, font_family: &str, font_size: u16, _cx: &App) -> Input {
+    pub fn render(&self, font_family: &str, font_size: u16, minimap: bool, _cx: &App) -> Input {
         Input::new(&self.state)
             .bordered(false)
             .focus_bordered(false)
+            .minimap(minimap)
             .font_family(font_family.to_owned())
             .text_size(gpui::px(font_size as f32))
     }
@@ -187,7 +188,7 @@ mod tests {
             _: &mut Window,
             cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
-            self.editor.render("SFMono-Regular", 14, cx)
+            self.editor.render("SFMono-Regular", 14, false, cx)
         }
     }
 
@@ -208,8 +209,30 @@ mod tests {
                 window,
                 cx,
             );
-            let input = editor.render("SFMono-Regular", 14, cx);
+            let input = editor.render("SFMono-Regular", 14, false, cx);
             assert!(!input.has_border());
+            EditorHarness { editor }
+        });
+    }
+
+    #[gpui::test]
+    fn editor_surface_forwards_the_per_tab_minimap_choice(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let editor = EditorBackend::new(
+                "first\nsecond\nthird\n".to_owned(),
+                None,
+                FileMode::Normal,
+                EditorConfiguration {
+                    budgets: EditorBudgets::default(),
+                    indentation: IndentationSettings::default(),
+                    line_numbers: true,
+                    soft_wrap: false,
+                },
+                window,
+                cx,
+            );
+            assert!(editor.render("SFMono-Regular", 14, true, cx).has_minimap());
             EditorHarness { editor }
         });
     }

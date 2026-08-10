@@ -59,6 +59,7 @@ Default `settings.json`:
   "appearance": {
     "font_family": "SFMono-Regular",
     "font_size": 14,
+    "minimap_on_by_default": false,
     "show_line_numbers": true,
     "show_title_bar": true,
     "show_tagline": true
@@ -115,15 +116,20 @@ default 10); disabling it clears the list, and Clear History is also available i
 
 View → Toggle Line Numbers and the matching Settings switch control the gutter for every open and
 future editor tab. The choice is persisted in `appearance.show_line_numbers` and defaults to true.
+Settings also exposes Minimap On By Default for newly opened tabs. View → Toggle Minimap and the
+matching command-palette entry override that choice for only the active tab; the per-tab choice is
+restored with the session. The right-hand minimap samples at most 120 lines, marks the visible
+viewport, and accepts clicks to jump through the document without scanning every line on repaint.
 
 ## Native menus and editor gestures
 
 Textify installs Textify, File, Edit, View, and Window menus in the macOS menu bar. The View menu and
 Command-Shift-P palette expose per-tab word wrap; Option-Z is its direct shortcut. Large and huge
-files always remain unwrapped. Command-scroll adjusts only the hovered active tab's size, while
-preserving its visible caret position; Command-T creates a new tab. Overflowed tabs accept
-horizontal trackpad or ordinary wheel scrolling, activating a tab reveals it, and the ribbon
-chevron lists every open document. Command-Option-P opens the searchable Open Tabs switcher, whose
+files always remain unwrapped. The palette and View menu also expose the per-tab minimap.
+Command-scroll adjusts only the hovered active tab's size, while preserving its visible caret
+position; Command-T creates a new tab. Overflowed tabs accept horizontal trackpad or ordinary wheel
+scrolling, activating a tab reveals it, and the ribbon chevron lists every open document.
+Command-Option-P opens the searchable Open Tabs switcher, whose
 query supports fuzzy text and ordered `*` wildcard fragments. Every overlay shows a highlighted
 selection and supports Up, Down, Enter, and Escape. Dirty tabs close through a modal Save / Don't
 Save / Cancel decision, and Save closes only after a successful write. Dropped files follow the same
