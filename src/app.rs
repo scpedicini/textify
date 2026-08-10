@@ -3915,6 +3915,14 @@ impl Workspace {
         };
         let parser_suppressed = document.metadata.language != Language::PlainText
             && document.metadata.parser_name(self.policy).is_none();
+        let can_toggle_highlighting =
+            document.metadata.parser_name(self.policy).is_some() && document.huge_viewer.is_none();
+        let highlighting_enabled = document.syntax_highlighting && can_toggle_highlighting;
+        let language_label = if can_toggle_highlighting && !highlighting_enabled {
+            format!("{} (OFF)", document.metadata.language.label())
+        } else {
+            document.metadata.language.label().to_owned()
+        };
         let can_toggle_wrap =
             document.metadata.mode == FileMode::Normal && document.huge_viewer.is_none();
         let wrap_label = if document.word_wrap && can_toggle_wrap {
@@ -4069,11 +4077,31 @@ impl Workspace {
                             .line_ending
                             .then_some(document.metadata.analysis.line_ending.label()),
                     )
-                    .children(
-                        visibility
-                            .language
-                            .then_some(document.metadata.language.label()),
-                    ),
+                    .children(visibility.language.then(|| {
+                        Button::new("toggle-highlighting-status")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .label(language_label)
+                            .disabled(!can_toggle_highlighting)
+                            .debug_selector(|| "highlighting-status-toggle".to_owned())
+                            .tooltip(if can_toggle_highlighting {
+                                if highlighting_enabled {
+                                    "Disable syntax highlighting for this tab"
+                                } else {
+                                    "Enable syntax highlighting for this tab"
+                                }
+                            } else {
+                                "Syntax highlighting is unavailable for this tab"
+                            })
+                            .on_click(cx.listener(|workspace, _, window, cx| {
+                                workspace.on_toggle_syntax_highlighting(
+                                    &ToggleSyntaxHighlighting,
+                                    window,
+                                    cx,
+                                )
+                            }))
+                    })),
             )
     }
 
@@ -7215,6 +7243,73 @@ mod tests {
                 );
                 assert!(!workspace.documents[0].syntax_highlighting);
             });
+        });
+    }
+
+    #[gpui::test]
+    fn status_language_control_toggles_syntax_highlighting(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.update(|_, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let analysis = FileAnalysis::from_bytes(br#"{"enabled":true}"#);
+                workspace.documents[0].metadata = DocumentMetadata::new(
+                    Some(PathBuf::from("status.json")),
+                    analysis,
+                    workspace.policy,
+                );
+                workspace.documents[0].editor.set_parser(Some("json"), cx);
+                cx.notify();
+            });
+        });
+
+        cx.run_until_parked();
+        let language_control = cx
+            .debug_bounds("highlighting-status-toggle")
+            .expect("visible language status control");
+        cx.simulate_click(language_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert!(!workspace.active_document().syntax_highlighting);
+            assert_eq!(
+                workspace
+                    .active_document()
+                    .editor
+                    .state()
+                    .read(cx)
+                    .highlighter_language(),
+                Some("text")
+            );
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Syntax highlighting disabled for this tab")
+            );
+        });
+
+        cx.run_until_parked();
+        let language_control = cx
+            .debug_bounds("highlighting-status-toggle")
+            .expect("language status control remains visible");
+        cx.simulate_click(language_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert!(workspace.active_document().syntax_highlighting);
+            assert_eq!(
+                workspace
+                    .active_document()
+                    .editor
+                    .state()
+                    .read(cx)
+                    .highlighter_language(),
+                Some("json")
+            );
         });
     }
 
