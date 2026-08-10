@@ -24,6 +24,7 @@ use crate::{
 
 const CONTEXT: &'static str = "SearchPanel";
 const MATCH_CASE_TOOLTIP: &str = "Match case (Aa)";
+const WHOLE_WORD_TOOLTIP: &str = "Match whole word (ab)";
 const REPLACE_MODE_TOOLTIP: &str = "Show or hide replace controls";
 const PREVIOUS_MATCH_TOOLTIP: &str = "Previous match (Shift+Enter)";
 const NEXT_MATCH_TOOLTIP: &str = "Next match (Enter)";
@@ -48,6 +49,7 @@ pub struct SearchMatcher {
     pub(super) current_match_ix: usize,
     /// Is in replacing mode, if true, the next update will not reset the current match index.
     replacing: bool,
+    whole_word: bool,
     max_matches: usize,
 }
 
@@ -59,6 +61,7 @@ impl SearchMatcher {
             matched_ranges: Rc::new(Vec::new()),
             current_match_ix: 0,
             replacing: false,
+            whole_word: false,
             max_matches,
         }
     }
@@ -80,9 +83,15 @@ impl SearchMatcher {
             // FIXME: Use stream find
             let matches = query.stream_find_iter(text.as_bytes());
 
-            for query_match in matches.into_iter().take(self.max_matches) {
+            for query_match in matches {
+                if new_ranges.len() >= self.max_matches {
+                    break;
+                }
                 let query_match = query_match.expect("query match for select all action");
-                new_ranges.push(query_match.range());
+                let range = query_match.range();
+                if !self.whole_word || is_whole_word_match(&text, &range) {
+                    new_ranges.push(range);
+                }
             }
         }
         self.matched_ranges = Rc::new(new_ranges);
@@ -93,7 +102,8 @@ impl SearchMatcher {
     }
 
     /// Update the search query and reset the current match index.
-    pub fn update_query(&mut self, query: &str, case_insensitive: bool) {
+    pub fn update_query(&mut self, query: &str, case_insensitive: bool, whole_word: bool) {
+        self.whole_word = whole_word;
         if query.len() > 0 {
             self.query = Some(
                 AhoCorasick::builder()
@@ -136,6 +146,22 @@ impl SearchMatcher {
     }
 }
 
+fn is_word_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn is_whole_word_match(text: &str, range: &Range<usize>) -> bool {
+    let starts_at_boundary = text[..range.start]
+        .chars()
+        .next_back()
+        .is_none_or(|character| !is_word_character(character));
+    let ends_at_boundary = text[range.end..]
+        .chars()
+        .next()
+        .is_none_or(|character| !is_word_character(character));
+    starts_at_boundary && ends_at_boundary
+}
+
 impl Iterator for SearchMatcher {
     type Item = Range<usize>;
 
@@ -176,6 +202,7 @@ pub(super) struct SearchPanel {
     search_input: Entity<InputState>,
     replace_input: Entity<InputState>,
     case_insensitive: bool,
+    whole_word: bool,
     replace_mode: bool,
     matcher: SearchMatcher,
     input_width: Pixels,
@@ -254,6 +281,7 @@ impl SearchPanel {
                 search_input,
                 replace_input,
                 case_insensitive: true,
+                whole_word: false,
                 replace_mode: false,
                 matcher: SearchMatcher::new(max_matches),
                 open: true,
@@ -291,7 +319,7 @@ impl SearchPanel {
             .map(|l| l.visible_range_offset.clone());
 
         self.matcher
-            .update_query(query.as_str(), self.case_insensitive);
+            .update_query(query.as_str(), self.case_insensitive, self.whole_word);
 
         if let Some(visible_range_offset) = visible_range_offset {
             self.matcher
@@ -452,18 +480,40 @@ impl Render for SearchPanel {
                                 Input::new(&self.search_input)
                                     .focus_bordered(false)
                                     .suffix(
-                                        Button::new("case-insensitive")
-                                            .selected(!self.case_insensitive)
-                                            .xsmall()
-                                            .compact()
-                                            .ghost()
-                                            .icon(IconName::CaseSensitive)
-                                            .tooltip(MATCH_CASE_TOOLTIP)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.case_insensitive = !this.case_insensitive;
-                                                this.update_search_query(cx);
-                                                cx.notify();
-                                            })),
+                                        h_flex()
+                                            .gap_0()
+                                            .child(
+                                                Button::new("case-insensitive")
+                                                    .selected(!self.case_insensitive)
+                                                    .xsmall()
+                                                    .compact()
+                                                    .ghost()
+                                                    .icon(IconName::CaseSensitive)
+                                                    .tooltip(MATCH_CASE_TOOLTIP)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.case_insensitive =
+                                                            !this.case_insensitive;
+                                                        this.update_search_query(cx);
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("whole-word")
+                                                    .selected(self.whole_word)
+                                                    .xsmall()
+                                                    .compact()
+                                                    .ghost()
+                                                    .label("ab")
+                                                    .debug_selector(|| {
+                                                        "whole-word-search-toggle".to_owned()
+                                                    })
+                                                    .tooltip(WHOLE_WORD_TOOLTIP)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.whole_word = !this.whole_word;
+                                                        this.update_search_query(cx);
+                                                        cx.notify();
+                                                    })),
+                                            ),
                                     )
                                     .small()
                                     .w_full()
@@ -598,7 +648,7 @@ mod tests {
     fn test_search() {
         let mut matcher = SearchMatcher::new(usize::MAX);
         matcher.update(&Rope::from("Hello 世界 this is a Is test string."));
-        matcher.update_query("Is", true);
+        matcher.update_query("Is", true, false);
 
         assert_eq!(matcher.len(), 3);
         let mut matches = matcher.clone();
@@ -616,7 +666,7 @@ mod tests {
         assert_eq!(matches.current_match_ix, 0);
         assert_eq!(matches.next_back(), Some(23..25));
 
-        matcher.update_query("IS", false);
+        matcher.update_query("IS", false, false);
         assert_eq!(matcher.len(), 0);
         assert_eq!(matcher.next(), None);
         assert_eq!(matcher.next_back(), None);
@@ -626,7 +676,7 @@ mod tests {
     fn test_search_label() {
         let mut matcher = SearchMatcher::new(usize::MAX);
         matcher.update(&Rope::from("Hello 世界 this is a Is test string."));
-        matcher.update_query("Is", true);
+        matcher.update_query("Is", true, false);
         assert_eq!(matcher.label(), "1/3");
         matcher.next();
         assert_eq!(matcher.label(), "2/3");
@@ -635,13 +685,14 @@ mod tests {
         matcher.next();
         assert_eq!(matcher.label(), "1/3");
 
-        matcher.update_query("IS", false);
+        matcher.update_query("IS", false, false);
         assert_eq!(matcher.label(), "0/0");
     }
 
     #[test]
     fn search_icon_tooltips_explain_controls_and_shortcuts() {
         assert_eq!(MATCH_CASE_TOOLTIP, "Match case (Aa)");
+        assert_eq!(WHOLE_WORD_TOOLTIP, "Match whole word (ab)");
         assert!(REPLACE_MODE_TOOLTIP.contains("replace"));
         assert!(PREVIOUS_MATCH_TOOLTIP.contains("Shift+Enter"));
         assert!(NEXT_MATCH_TOOLTIP.contains("Enter"));
@@ -652,9 +703,63 @@ mod tests {
     fn test_search_match_budget() {
         let mut matcher = SearchMatcher::new(2);
         matcher.update(&Rope::from("hit hit hit hit"));
-        matcher.update_query("hit", false);
+        matcher.update_query("hit", false, false);
 
         assert_eq!(matcher.len(), 2);
+    }
+
+    #[test]
+    fn whole_word_search_uses_unicode_editor_boundaries() {
+        let text = Rope::from("tip multiple tipping tip_tip tip-tip étip");
+        let mut matcher = SearchMatcher::new(usize::MAX);
+        matcher.update(&text);
+        matcher.update_query("tip", false, false);
+        assert_eq!(matcher.len(), 8);
+
+        matcher.update_query("tip", false, true);
+        assert_eq!(matcher.len(), 3);
+        assert!(
+            matcher
+                .matched_ranges
+                .iter()
+                .all(|range| text.slice(range.clone()) == "tip")
+        );
+
+        let mut budgeted = SearchMatcher::new(2);
+        budgeted.update(&Rope::from("tipping multiple tip tip"));
+        budgeted.update_query("tip", false, true);
+        assert_eq!(budgeted.len(), 2);
+    }
+
+    #[gpui::test]
+    fn whole_word_button_toggles_the_search_panel_option(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let capture = state_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .default_value("tip multiple")
+            });
+            *capture.borrow_mut() = Some(state.clone());
+            let harness = cx.new(|_| SearchHarness { state });
+            crate::Root::new(harness, window, cx)
+        });
+        let state = state_slot.borrow().clone().expect("input state");
+        let panel = cx.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                state.on_action_search(&Search, window, cx);
+                state.search_panel.clone().expect("search panel")
+            })
+        });
+
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("whole-word-search-toggle")
+            .expect("whole-word button");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        assert!(cx.update(|_, cx| panel.read(cx).whole_word));
     }
 
     #[test]
@@ -712,7 +817,7 @@ mod tests {
         });
         let third_match = panel.update(&mut cx.cx, |panel, _| {
             panel.matcher.update(&text_rope);
-            panel.matcher.update_query("tip", false);
+            panel.matcher.update_query("tip", false, false);
             panel.matcher.current_match_ix = 2;
             panel.matcher.matched_ranges[2].clone()
         });
@@ -777,7 +882,7 @@ mod tests {
         });
         panel.update(&mut cx.cx, |panel, _| {
             panel.matcher.update(&text_rope);
-            panel.matcher.update_query("needle", false);
+            panel.matcher.update_query("needle", false, false);
         });
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| panel.next(window, cx));
