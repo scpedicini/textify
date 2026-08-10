@@ -25,6 +25,7 @@ impl TextEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     PlainText,
+    Css,
     Json,
     Html,
     Shell,
@@ -53,6 +54,7 @@ impl Language {
             .to_ascii_lowercase();
 
         match extension.as_str() {
+            "css" => Self::Css,
             "json" | "jsonc" => Self::Json,
             "html" | "htm" => Self::Html,
             "sh" | "bash" | "zsh" => Self::Shell,
@@ -64,6 +66,7 @@ impl Language {
     pub const fn label(self) -> &'static str {
         match self {
             Self::PlainText => "Plain Text",
+            Self::Css => "CSS",
             Self::Json => "JSON",
             Self::Html => "HTML",
             Self::Shell => "Shell",
@@ -74,6 +77,7 @@ impl Language {
     pub const fn parser_name(self) -> Option<&'static str> {
         match self {
             Self::PlainText => None,
+            Self::Css => Some("css"),
             Self::Json => Some("json"),
             Self::Html => Some("html"),
             Self::Shell => Some("bash"),
@@ -328,6 +332,12 @@ mod tests {
             Language::Html
         );
         assert_eq!(Language::Html.parser_name(), Some("html"));
+        assert_eq!(
+            Language::detect(Some(Path::new("theme.css"))),
+            Language::Css
+        );
+        assert_eq!(Language::Css.label(), "CSS");
+        assert_eq!(Language::Css.parser_name(), Some("css"));
         for path in ["build.sh", "login.bash", "setup.zsh", ".bashrc", ".zshrc"] {
             assert_eq!(Language::detect(Some(Path::new(path))), Language::Shell);
         }

@@ -8,6 +8,7 @@ pub enum Language {
     Json,
     Plain,
     Bash,
+    Css,
     Html,
     Markdown,
     MarkdownInline,
@@ -68,6 +69,7 @@ impl Language {
             Self::Json => "json",
             Self::Plain => "text",
             Self::Bash => "bash",
+            Self::Css => "css",
             Self::Html => "html",
             Self::Markdown => "markdown",
             Self::MarkdownInline => "markdown_inline",
@@ -117,6 +119,7 @@ impl Language {
         return match s {
             "json" | "jsonc" => Self::Json,
             "bash" | "sh" | "zsh" => Self::Bash,
+            "css" => Self::Css,
             "html" | "htm" => Self::Html,
             "markdown" | "md" | "mdx" => Self::Markdown,
             "markdown_inline" | "markdown-inline" => Self::MarkdownInline,
@@ -205,6 +208,12 @@ impl Language {
             Self::Bash => (
                 tree_sitter_bash::LANGUAGE,
                 tree_sitter_bash::HIGHLIGHT_QUERY,
+                "",
+                "",
+            ),
+            Self::Css => (
+                tree_sitter_css::LANGUAGE,
+                tree_sitter_css::HIGHLIGHTS_QUERY,
                 "",
                 "",
             ),
@@ -435,6 +444,7 @@ mod tests {
                 "json",
                 "text",
                 "bash",
+                "css",
                 "html",
                 "markdown",
                 "markdown_inline"
@@ -444,6 +454,10 @@ mod tests {
         let bash = Language::Bash.config();
         assert_eq!(bash.name, "bash");
         assert!(!bash.highlights.is_empty());
+        assert_eq!(Language::from_str("css"), Language::Css);
+        let css = Language::Css.config();
+        assert_eq!(css.name, "css");
+        assert!(!css.highlights.is_empty());
         assert_eq!(Language::from_str("html"), Language::Html);
         let html = Language::Html.config();
         assert_eq!(html.name, "html");
