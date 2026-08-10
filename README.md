@@ -78,7 +78,10 @@ For the optimized local app, terminal symlink, and Raycast command, run:
 ```
 
 Later `cargo build --release --bin textify` builds update the installed symlink targets in place.
-See [docs/deployment.md](docs/deployment.md) for the one-time Raycast setup and packaging details.
+Quit a running Textify process and launch it again from Raycast to load the rebuilt executable.
+Raycast should keep `/Users/shaun/dev/textify/raycast` configured as a Script Command directory;
+`raycast/textify.sh` deliberately launches the release app through macOS rather than running a
+debug binary. See [docs/deployment.md](docs/deployment.md) for the exact link chain and update flow.
 
 ## Verify it
 
