@@ -586,6 +586,14 @@ impl InputState {
         cx.notify();
     }
 
+    /// Return the configured code-editor language, including `text` when highlighting is off.
+    pub fn highlighter_language(&self) -> Option<&str> {
+        match &self.mode {
+            InputMode::CodeEditor { language, .. } => Some(language.as_ref()),
+            _ => None,
+        }
+    }
+
     fn reset_highlighter(&mut self, cx: &mut Context<Self>) {
         match &mut self.mode {
             InputMode::CodeEditor { highlighter, .. } => {

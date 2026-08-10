@@ -83,6 +83,7 @@ actions!(
         ShowWorkspaceSearch,
         ShowSettings,
         ToggleWordWrap,
+        ToggleSyntaxHighlighting,
         ToggleLineNumbers,
         ToggleTitleBar,
         GoToDefinition,
@@ -436,6 +437,7 @@ struct EditorDocument {
     font_size_override: Option<u16>,
     zoom_accumulator: f32,
     word_wrap: bool,
+    syntax_highlighting: bool,
 }
 
 struct DocumentSeed {
@@ -530,6 +532,7 @@ enum IdeCommand {
     OpenRecent,
     ClearRecent,
     ToggleWordWrap,
+    ToggleSyntaxHighlighting,
     ToggleLineNumbers,
     ToggleTitleBar,
     OpenFolder,
@@ -999,6 +1002,7 @@ impl Workspace {
             font_size_override,
             zoom_accumulator: 0.0,
             word_wrap,
+            syntax_highlighting: true,
         });
         self.active_index = self.documents.len() - 1;
         self.tab_scroll_handle.scroll_to_item(self.active_index);
@@ -1567,7 +1571,11 @@ impl Workspace {
                             return;
                         };
                         let editor = workspace.documents[index].editor.clone();
-                        let parser = loaded.metadata.parser_name(workspace.policy);
+                        let parser = if workspace.documents[index].syntax_highlighting {
+                            loaded.metadata.parser_name(workspace.policy)
+                        } else {
+                            None
+                        };
                         let normal_mode = loaded.metadata.mode == FileMode::Normal;
                         let document = &mut workspace.documents[index];
                         document.programmatic_change = true;
@@ -2306,6 +2314,9 @@ impl Workspace {
             IdeCommand::OpenRecent => self.on_recent_files(&ShowRecentFiles, window, cx),
             IdeCommand::ClearRecent => self.on_clear_recent_files(&ClearRecentFiles, window, cx),
             IdeCommand::ToggleWordWrap => self.on_toggle_word_wrap(&ToggleWordWrap, window, cx),
+            IdeCommand::ToggleSyntaxHighlighting => {
+                self.on_toggle_syntax_highlighting(&ToggleSyntaxHighlighting, window, cx)
+            }
             IdeCommand::ToggleLineNumbers => {
                 self.on_toggle_line_numbers(&ToggleLineNumbers, window, cx)
             }
@@ -2627,7 +2638,11 @@ impl Workspace {
                             return;
                         }
                         let editor = workspace.documents[index].editor.clone();
-                        let parser = loaded.metadata.parser_name(workspace.policy);
+                        let parser = if workspace.documents[index].syntax_highlighting {
+                            loaded.metadata.parser_name(workspace.policy)
+                        } else {
+                            None
+                        };
                         let normal_mode = loaded.metadata.mode == FileMode::Normal;
                         let document = &mut workspace.documents[index];
                         document.programmatic_change = true;
@@ -2689,6 +2704,38 @@ impl Workspace {
             "Word wrap disabled for this tab".to_owned()
         });
         self.persist_session(cx);
+        cx.notify();
+    }
+
+    fn on_toggle_syntax_highlighting(
+        &mut self,
+        _: &ToggleSyntaxHighlighting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let document = self.active_document();
+        let parser = document.metadata.parser_name(self.policy);
+        if parser.is_none() || document.huge_viewer.is_some() {
+            self.status_message = Some(format!(
+                "Syntax highlighting is unavailable for {}",
+                document.metadata.language.label()
+            ));
+            cx.notify();
+            return;
+        }
+
+        let document = self.active_document_mut();
+        document.syntax_highlighting = !document.syntax_highlighting;
+        let enabled = document.syntax_highlighting;
+        document
+            .editor
+            .set_parser(if enabled { parser } else { None }, cx);
+        document.editor.focus(window, cx);
+        self.status_message = Some(if enabled {
+            "Syntax highlighting enabled for this tab".to_owned()
+        } else {
+            "Syntax highlighting disabled for this tab".to_owned()
+        });
         cx.notify();
     }
 
@@ -3421,7 +3468,11 @@ impl Workspace {
                             workspace.policy,
                             encoding,
                         );
-                        let parser = metadata.parser_name(policy);
+                        let parser = if workspace.documents[index].syntax_highlighting {
+                            metadata.parser_name(policy)
+                        } else {
+                            None
+                        };
                         let normal_mode = metadata.mode == FileMode::Normal;
                         let editor = workspace.documents[index].editor.clone();
                         let document = &mut workspace.documents[index];
@@ -4916,6 +4967,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_workspace_search))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_toggle_word_wrap))
+            .on_action(cx.listener(Self::on_toggle_syntax_highlighting))
             .on_action(cx.listener(Self::on_toggle_line_numbers))
             .on_action(cx.listener(Self::on_toggle_title_bar))
             .on_action(cx.listener(Self::on_quit_textify))
@@ -5194,6 +5246,12 @@ fn command_items() -> Vec<OverlayItem> {
             "Wrap long lines in the current tab",
             "toggle turn on off enable disable word wrap long lines current tab",
             IdeCommand::ToggleWordWrap,
+        ),
+        (
+            "Toggle Syntax Highlighting",
+            "Enable or disable colors in the current tab",
+            "toggle turn on off enable disable syntax highlighting colors parser current tab",
+            IdeCommand::ToggleSyntaxHighlighting,
         ),
         (
             "Toggle Line Numbers",
@@ -6435,6 +6493,10 @@ mod tests {
             Some(IdeCommand::ToggleLineNumbers)
         );
         assert_eq!(
+            first_command("turn off syntax colors in this tab"),
+            Some(IdeCommand::ToggleSyntaxHighlighting)
+        );
+        assert_eq!(
             first_command("open a recent file"),
             Some(IdeCommand::OpenRecent)
         );
@@ -7096,6 +7158,62 @@ mod tests {
                     workspace.status_message.as_deref(),
                     Some("Word wrap is disabled by large-file policy")
                 );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn command_palette_syntax_highlighting_toggle_is_per_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let analysis = FileAnalysis::from_bytes(br#"{"first":true}"#);
+                workspace.documents[0].metadata = DocumentMetadata::new(
+                    Some(PathBuf::from("first.json")),
+                    analysis,
+                    workspace.policy,
+                );
+                workspace.documents[0].editor.set_parser(Some("json"), cx);
+
+                workspace.run_ide_command(IdeCommand::ToggleSyntaxHighlighting, window, cx);
+                assert!(!workspace.documents[0].syntax_highlighting);
+                assert_eq!(
+                    workspace.documents[0]
+                        .editor
+                        .state()
+                        .read(cx)
+                        .highlighter_language(),
+                    Some("text")
+                );
+
+                workspace.add_untitled(window, cx);
+                workspace.documents[1].metadata = DocumentMetadata::new(
+                    Some(PathBuf::from("second.json")),
+                    analysis,
+                    workspace.policy,
+                );
+                workspace.documents[1].editor.set_parser(Some("json"), cx);
+                assert!(workspace.documents[1].syntax_highlighting);
+                assert_eq!(
+                    workspace.documents[1]
+                        .editor
+                        .state()
+                        .read(cx)
+                        .highlighter_language(),
+                    Some("json")
+                );
+                assert!(!workspace.documents[0].syntax_highlighting);
             });
         });
     }
