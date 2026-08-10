@@ -1605,15 +1605,8 @@ impl InputState {
         let point = self.text.offset_to_point(offset);
 
         let row = point.row;
-
-        let mut row_offset_y = px(0.);
-        for (ix, wrap_line) in self.text_wrapper.lines.iter().enumerate() {
-            if ix == row {
-                break;
-            }
-
-            row_offset_y += wrap_line.height(line_height);
-        }
+        let display_point = self.text_wrapper.offset_to_display_point(offset);
+        let row_offset_y = display_point.row as f32 * line_height;
 
         if let Some(line) = last_layout
             .lines
@@ -1623,7 +1616,6 @@ impl InputState {
             if let Some(pos) = line.position_for_index(point.column, line_height) {
                 let bounds_width = bounds.size.width - last_layout.line_number_width;
                 let col_offset_x = pos.x;
-                row_offset_y += pos.y;
                 if col_offset_x - RIGHT_MARGIN < -scroll_offset.x {
                     // If the position is out of the visible area, scroll to make it visible
                     scroll_offset.x = -col_offset_x + RIGHT_MARGIN;

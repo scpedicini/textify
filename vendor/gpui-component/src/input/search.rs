@@ -725,4 +725,57 @@ mod tests {
         assert!(after > before);
         assert!(visible_range.contains(&first_match_start));
     }
+
+    #[gpui::test]
+    fn find_scrolls_to_a_distant_match_inside_a_wrapped_30k_line(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let prefix = "ordinary line\n".repeat(80);
+        let long_line = format!("{}needle{}", "a".repeat(20_000), "b".repeat(9_994));
+        assert_eq!(long_line.len(), 30_000);
+        let text = format!("{prefix}{long_line}\nend\n");
+        let text_rope = Rope::from(text.as_str());
+        let match_start = prefix.len() + 20_000;
+        let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let capture = state_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(true)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(state.clone());
+            let harness = cx.new(|_| SearchHarness { state });
+            crate::Root::new(harness, window, cx)
+        });
+        let state = state_slot.borrow().clone().expect("input state");
+
+        let panel = cx.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                state.on_action_search(&Search, window, cx);
+                state.search_panel.clone().expect("search panel")
+            })
+        });
+        panel.update(&mut cx.cx, |panel, _| {
+            panel.matcher.update(&text_rope);
+            panel.matcher.update_query("needle", false);
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.next(window, cx));
+        });
+        cx.run_until_parked();
+
+        let (match_viewport_y, line_height, viewport_height) = cx.update(|_, cx| {
+            let state = state.read(cx);
+            let layout = state.last_layout.as_ref().expect("layout");
+            let display_point = state.text_wrapper.offset_to_display_point(match_start);
+            (
+                display_point.row as f32 * layout.line_height + state.scroll_handle.offset().y,
+                layout.line_height,
+                state.input_bounds.size.height,
+            )
+        });
+        assert!(match_viewport_y >= Pixels::ZERO);
+        assert!(match_viewport_y + line_height <= viewport_height);
+    }
 }
