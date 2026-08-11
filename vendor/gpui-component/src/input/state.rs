@@ -580,6 +580,7 @@ impl InputState {
             } => {
                 *language = new_language.into();
                 *highlighter.borrow_mut() = None;
+                self._pending_update = true;
             }
             _ => {}
         }
@@ -2470,6 +2471,45 @@ mod tests {
     use gpui::{ClipboardItem, IntoElement, Render, Styled as _, div};
 
     use super::*;
+
+    fn has_active_highlighter(input: &InputState) -> bool {
+        match &input.mode {
+            InputMode::CodeEditor { highlighter, .. } => highlighter.borrow().is_some(),
+            _ => false,
+        }
+    }
+
+    #[gpui::test]
+    fn changing_highlighter_language_rebuilds_syntax_highlighting(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .code_editor("json")
+                .default_value(r#"{"enabled":true}"#)
+        });
+        cx.run_until_parked();
+        input.update(&mut cx.cx, |input, _| {
+            assert!(has_active_highlighter(input));
+        });
+
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_highlighter("text", cx));
+        });
+        cx.run_until_parked();
+        input.update(&mut cx.cx, |input, _| {
+            assert_eq!(input.highlighter_language(), Some("text"));
+            assert!(!has_active_highlighter(input));
+        });
+
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_highlighter("json", cx));
+        });
+        cx.run_until_parked();
+        input.update(&mut cx.cx, |input, _| {
+            assert_eq!(input.highlighter_language(), Some("json"));
+            assert!(has_active_highlighter(input));
+        });
+    }
 
     #[gpui::test]
     fn multicursor_edit_paste_undo_and_ime_policy(cx: &mut gpui::TestAppContext) {
