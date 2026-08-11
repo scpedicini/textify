@@ -2010,6 +2010,12 @@ impl Workspace {
 
     fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.hide_overlay(cx);
+        self.focus_active_editor(window, cx);
+    }
+
+    /// Returns keyboard focus to the active tab. Huge-file tabs render a viewer
+    /// instead of an editor and have nothing focusable, so they are skipped.
+    fn focus_active_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
         }
@@ -2342,6 +2348,15 @@ impl Workspace {
                 }
             }
         }
+
+        // Accepting an entry tears down the overlay input that held focus, so
+        // focus has to land somewhere or it is lost entirely and keystrokes go
+        // nowhere. Commands that raise their own focusable surface (another
+        // overlay, the settings pane) have already claimed it; everything else
+        // — the toggles in particular — belongs back in the editor.
+        if self.overlay_mode.is_none() && !self.settings_visible {
+            self.focus_active_editor(window, cx);
+        }
     }
 
     fn run_ide_command(
@@ -2434,9 +2449,7 @@ impl Workspace {
     fn hide_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_visible = false;
         self.settings_draft = None;
-        if self.active_document().huge_viewer.is_none() {
-            self.active_document().editor.focus(window, cx);
-        }
+        self.focus_active_editor(window, cx);
         cx.notify();
     }
 
@@ -7209,6 +7222,57 @@ mod tests {
         cx.simulate_click(gpui::point(px(20.), px(180.)), gpui::Modifiers::none());
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_eq!(workspace.overlay_mode, None);
+        });
+    }
+
+    #[gpui::test]
+    fn command_palette_returns_focus_to_the_editor_after_running_a_command(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_overlay(OverlayMode::Commands, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_input("word");
+        cx.run_until_parked();
+
+        let wrapped = workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_items[0].title, "Toggle Word Wrap");
+            workspace.active_document().word_wrap
+        });
+
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, None);
+            assert_ne!(workspace.active_document().word_wrap, wrapped);
+        });
+
+        cx.update(|window, cx| {
+            assert_eq!(
+                window.focused_input(cx),
+                Some(workspace.read(cx).active_document().editor.state().clone()),
+                "running a palette command must hand focus back to the editor"
+            );
+        });
+
+        cx.simulate_input("x");
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(workspace.active_document().editor.rope(cx).to_string(), "x");
         });
     }
 
