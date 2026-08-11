@@ -120,10 +120,11 @@ edits, clears the recovery copy, refreshes document metadata, and keeps tab-loca
 
 View → Toggle Line Numbers and the matching Settings switch control the gutter for every open and
 future editor tab. The choice is persisted in `appearance.show_line_numbers` and defaults to true.
-Settings also exposes Minimap On By Default for newly opened tabs. View → Toggle Minimap and the
-matching command-palette entry override that choice for only the active tab; the per-tab choice is
-restored with the session. The right-hand minimap samples at most 120 lines, marks the visible
-viewport, and accepts clicks to jump through the document without scanning every line on repaint.
+Settings also exposes Minimap On By Default. Tabs inherit changes to that default until View →
+Toggle Minimap or the matching command-palette entry overrides that choice for only the active tab;
+the per-tab choice is restored with the session. The right-hand minimap samples at most 120 lines,
+marks the visible viewport, and accepts clicks to jump through the document without scanning every
+line on repaint.
 
 ## Native menus and editor gestures
 

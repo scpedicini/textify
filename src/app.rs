@@ -439,7 +439,7 @@ struct EditorDocument {
     font_size_override: Option<u16>,
     zoom_accumulator: f32,
     word_wrap: bool,
-    minimap: bool,
+    minimap_override: Option<bool>,
     syntax_highlighting: bool,
 }
 
@@ -491,13 +491,18 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
             recovery_path: Some(recovery_path),
             font_size_override: tab.font_size_override,
             word_wrap: tab.word_wrap,
-            minimap: tab.minimap,
+            minimap: tab.minimap_override,
         }));
     }
 
     if let Some(path) = tab.path {
         return open_file_with_encoding(&path, policy, Some(tab.encoding)).map(|opened| {
-            RestoredFile::Opened(opened, tab.font_size_override, tab.word_wrap, tab.minimap)
+            RestoredFile::Opened(
+                opened,
+                tab.font_size_override,
+                tab.word_wrap,
+                tab.minimap_override,
+            )
         });
     }
 
@@ -512,7 +517,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
         recovery_path: None,
         font_size_override: tab.font_size_override,
         word_wrap: tab.word_wrap,
-        minimap: tab.minimap,
+        minimap: tab.minimap_override,
     }))
 }
 
@@ -624,6 +629,10 @@ struct SettingsDraft {
 }
 
 impl EditorDocument {
+    fn minimap_enabled(&self, default: bool) -> bool {
+        self.minimap_override.unwrap_or(default)
+    }
+
     fn display_name(&self, cx: &App) -> String {
         if let Some(label) = &self.label_override {
             return label.clone();
@@ -950,7 +959,6 @@ impl Workspace {
             word_wrap,
             minimap,
         } = seed;
-        let minimap = minimap.unwrap_or(self.settings.appearance.minimap_on_by_default);
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
         self.next_id += 1;
@@ -1016,7 +1024,7 @@ impl Workspace {
             font_size_override,
             zoom_accumulator: 0.0,
             word_wrap,
-            minimap,
+            minimap_override: minimap,
             syntax_highlighting: true,
         });
         self.active_index = self.documents.len() - 1;
@@ -1097,7 +1105,7 @@ impl Workspace {
                         encoding: document.metadata.encoding,
                         font_size_override: document.font_size_override,
                         word_wrap: document.word_wrap,
-                        minimap: Some(document.minimap),
+                        minimap_override: document.minimap_override,
                     },
                 )
             })
@@ -1361,9 +1369,7 @@ impl Workspace {
                                         let document = workspace.active_document_mut();
                                         document.font_size_override = font_size_override;
                                         document.word_wrap = word_wrap;
-                                        if let Some(minimap) = minimap {
-                                            document.minimap = minimap;
-                                        }
+                                        document.minimap_override = minimap;
                                         if document.metadata.mode == FileMode::Normal
                                             && document.huge_viewer.is_none()
                                         {
@@ -2791,9 +2797,10 @@ impl Workspace {
             return;
         }
 
-        let document = self.active_document_mut();
-        document.minimap = !document.minimap;
-        let enabled = document.minimap;
+        let enabled = !self
+            .active_document()
+            .minimap_enabled(self.settings.appearance.minimap_on_by_default);
+        self.active_document_mut().minimap_override = Some(enabled);
         self.status_message = Some(if enabled {
             "Minimap enabled for this tab".to_owned()
         } else {
@@ -5118,7 +5125,9 @@ impl Render for Workspace {
             .active_document()
             .font_size_override
             .unwrap_or(self.settings.appearance.font_size);
-        let minimap = self.active_document().minimap;
+        let minimap = self
+            .active_document()
+            .minimap_enabled(self.settings.appearance.minimap_on_by_default);
         let content = self
             .active_document()
             .huge_viewer
@@ -6282,7 +6291,7 @@ mod tests {
                 encoding: TextEncoding::Cp437,
                 font_size_override: Some(17),
                 word_wrap: true,
-                minimap: Some(true),
+                minimap_override: Some(true),
             },
             FilePolicy::default(),
         )
@@ -6319,7 +6328,7 @@ mod tests {
                 encoding: TextEncoding::Cp437,
                 font_size_override: None,
                 word_wrap: false,
-                minimap: None,
+                minimap_override: None,
             },
             FilePolicy::default(),
         )
@@ -6626,7 +6635,7 @@ mod tests {
             encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
-            minimap: None,
+            minimap_override: None,
         };
         let snapshots = vec![QuitSnapshot {
             id: 42,
@@ -7521,7 +7530,7 @@ mod tests {
             workspace.update(cx, |workspace, cx| {
                 workspace.data_dir = directory.path().to_path_buf();
                 workspace.session_path = directory.path().join("session.json");
-                assert!(!workspace.documents[0].minimap);
+                assert!(!workspace.documents[0].minimap_enabled(false));
                 workspace.show_settings(window, cx);
                 workspace
                     .settings_draft
@@ -7532,18 +7541,22 @@ mod tests {
             });
         });
         cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.documents[0].minimap_enabled(true));
+            assert_eq!(workspace.documents[0].minimap_override, None);
+        });
 
         let disabled_tab = cx.update(|window, cx| {
             workspace.update(cx, |workspace, cx| {
                 assert!(workspace.settings.appearance.minimap_on_by_default);
                 workspace.add_untitled(window, cx);
-                assert!(workspace.active_document().minimap);
+                assert!(workspace.active_document().minimap_enabled(true));
                 workspace.run_ide_command(IdeCommand::ToggleMinimap, window, cx);
-                assert!(!workspace.active_document().minimap);
+                assert!(!workspace.active_document().minimap_enabled(true));
                 let disabled_tab = workspace.active_index;
 
                 workspace.add_untitled(window, cx);
-                assert!(workspace.active_document().minimap);
+                assert!(workspace.active_document().minimap_enabled(true));
                 disabled_tab
             })
         });
@@ -7560,10 +7573,17 @@ mod tests {
         cx.update(|window, cx| {
             workspace.update(cx, |workspace, cx| {
                 workspace.set_active_index(disabled_tab, window, cx);
+                assert_eq!(workspace.active_document().minimap_override, Some(false));
+                assert!(!workspace.active_document().minimap_enabled(true));
+                assert!(
+                    !workspace
+                        .active_document()
+                        .editor
+                        .render("SFMono-Regular", 14, false, cx)
+                        .has_minimap()
+                );
             });
         });
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("editor-minimap").is_none());
 
         let saved =
             TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");

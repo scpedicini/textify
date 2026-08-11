@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::TextEncoding;
 use crate::file_io::save_atomic;
 
-const SESSION_VERSION: u32 = 2;
+const SESSION_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTab {
@@ -30,7 +30,7 @@ pub struct SessionTab {
     #[serde(default)]
     pub word_wrap: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minimap: Option<bool>,
+    pub minimap_override: Option<bool>,
 }
 
 impl SessionTab {
@@ -44,7 +44,7 @@ impl SessionTab {
             encoding: TextEncoding::Utf8,
             font_size_override: None,
             word_wrap: false,
-            minimap: None,
+            minimap_override: None,
         }
     }
 }
@@ -53,7 +53,7 @@ impl SessionTab {
 pub struct SessionState {
     pub version: u32,
     pub active_index: usize,
-    /// Kept in version 2 for compatibility with generated corpora and version 1 sessions.
+    /// Kept for compatibility with generated corpora and older sessions.
     #[serde(default)]
     pub open_paths: Vec<PathBuf>,
     #[serde(default)]
@@ -185,7 +185,7 @@ mod tests {
             encoding: TextEncoding::Cp437,
             font_size_override: Some(18),
             word_wrap: true,
-            minimap: Some(true),
+            minimap_override: Some(true),
         };
         let state = SessionState::from_tabs(0, vec![tab.clone()]);
         save_session(&path, &state).expect("save");
@@ -201,5 +201,14 @@ mod tests {
             migrated.tabs,
             vec![SessionTab::saved(PathBuf::from("legacy.md"))]
         );
+
+        fs::write(
+            &path,
+            r#"{"version":2,"active_index":0,"tabs":[{"path":"legacy.json","minimap":false}]}"#,
+        )
+        .expect("version two fixture");
+        let migrated = load_session(&path).expect("version two load");
+        assert_eq!(migrated.tabs.len(), 1);
+        assert_eq!(migrated.tabs[0].minimap_override, None);
     }
 }
