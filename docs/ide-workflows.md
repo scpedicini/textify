@@ -123,8 +123,8 @@ future editor tab. The choice is persisted in `appearance.show_line_numbers` and
 Settings also exposes Minimap On By Default. Tabs inherit changes to that default until View →
 Toggle Minimap or the matching command-palette entry overrides that choice for only the active tab;
 the per-tab choice is restored with the session. The right-hand minimap samples at most 120 lines,
-marks the visible viewport, and accepts clicks to jump through the document without scanning every
-line on repaint.
+marks the visible viewport, accepts clicks to jump, and lets you drag the viewport like a vertical
+scrollbar without scanning every line on repaint.
 
 ## Native menus and editor gestures
 
