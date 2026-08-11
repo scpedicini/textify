@@ -98,6 +98,17 @@ Apple `vmmap -summary` reported a 79.0 MiB physical footprint and a 92.0 MiB pea
 large virtual address ranges were unallocated malloc zones, shared frameworks, graphics mappings,
 and guard regions; virtual size is therefore not a useful proxy for Textify's physical memory use.
 
+`ps` RSS and `vmmap` physical footprint are not interchangeable for this process and should not be
+quoted as if they measure the same thing. RSS only counts ordinary CPU-side anonymous/heap/stack
+pages; it excludes the GPU-side memory GPUI allocates through Metal for rendering. On this idle
+build, `vmmap -summary` attributed roughly 81 MiB to `IOAccelerator` (shader/render pipeline state)
+and 43 MiB to `IOSurface` (window-compositing buffers) — regions RSS does not see at all. Physical
+footprint is the metric Activity Monitor's "Memory" column and the kernel's jetsam accounting use,
+so it is the one to cite as Textify's real memory cost; RSS alone understates it. A repeat run on
+2026-08-11 with the same isolated-data-dir soak methodology reproduced this closely: RSS samples of
+45,888 / 46,016 / 42,240 / 42,416 KiB and a 79.4 MiB physical footprint (79.4 MiB peak), confirming
+the idle baseline is stable and repeatable rather than a one-off reading.
+
 Two Apple `leaks` scans 30 seconds apart both reported the same 449 allocations and 51,184 bytes.
 The dominant root was a 47.5 KiB Cocoa `NSArray`; the restricted release process did not expose
 allocation stacks. This is a small, startup-stable framework allocation rather than evidence of
