@@ -1678,6 +1678,37 @@ impl InputState {
     }
 
     pub(super) fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selections().iter().all(Selection::is_empty) && self.mode.is_multi_line() {
+            let line_selections =
+                normalized_selections(self.selected_range, &self.secondary_selected_ranges)
+                    .into_iter()
+                    .map(|selection| {
+                        let row = self.text.offset_to_point(selection.range.start).row;
+                        let start = self.text.line_start_offset(row);
+                        let end = if row + 1 < self.text.lines_len() {
+                            self.text.line_start_offset(row + 1)
+                        } else {
+                            self.text.len()
+                        };
+                        TaggedSelection {
+                            range: Selection::new(start, end),
+                            primary: selection.primary,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+            let primary = line_selections
+                .iter()
+                .find(|selection| selection.primary)
+                .map(|selection| selection.range)
+                .unwrap_or_default();
+            let secondary = line_selections
+                .iter()
+                .filter(|selection| !selection.primary)
+                .map(|selection| selection.range)
+                .collect::<Vec<_>>();
+            self.apply_selection_set(normalized_selections(primary, &secondary));
+        }
+
         if self.selections().iter().all(Selection::is_empty) {
             return;
         }
@@ -2542,6 +2573,41 @@ mod tests {
                 input.replace_and_mark_text_in_range(None, "あ", None, window, cx);
                 assert!(input.secondary_selected_ranges.is_empty());
                 assert!(input.ime_marked_range.is_some());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn cut_without_a_selection_cuts_the_logical_row_and_can_undo(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .code_editor("text")
+                .default_value("first\nsecond\nthird")
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let caret = input.text.line_start_offset(1) + 3;
+                input.set_selections(vec![caret..caret], window, cx);
+                input.cut(&Cut, window, cx);
+                assert_eq!(input.value().as_ref(), "first\nthird");
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("second\n".to_owned())
+                );
+
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.value().as_ref(), "first\nsecond\nthird");
+
+                let caret = input.text.line_start_offset(2) + 2;
+                input.set_selections(vec![caret..caret], window, cx);
+                input.cut(&Cut, window, cx);
+                assert_eq!(input.value().as_ref(), "first\nsecond\n");
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("third".to_owned())
+                );
             });
         });
     }

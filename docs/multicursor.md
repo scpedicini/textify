@@ -10,6 +10,7 @@ fork-specific APIs into the workspace.
 - Option-drag creates one range per physical line. Short lines clamp to their end, and every range
   is clipped to UTF-8 boundaries.
 - Typing, newline insertion, Backspace, Delete, cut, and paste replace all disjoint selections.
+- Command-X promotes empty carets to their complete logical rows before cutting.
 - Copy joins non-empty selections in document order with newlines.
 - Paste distributes newline-separated clipboard items when their count matches the selection count;
   otherwise it repeats the complete clipboard text at every selection.

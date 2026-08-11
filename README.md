@@ -29,6 +29,7 @@ rope.
 - Command-click adds carets.
 - Option-drag creates a rectangular selection across physical lines.
 - Typing, Enter, Backspace, Delete, cut, copy, and paste operate on disjoint selections.
+- Command-X with no selected text cuts the complete logical row under each caret.
 - A clipboard with one line per selection distributes those lines; other clipboard text is repeated
   at every selection.
 - A multicursor edit is one undo step. Starting an IME composition keeps the primary selection and
