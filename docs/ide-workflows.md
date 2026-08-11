@@ -102,6 +102,8 @@ Default `settings.json`:
 Changing editor budgets or indentation updates existing tabs as well as future ones. Reducing the
 undo budget prunes complete oldest history groups immediately. By default Tab inserts four spaces;
 enable Use Tab Characters to insert literal tab characters, and choose a width from 1 through 8.
+Shift-Tab removes one available leading indentation level even when the prefix is partial spaces or
+does not match the current tabs-versus-spaces setting; repeated presses remove the full prefix.
 
 Command-, opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
 from installed system families; a configured family remains selectable if it is temporarily

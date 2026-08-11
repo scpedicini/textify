@@ -51,6 +51,24 @@ impl TabSize {
 
         count
     }
+
+    fn outdent_len(&self, line: &str) -> usize {
+        let mut spaces = 0;
+        for (offset, character) in line.char_indices() {
+            match character {
+                '\t' if spaces == 0 => return offset + character.len_utf8(),
+                '\t' => return offset,
+                ' ' => {
+                    spaces += 1;
+                    if spaces == self.tab_size.max(1) {
+                        return offset + character.len_utf8();
+                    }
+                }
+                _ => return offset,
+            }
+        }
+        line.len()
+    }
 }
 
 impl InputMode {
@@ -331,7 +349,7 @@ impl InputState {
             return;
         };
 
-        let tab_indent = self.mode.tab_size().to_string();
+        let tab_size = self.mode.tab_size();
         let selected_range = self.selected_range;
         let mut removed_len = 0;
         let is_selected = !self.selected_range.is_empty();
@@ -350,17 +368,18 @@ impl InputState {
                 .unwrap_or("".into());
 
             for line in selected_text.split('\n') {
-                if line.starts_with(tab_indent.as_ref()) {
+                let outdent_len = tab_size.outdent_len(line);
+                if outdent_len > 0 {
                     self.replace_text_in_range_silent(
-                        Some(self.range_to_utf16(&(offset..offset + tab_indent.len()))),
+                        Some(self.range_to_utf16(&(offset..offset + outdent_len))),
                         "",
                         window,
                         cx,
                     );
-                    removed_len += tab_indent.len();
+                    removed_len += outdent_len;
 
                     // +1 for "\n"
-                    offset += line.len().saturating_sub(tab_indent.len()) + 1;
+                    offset += line.len().saturating_sub(outdent_len) + 1;
                 } else {
                     offset += line.len() + 1;
                 }
@@ -379,20 +398,17 @@ impl InputState {
             let start_offset = self.selected_range.start;
             let offset = self.start_of_line_of_selection(window, cx);
             let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
-            // FIXME: To improve performance
-            if self
-                .text
-                .slice(offset..self.text.len())
-                .to_string()
-                .starts_with(tab_indent.as_ref())
-            {
+            let row = self.text.offset_to_point(offset).row;
+            let line = self.text.slice_line(row).to_string();
+            let outdent_len = tab_size.outdent_len(&line);
+            if outdent_len > 0 {
                 self.replace_text_in_range_silent(
-                    Some(self.range_to_utf16(&(offset..offset + tab_indent.len()))),
+                    Some(self.range_to_utf16(&(offset..offset + outdent_len))),
                     "",
                     window,
                     cx,
                 );
-                removed_len = tab_indent.len();
+                removed_len = outdent_len;
                 let new_offset = start_offset.saturating_sub(removed_len);
                 self.selected_range = (new_offset..new_offset).into();
             }
@@ -404,7 +420,54 @@ impl InputState {
 mod tests {
     use ropey::RopeSlice;
 
-    use super::TabSize;
+    use super::{InputState, OutdentInline, TabSize};
+
+    #[test]
+    fn outdent_accepts_partial_spaces_and_mixed_indentation() {
+        let tab = TabSize {
+            tab_size: 4,
+            hard_tabs: true,
+        };
+        assert_eq!(tab.outdent_len("    value"), 4);
+        assert_eq!(tab.outdent_len("   value"), 3);
+        assert_eq!(tab.outdent_len("\tvalue"), 1);
+        assert_eq!(tab.outdent_len("  \tvalue"), 2);
+        assert_eq!(tab.outdent_len("value"), 0);
+    }
+
+    #[gpui::test]
+    fn repeated_shift_tab_removes_space_indentation_in_hard_tab_mode(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .code_editor("text")
+                .tab_size(TabSize {
+                    tab_size: 4,
+                    hard_tabs: true,
+                })
+                .default_value("       value")
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_selections(vec![7..7], window, cx);
+                input.outdent_inline(&OutdentInline, window, cx);
+                assert_eq!(input.value().as_ref(), "   value");
+
+                input.outdent_inline(&OutdentInline, window, cx);
+                assert_eq!(input.value().as_ref(), "value");
+
+                input.set_value("  \tvalue", window, cx);
+                input.set_selections(vec![3..3], window, cx);
+                input.outdent_inline(&OutdentInline, window, cx);
+                assert_eq!(input.value().as_ref(), "\tvalue");
+                input.outdent_inline(&OutdentInline, window, cx);
+                assert_eq!(input.value().as_ref(), "value");
+            });
+        });
+    }
 
     #[test]
     fn test_tab_size() {
