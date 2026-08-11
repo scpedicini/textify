@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::ops::Range;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -23,10 +24,19 @@ use super::{InputState, RopeExt as _};
 const MINIMAP_WIDTH: f32 = 88.;
 const MINIMAP_MAX_SAMPLES: usize = 120;
 const MINIMAP_MAX_LINE_LENGTH: usize = 160;
+const MINIMAP_WINDOW_ROWS: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MinimapSample {
     width: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MinimapWindow {
+    rows: Range<usize>,
+    line_count: usize,
+    viewport_top: f32,
+    viewport_height: f32,
 }
 
 #[derive(Clone)]
@@ -41,22 +51,23 @@ impl Render for MinimapViewportDrag {
     }
 }
 
-fn minimap_sample_rows(line_count: usize) -> Vec<usize> {
-    let line_count = line_count.max(1);
+fn minimap_sample_rows(rows: Range<usize>) -> Vec<usize> {
+    let start = rows.start;
+    let line_count = rows.end.saturating_sub(start).max(1);
     let sample_count = line_count.min(MINIMAP_MAX_SAMPLES);
     (0..sample_count)
         .map(|index| {
             if sample_count == 1 {
-                0
+                start
             } else {
-                index.saturating_mul(line_count - 1) / (sample_count - 1)
+                start + index.saturating_mul(line_count - 1) / (sample_count - 1)
             }
         })
         .collect()
 }
 
-fn minimap_samples(state: &InputState) -> Vec<MinimapSample> {
-    minimap_sample_rows(state.text.lines_len())
+fn minimap_samples(state: &InputState, rows: Range<usize>) -> Vec<MinimapSample> {
+    minimap_sample_rows(rows)
         .into_iter()
         .map(|row| {
             let line_length = state.text.line_len(row).min(MINIMAP_MAX_LINE_LENGTH);
@@ -67,7 +78,7 @@ fn minimap_samples(state: &InputState) -> Vec<MinimapSample> {
         .collect()
 }
 
-fn minimap_viewport(state: &InputState) -> (f32, f32) {
+fn minimap_document_viewport(state: &InputState) -> (f32, f32) {
     let content_height = state.scroll_size.height;
     let viewport_height = state.input_bounds.size.height;
     if content_height <= px(0.) || viewport_height >= content_height {
@@ -78,6 +89,46 @@ fn minimap_viewport(state: &InputState) -> (f32, f32) {
     let scroll_top = (-state.scroll_handle.offset().y).max(px(0.));
     let top = (scroll_top / content_height).clamp(0., 1. - height);
     (top, height)
+}
+
+fn minimap_window_for(
+    line_count: usize,
+    document_viewport_top: f32,
+    document_viewport_height: f32,
+) -> MinimapWindow {
+    let line_count = line_count.max(1);
+    let window_len = line_count.min(MINIMAP_WINDOW_ROWS);
+    let visible_center =
+        ((document_viewport_top + document_viewport_height / 2.) * line_count as f32) as usize;
+    let start = visible_center
+        .saturating_sub(window_len / 2)
+        .min(line_count - window_len);
+    let end = start + window_len;
+    let viewport_height =
+        (document_viewport_height * line_count as f32 / window_len as f32).clamp(0.03, 1.);
+    let viewport_top = ((document_viewport_top * line_count as f32 - start as f32)
+        / window_len as f32)
+        .clamp(0., 1. - viewport_height);
+
+    MinimapWindow {
+        rows: start..end,
+        line_count,
+        viewport_top,
+        viewport_height,
+    }
+}
+
+fn minimap_window(state: &InputState) -> MinimapWindow {
+    let (top, height) = minimap_document_viewport(state);
+    minimap_window_for(state.text.lines_len(), top, height)
+}
+
+fn minimap_document_scroll_fraction(window: &MinimapWindow, local_fraction: f32) -> f32 {
+    if window.line_count <= 1 {
+        return 0.;
+    }
+    let row = window.rows.start as f32 + window.rows.len() as f32 * local_fraction.clamp(0., 1.);
+    (row / (window.line_count - 1) as f32).clamp(0., 1.)
 }
 
 fn minimap_drag_scroll_fraction(
@@ -330,11 +381,15 @@ impl Input {
             });
 
         let minimap_element = minimap.then(|| {
-            let samples = minimap_samples(state);
+            let minimap_window = minimap_window(state);
+            let samples = minimap_samples(state, minimap_window.rows.clone());
             let sample_count = samples.len();
-            let (viewport_top, viewport_height) = minimap_viewport(state);
+            let viewport_top = minimap_window.viewport_top;
+            let viewport_height = minimap_window.viewport_height;
             let state_for_track = input_state.clone();
             let input_id = input_state.entity_id();
+            let window_for_track = minimap_window.clone();
+            let window_for_drag = minimap_window;
 
             div()
                 .id("editor-minimap")
@@ -351,9 +406,11 @@ impl Input {
                     state_for_track.update(cx, |state, cx| {
                         let scrollable =
                             (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
-                        let fraction = ((event.position.y - state.input_bounds.top())
+                        let local_fraction = ((event.position.y - state.input_bounds.top())
                             / state.input_bounds.size.height)
                             .clamp(0., 1.);
+                        let fraction =
+                            minimap_document_scroll_fraction(&window_for_track, local_fraction);
                         let mut offset = state.scroll_handle.offset();
                         offset.y = -scrollable * fraction;
                         state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
@@ -367,13 +424,15 @@ impl Input {
                         if drag.input != input_id {
                             return;
                         }
-                        let fraction = minimap_drag_scroll_fraction(
+                        let local_fraction = minimap_drag_scroll_fraction(
                             event.event.position.y,
                             event.bounds.top(),
                             event.bounds.size.height,
-                            minimap_viewport(state).1,
+                            window_for_drag.viewport_height,
                             drag.grab_y.get(),
                         );
+                        let fraction =
+                            minimap_document_scroll_fraction(&window_for_drag, local_fraction);
                         let scrollable =
                             (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
                         let mut offset = state.scroll_handle.offset();
@@ -648,16 +707,36 @@ mod tests {
     }
 
     #[test]
-    fn minimap_sampling_is_bounded_and_spans_the_document() {
-        assert_eq!(minimap_sample_rows(0), vec![0]);
-        assert_eq!(minimap_sample_rows(1), vec![0]);
-        assert_eq!(minimap_sample_rows(3), vec![0, 1, 2]);
+    fn minimap_sampling_is_bounded_and_spans_its_window() {
+        assert_eq!(minimap_sample_rows(0..0), vec![0]);
+        assert_eq!(minimap_sample_rows(0..1), vec![0]);
+        assert_eq!(minimap_sample_rows(10..13), vec![10, 11, 12]);
 
-        let rows = minimap_sample_rows(10_000);
+        let rows = minimap_sample_rows(4_500..5_500);
         assert_eq!(rows.len(), MINIMAP_MAX_SAMPLES);
-        assert_eq!(rows.first(), Some(&0));
-        assert_eq!(rows.last(), Some(&9_999));
+        assert_eq!(rows.first(), Some(&4_500));
+        assert_eq!(rows.last(), Some(&5_499));
         assert!(rows.windows(2).all(|rows| rows[0] < rows[1]));
+    }
+
+    #[test]
+    fn minimap_window_tracks_a_bounded_region_of_long_documents() {
+        let top = minimap_window_for(10_000, 0., 0.01);
+        assert_eq!(top.rows, 0..1_000);
+        assert_eq!(top.viewport_top, 0.);
+
+        let middle = minimap_window_for(10_000, 0.495, 0.01);
+        assert_eq!(middle.rows, 4_500..5_500);
+        assert!(middle.viewport_top > 0.4);
+        assert!(middle.viewport_top < 0.6);
+
+        let bottom = minimap_window_for(10_000, 0.99, 0.01);
+        assert_eq!(bottom.rows, 9_000..10_000);
+        assert!((bottom.viewport_top - 0.9).abs() < 0.0001);
+        assert_eq!(
+            minimap_document_scroll_fraction(&middle, 0.5),
+            5_000. / 9_999.
+        );
     }
 
     #[test]
