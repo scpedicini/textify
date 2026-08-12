@@ -2,10 +2,16 @@
 
 Textify does not include telemetry, analytics, advertising, crash uploads, update checks, or an
 application network client. Files, searches, settings, session data, and recovery copies remain on
-the Mac. GPUI contains an HTTP abstraction for applications that opt into it, but Textify leaves
+the computer. GPUI contains an HTTP abstraction for applications that opt into it, but Textify leaves
 GPUI's default `NullHttpClient` installed, so attempted remote asset requests fail locally.
 
-Local data is stored in `~/Library/Application Support/Textify` by default:
+Local data is stored in the operating system's normal application-data location by default:
+
+- macOS: `~/Library/Application Support/Textify`
+- Windows: `%APPDATA%\Textify`
+- Linux: `$XDG_CONFIG_HOME/textify`, or `~/.config/textify` when `XDG_CONFIG_HOME` is unset
+
+Set `TEXTIFY_DATA_DIR` to override this location. Within it:
 
 - `settings.json` and `keymap.json` contain user preferences.
 - `session.json` records open tabs and workspace state.

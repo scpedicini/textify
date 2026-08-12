@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Textify
+Comment=A fast, focused native text editor
+Exec=textify %F
+Icon=com.shaun.textify
+Terminal=false
+Categories=Utility;TextEditor;Development;
+MimeType=text/plain;text/markdown;text/html;text/css;application/json;application/xml;application/x-shellscript;
+StartupNotify=true
+StartupWMClass=com.shaun.textify

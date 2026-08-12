@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -8,15 +9,68 @@ use serde::{Deserialize, Serialize};
 
 use crate::{document::FileMode, file_io::save_atomic};
 
-pub fn textify_data_dir() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("TEXTIFY_DATA_DIR") {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostPlatform {
+    Macos,
+    Windows,
+    Unix,
+}
+
+fn host_platform() -> HostPlatform {
+    if cfg!(target_os = "macos") {
+        HostPlatform::Macos
+    } else if cfg!(target_os = "windows") {
+        HostPlatform::Windows
+    } else {
+        HostPlatform::Unix
+    }
+}
+
+fn textify_data_dir_from(
+    platform: HostPlatform,
+    environment: impl Fn(&str) -> Option<OsString>,
+) -> PathBuf {
+    if let Some(path) = environment("TEXTIFY_DATA_DIR") {
         return path.into();
     }
 
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Library/Application Support/Textify")
+    match platform {
+        HostPlatform::Macos => environment("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Application Support/Textify"),
+        HostPlatform::Windows => environment("APPDATA")
+            .or_else(|| environment("LOCALAPPDATA"))
+            .map(PathBuf::from)
+            .or_else(|| {
+                environment("USERPROFILE")
+                    .map(PathBuf::from)
+                    .map(|path| path.join("AppData/Roaming"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Textify"),
+        HostPlatform::Unix => environment("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                environment("HOME")
+                    .map(PathBuf::from)
+                    .map(|path| path.join(".config"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("textify"),
+    }
+}
+
+pub fn textify_data_dir() -> PathBuf {
+    textify_data_dir_from(host_platform(), |name| std::env::var_os(name))
+}
+
+fn default_editor_font(platform: HostPlatform) -> &'static str {
+    match platform {
+        HostPlatform::Macos => "SFMono-Regular",
+        HostPlatform::Windows => "Consolas",
+        HostPlatform::Unix => "DejaVu Sans Mono",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +208,7 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
-            font_family: "SFMono-Regular".to_owned(),
+            font_family: default_editor_font(host_platform()).to_owned(),
             font_size: 14,
             minimap_on_by_default: false,
             show_line_numbers: true,
@@ -271,11 +325,11 @@ pub struct TextifyKeymap {
 impl Default for TextifyKeymap {
     fn default() -> Self {
         Self {
-            command_palette: "cmd-shift-p".to_owned(),
-            search_open_tabs: "cmd-p".to_owned(),
-            workspace_search: "cmd-shift-f".to_owned(),
-            open_folder: "cmd-shift-o".to_owned(),
-            toggle_sidebar: "cmd-b".to_owned(),
+            command_palette: "secondary-shift-p".to_owned(),
+            search_open_tabs: "secondary-p".to_owned(),
+            workspace_search: "secondary-shift-f".to_owned(),
+            open_folder: "secondary-shift-o".to_owned(),
+            toggle_sidebar: "secondary-b".to_owned(),
             go_to_definition: "f12".to_owned(),
         }
     }
@@ -367,8 +421,53 @@ mod tests {
             ..AppearanceSettings::default()
         };
         appearance.normalize();
-        assert_eq!(appearance.font_family, "SFMono-Regular");
+        assert_eq!(appearance.font_family, default_editor_font(host_platform()));
         assert_eq!(appearance.font_size, AppearanceSettings::MAX_FONT_SIZE);
+    }
+
+    #[test]
+    fn application_data_directories_follow_each_platform_convention() {
+        let environment = |name: &str| match name {
+            "HOME" => Some(OsString::from("/home/textify")),
+            "APPDATA" => Some(OsString::from(r"C:\Users\Textify\AppData\Roaming")),
+            "XDG_CONFIG_HOME" => Some(OsString::from("/config")),
+            _ => None,
+        };
+
+        assert_eq!(
+            textify_data_dir_from(HostPlatform::Macos, environment),
+            PathBuf::from("/home/textify/Library/Application Support/Textify")
+        );
+        assert_eq!(
+            textify_data_dir_from(HostPlatform::Windows, environment),
+            PathBuf::from(r"C:\Users\Textify\AppData\Roaming").join("Textify")
+        );
+        assert_eq!(
+            textify_data_dir_from(HostPlatform::Unix, environment),
+            PathBuf::from("/config/textify")
+        );
+    }
+
+    #[test]
+    fn explicit_data_directory_overrides_platform_defaults() {
+        let expected = PathBuf::from("/portable/textify-data");
+        let environment =
+            |name: &str| (name == "TEXTIFY_DATA_DIR").then(|| OsString::from(expected.as_os_str()));
+
+        for platform in [
+            HostPlatform::Macos,
+            HostPlatform::Windows,
+            HostPlatform::Unix,
+        ] {
+            assert_eq!(textify_data_dir_from(platform, environment), expected);
+        }
+    }
+
+    #[test]
+    fn editor_fonts_have_native_cross_platform_defaults() {
+        assert_eq!(default_editor_font(HostPlatform::Macos), "SFMono-Regular");
+        assert_eq!(default_editor_font(HostPlatform::Windows), "Consolas");
+        assert_eq!(default_editor_font(HostPlatform::Unix), "DejaVu Sans Mono");
     }
 
     #[test]

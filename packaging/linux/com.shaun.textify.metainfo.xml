@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.shaun.textify</id>
+  <name>Textify</name>
+  <summary>A fast, focused native text editor</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Textify is a native Rust and GPUI editor for text, source code, and very large files.</p>
+  </description>
+  <launchable type="desktop-id">com.shaun.textify.desktop</launchable>
+  <url type="homepage">https://github.com/scpedicini/textify</url>
+</component>

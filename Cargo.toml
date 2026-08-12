@@ -3,7 +3,7 @@ name = "textify"
 version = "0.1.0"
 edition = "2024"
 default-run = "textify"
-description = "A fast, focused native text editor for macOS"
+description = "A fast, focused native text editor for macOS, Linux, and Windows"
 license = "MIT"
 
 [workspace]
@@ -26,6 +26,9 @@ url = "=2.5.8"
 
 [dev-dependencies]
 gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
+
+[build-dependencies]
+embed-resource = "=3.0.11"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "=0.26.0"

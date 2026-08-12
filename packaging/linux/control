@@ -1,0 +1,9 @@
+Package: textify
+Version: @VERSION@
+Section: editors
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Textify contributors
+Depends: libc6 (>= 2.35), libfontconfig1, libgcc-s1, libvulkan1, libwayland-client0, libxkbcommon0, libxkbcommon-x11-0, libxcb1
+Description: Fast, focused native text editor
+ Textify is a native Rust and GPUI editor for text, source code, and very large files.

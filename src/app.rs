@@ -1,8 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::mpsc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,7 +13,7 @@ use gpui::{
     App, AppContext as _, Application, ClipboardItem, Context, Entity, ExternalPaths,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
     OsAction, ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
-    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, SystemMenuType, Timer,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, Timer,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
 };
@@ -27,7 +27,7 @@ use gpui_component::{
         Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
         RopeExt as _, SelectAll, Undo,
     },
-    menu::PopupMenuItem,
+    menu::{AppMenuBar, PopupMenuItem},
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectState},
     switch::Switch,
@@ -302,22 +302,14 @@ fn full_document_path(path: &Path) -> PathBuf {
     })
 }
 
-fn finder_reveal_command(path: &Path) -> Command {
-    let mut command = Command::new("/usr/bin/open");
-    command.arg("-R").arg(path);
-    command
-}
-
-fn reveal_in_finder(path: &Path) -> anyhow::Result<()> {
-    let status = finder_reveal_command(path)
-        .status()
-        .with_context(|| format!("could not ask Finder to reveal {}", path.display()))?;
-    anyhow::ensure!(
-        status.success(),
-        "Finder could not reveal {}",
-        path.display()
-    );
-    Ok(())
+fn file_manager_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Finder"
+    } else if cfg!(target_os = "windows") {
+        "File Explorer"
+    } else {
+        "file manager"
+    }
 }
 
 fn open_file(path: &Path, policy: FilePolicy) -> anyhow::Result<OpenedFile> {
@@ -357,6 +349,27 @@ fn application_file_paths(urls: impl IntoIterator<Item = String>) -> Vec<PathBuf
             Ok(url) if url.scheme() == "file" => url.to_file_path().ok(),
             Ok(_) => None,
             Err(_) => Some(PathBuf::from(value)),
+        })
+        .collect()
+}
+
+fn application_argument_paths(arguments: impl IntoIterator<Item = OsString>) -> Vec<PathBuf> {
+    let mut literal_paths = false;
+    arguments
+        .into_iter()
+        .filter_map(|argument| {
+            if !literal_paths && argument == "--" {
+                literal_paths = true;
+                return None;
+            }
+            if !literal_paths
+                && argument
+                    .to_str()
+                    .is_some_and(|argument| argument.starts_with('-'))
+            {
+                return None;
+            }
+            Some(PathBuf::from(argument))
         })
         .collect()
 }
@@ -668,7 +681,7 @@ pub struct Workspace {
     watcher: Option<FileWatcher>,
     session_path: PathBuf,
     restoring_session: bool,
-    application_open_urls: Option<mpsc::Receiver<Vec<String>>>,
+    application_open_paths: Option<mpsc::Receiver<Vec<PathBuf>>>,
     external_scan_in_progress: bool,
     created_at: Instant,
     first_paint_logged: bool,
@@ -705,6 +718,7 @@ pub struct Workspace {
     recovery_in_flight: HashSet<u64>,
     close_after_save: HashSet<u64>,
     quitting: bool,
+    app_menu_bar: Option<Entity<AppMenuBar>>,
     _ide_subscriptions: Vec<Subscription>,
 }
 
@@ -770,7 +784,7 @@ impl Workspace {
             watcher,
             session_path: data_dir.join("session.json"),
             restoring_session: false,
-            application_open_urls: None,
+            application_open_paths: None,
             external_scan_in_progress: false,
             created_at: Instant::now(),
             first_paint_logged: false,
@@ -807,6 +821,7 @@ impl Workspace {
             recovery_in_flight: HashSet::new(),
             close_after_save: HashSet::new(),
             quitting: false,
+            app_menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(window, cx)),
             _ide_subscriptions,
         };
         workspace.add_untitled(window, cx);
@@ -1287,7 +1302,7 @@ impl Workspace {
                 Timer::after(Duration::from_millis(100)).await;
                 if workspace
                     .update_in(window, |workspace, window, cx| {
-                        workspace.poll_application_open_urls(window, cx);
+                        workspace.poll_application_open_paths(window, cx);
                         workspace.poll_workspace_search(cx);
                         workspace.poll_lsp(window, cx);
                         workspace.flush_recovery_due(cx);
@@ -1301,16 +1316,15 @@ impl Workspace {
         .detach();
     }
 
-    fn poll_application_open_urls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn poll_application_open_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.restoring_session {
             return;
         }
-        let urls = self
-            .application_open_urls
+        let paths = self
+            .application_open_paths
             .as_ref()
             .map(|receiver| receiver.try_iter().flatten().collect::<Vec<_>>())
             .unwrap_or_default();
-        let paths = application_file_paths(urls);
         if paths.is_empty() {
             return;
         }
@@ -3866,31 +3880,16 @@ impl Workspace {
         true
     }
 
-    fn reveal_document_in_finder(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+    fn reveal_document_location(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
         let Some(path) = self.document_full_path(id) else {
             return false;
         };
-        self.status_message = Some(format!("Revealing {} in Finder…", path.display()));
-        let task = cx.background_spawn({
-            let path = path.clone();
-            async move { reveal_in_finder(&path) }
-        });
-        cx.spawn(async move |workspace, cx| {
-            let result = task.await;
-            let Some(workspace) = workspace.upgrade() else {
-                return;
-            };
-            workspace
-                .update(cx, |workspace, cx| {
-                    workspace.status_message = Some(match result {
-                        Ok(()) => format!("Revealed {} in Finder", path.display()),
-                        Err(error) => error.to_string(),
-                    });
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
+        cx.reveal_path(&path);
+        self.status_message = Some(format!(
+            "Revealed {} in {}",
+            path.display(),
+            file_manager_name()
+        ));
         cx.notify();
         true
     }
@@ -3927,13 +3926,13 @@ impl Workspace {
                                 }),
                         )
                         .item(
-                            PopupMenuItem::new("Open Location in Finder")
+                            PopupMenuItem::new(format!("Open Location in {}", file_manager_name()))
                                 .disabled(!path_actions_enabled)
                                 .on_click({
                                     let reveal_workspace = reveal_workspace.clone();
                                     move |_, _, cx| {
                                         reveal_workspace.update(cx, |workspace, cx| {
-                                            workspace.reveal_document_in_finder(id, cx);
+                                            workspace.reveal_document_location(id, cx);
                                         });
                                     }
                                 }),
@@ -5225,6 +5224,16 @@ impl Render for Workspace {
                     ),
                 )
             })
+            .children(self.app_menu_bar.clone().map(|menu| {
+                div()
+                    .id("textify-app-menu-bar")
+                    .w_full()
+                    .h(px(32.))
+                    .px_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(menu)
+            }))
             .child(self.render_tabs(cx))
             .child(
                 h_flex()
@@ -5680,16 +5689,23 @@ fn fuzzy_command_token_score(candidate: &str, token: &str) -> Option<i64> {
 }
 
 fn native_menus() -> Vec<Menu> {
+    let mut application_items = vec![
+        MenuItem::action("Settings…", ShowSettings),
+        MenuItem::separator(),
+    ];
+    #[cfg(target_os = "macos")]
+    {
+        application_items.extend([
+            MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
+            MenuItem::separator(),
+        ]);
+    }
+    application_items.push(MenuItem::action("Quit Textify", QuitTextify));
+
     vec![
         Menu {
             name: "Textify".into(),
-            items: vec![
-                MenuItem::action("Settings…", ShowSettings),
-                MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action("Quit Textify", QuitTextify),
-            ],
+            items: application_items,
         },
         Menu {
             name: "File".into(),
@@ -5779,29 +5795,33 @@ pub fn run() {
         .compact()
         .init();
 
-    let (open_url_sender, open_url_receiver) = mpsc::channel();
+    let (open_path_sender, open_path_receiver) = mpsc::channel();
+    let argument_paths = application_argument_paths(std::env::args_os().skip(1));
+    if !argument_paths.is_empty() && open_path_sender.send(argument_paths).is_err() {
+        tracing::warn!("could not queue files requested on the command line");
+    }
     let application = Application::new().with_assets(Assets);
     application.on_open_urls(move |urls| {
-        if open_url_sender.send(urls).is_err() {
+        if open_path_sender.send(application_file_paths(urls)).is_err() {
             tracing::warn!("could not queue files requested by the operating system");
         }
     });
     application.run(move |cx| {
         gpui_component::init(cx);
         cx.bind_keys([
-            KeyBinding::new("cmd-n", NewDocument, None),
-            KeyBinding::new("cmd-t", NewDocument, None),
-            KeyBinding::new("cmd-o", OpenDocument, None),
-            KeyBinding::new("cmd-s", SaveDocument, None),
-            KeyBinding::new("cmd-shift-s", SaveDocumentAs, None),
-            KeyBinding::new("cmd-w", CloseDocument, None),
-            KeyBinding::new("cmd-,", ShowSettings, None),
+            KeyBinding::new("secondary-n", NewDocument, None),
+            KeyBinding::new("secondary-t", NewDocument, None),
+            KeyBinding::new("secondary-o", OpenDocument, None),
+            KeyBinding::new("secondary-s", SaveDocument, None),
+            KeyBinding::new("secondary-shift-s", SaveDocumentAs, None),
+            KeyBinding::new("secondary-w", CloseDocument, None),
+            KeyBinding::new("secondary-,", ShowSettings, None),
             KeyBinding::new("alt-z", ToggleWordWrap, None),
             KeyBinding::new("ctrl-tab", NextDocument, None),
             KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
-            KeyBinding::new("cmd-alt-p", ShowOpenTabs, None),
+            KeyBinding::new("secondary-alt-p", ShowOpenTabs, None),
             KeyBinding::new("escape", DismissOverlay, None),
-            KeyBinding::new("cmd-q", QuitTextify, None),
+            KeyBinding::new("secondary-q", QuitTextify, None),
         ]);
         cx.set_menus(native_menus());
 
@@ -5809,6 +5829,7 @@ pub fn run() {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
             window_min_size: Some(size(px(680.), px(420.))),
             titlebar: Some(TitleBar::title_bar_options()),
+            app_id: Some("com.shaun.textify".to_owned()),
             ..Default::default()
         };
 
@@ -5819,7 +5840,7 @@ pub fn run() {
                 Theme::change(ThemeMode::Dark, Some(window), cx);
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
                 workspace.update(cx, |workspace, _| {
-                    workspace.application_open_urls = Some(open_url_receiver)
+                    workspace.application_open_paths = Some(open_path_receiver)
                 });
                 let services = workspace.clone();
                 window.defer(cx, move |window, cx| {
@@ -6235,15 +6256,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn finder_open_event_waits_for_session_restore_then_opens_the_file(
+    fn application_open_event_waits_for_session_restore_then_opens_the_file(
         cx: &mut gpui::TestAppContext,
     ) {
         use std::{cell::RefCell, rc::Rc};
 
         cx.update(gpui_component::init);
         let directory = tempfile::tempdir().expect("application-open directory");
-        let path = directory.path().join("Finder opened notes.txt");
-        fs::write(&path, "opened through Finder\n").expect("fixture");
+        let path = directory.path().join("File manager opened notes.txt");
+        fs::write(&path, "opened through the file manager\n").expect("fixture");
         let (sender, receiver) = mpsc::channel();
         let workspace_slot = Rc::new(RefCell::new(None));
         let capture = workspace_slot.clone();
@@ -6259,18 +6280,14 @@ mod tests {
                 workspace.data_dir = directory.path().to_path_buf();
                 workspace.session_path = directory.path().join("session.json");
                 workspace.recent_files_path = directory.path().join("recent-files.json");
-                workspace.application_open_urls = Some(receiver);
+                workspace.application_open_paths = Some(receiver);
                 workspace.restoring_session = true;
-                sender
-                    .send(vec![
-                        Url::from_file_path(&path).expect("file URL").to_string(),
-                    ])
-                    .expect("queued open event");
+                sender.send(vec![path.clone()]).expect("queued open event");
 
-                workspace.poll_application_open_urls(window, cx);
+                workspace.poll_application_open_paths(window, cx);
                 assert!(workspace.active_document().metadata.path.is_none());
                 workspace.restoring_session = false;
-                workspace.poll_application_open_urls(window, cx);
+                workspace.poll_application_open_paths(window, cx);
             });
         });
         cx.run_until_parked();
@@ -6533,7 +6550,7 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_keystrokes("secondary-a");
         cx.simulate_input("unsaved local text");
         workspace.update(&mut cx.cx, |workspace, _| {
             let document = workspace.active_document_mut();
@@ -6754,15 +6771,26 @@ mod tests {
     }
 
     #[test]
-    fn finder_reveal_invocation_keeps_a_spaced_path_in_one_argument() {
-        use std::ffi::OsStr;
+    fn platform_file_manager_has_a_user_facing_name() {
+        assert!(matches!(
+            file_manager_name(),
+            "Finder" | "File Explorer" | "file manager"
+        ));
+    }
 
-        let path = Path::new("/tmp/Textify Folder/notes.txt");
-        let command = finder_reveal_command(path);
-        assert_eq!(command.get_program(), OsStr::new("/usr/bin/open"));
+    #[test]
+    fn command_line_file_arguments_ignore_options_and_honor_separator() {
         assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [OsStr::new("-R"), path.as_os_str()]
+            application_argument_paths([
+                OsString::from("--trace"),
+                OsString::from("notes.txt"),
+                OsString::from("--"),
+                OsString::from("-literal-name.txt"),
+            ]),
+            [
+                PathBuf::from("notes.txt"),
+                PathBuf::from("-literal-name.txt")
+            ]
         );
     }
 
@@ -7904,10 +7932,7 @@ mod tests {
                 workspace.on_editor_scroll(
                     &ScrollWheelEvent {
                         delta: ScrollDelta::Lines(gpui::point(0., 1.)),
-                        modifiers: gpui::Modifiers {
-                            platform: true,
-                            ..gpui::Modifiers::default()
-                        },
+                        modifiers: gpui::Modifiers::secondary_key(),
                         ..ScrollWheelEvent::default()
                     },
                     window,
@@ -7922,10 +7947,7 @@ mod tests {
                 workspace.on_editor_scroll(
                     &ScrollWheelEvent {
                         delta: ScrollDelta::Lines(gpui::point(0., -1.)),
-                        modifiers: gpui::Modifiers {
-                            platform: true,
-                            ..gpui::Modifiers::default()
-                        },
+                        modifiers: gpui::Modifiers::secondary_key(),
                         ..ScrollWheelEvent::default()
                     },
                     window,

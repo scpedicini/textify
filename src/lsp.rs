@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsString,
     io::{BufRead, BufReader, Write as _},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
@@ -9,6 +8,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspDiagnostic {
@@ -86,7 +86,7 @@ impl LspClient {
             initialize_id: 0,
             initialized: false,
         };
-        let root_uri = path_to_file_uri(root);
+        let root_uri = path_to_file_uri(root)?;
         let initialize_id = client.request(
             "initialize",
             json!({
@@ -126,7 +126,7 @@ impl LspClient {
             "textDocument/didOpen",
             json!({
                 "textDocument": {
-                    "uri": path_to_file_uri(path),
+                    "uri": path_to_file_uri(path)?,
                     "languageId": language_id,
                     "version": version,
                     "text": text
@@ -139,7 +139,7 @@ impl LspClient {
         self.notify(
             "textDocument/didChange",
             json!({
-                "textDocument": {"uri": path_to_file_uri(path), "version": version},
+                "textDocument": {"uri": path_to_file_uri(path)?, "version": version},
                 "contentChanges": [{"text": text}]
             }),
         )
@@ -148,7 +148,7 @@ impl LspClient {
     pub fn did_close(&self, path: &Path) -> Result<()> {
         self.notify(
             "textDocument/didClose",
-            json!({"textDocument": {"uri": path_to_file_uri(path)}}),
+            json!({"textDocument": {"uri": path_to_file_uri(path)?}}),
         )
     }
 
@@ -156,7 +156,7 @@ impl LspClient {
         self.request(
             "textDocument/definition",
             json!({
-                "textDocument": {"uri": path_to_file_uri(path)},
+                "textDocument": {"uri": path_to_file_uri(path)?},
                 "position": {"line": line, "character": character}
             }),
         )
@@ -315,41 +315,19 @@ pub fn parse_definition_locations(result: &Value) -> Vec<DefinitionLocation> {
         .collect()
 }
 
-fn path_to_file_uri(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    let mut uri = String::from("file://");
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
-            uri.push(byte as char);
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri
+fn path_to_file_uri(path: &Path) -> Result<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Url::from_file_path(&absolute)
+        .map(String::from)
+        .map_err(|()| anyhow::anyhow!("could not convert {} to a file URI", absolute.display()))
 }
 
 fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    let encoded = uri.strip_prefix("file://")?;
-    let bytes = encoded.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let value = u8::from_str_radix(&encoded[index + 1..index + 3], 16).ok()?;
-            decoded.push(value);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStringExt as _;
-        Some(PathBuf::from(OsString::from_vec(decoded)))
-    }
-    #[cfg(not(unix))]
-    String::from_utf8(decoded).ok().map(PathBuf::from)
+    Url::parse(uri).ok()?.to_file_path().ok()
 }
 
 #[cfg(test)]
@@ -372,7 +350,7 @@ mod tests {
     #[test]
     fn file_uris_and_definition_links_round_trip_spaces() {
         let path = Path::new("/tmp/Textify Project/main.rs");
-        let uri = path_to_file_uri(path);
+        let uri = path_to_file_uri(path).expect("file URI");
         assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
         let result = json!([{
             "targetUri": uri,
@@ -384,6 +362,14 @@ mod tests {
         let definitions = parse_definition_locations(&result);
         assert_eq!(definitions[0].path, path);
         assert_eq!(definitions[0].start_line, 4);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_paths_round_trip_through_file_uris() {
+        let path = Path::new(r"C:\Users\Textify Project\main.rs");
+        let uri = path_to_file_uri(path).expect("file URI");
+        assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
     }
 
     #[test]

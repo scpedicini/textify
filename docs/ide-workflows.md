@@ -6,7 +6,8 @@ opened or the corresponding command is invoked.
 
 ## Project explorer and search
 
-Use **Open Folder** (Command-Shift-O) to build a bounded background index. The sidebar renders its
+Use **Open Folder** (Command-Shift-O on macOS or Control-Shift-O elsewhere) to build a bounded
+background index. The sidebar renders its
 flattened tree through a virtualized list; directory rows are always expanded in this initial IDE
 workflow. It lists recognized text, configuration, and source files while omitting media, archives,
 binary files, `.DS_Store`, and build/dependency directories. Refresh from the sidebar to rescan
@@ -14,19 +15,19 @@ files and Git state. File → Close Folder, the command palette, or the sidebar 
 folder's index, Git, search, and language-server services without closing open document tabs. The
 folder is persisted with the tab session until it is closed.
 
-Search Open Tabs (Command-P or the magnifying-glass button) searches the live ropes of every editable
-tab, including unsaved documents. Exact phrases rank ahead of lines containing all query words;
+Search Open Tabs (Command-P on macOS or Control-P elsewhere, or the magnifying-glass button) searches
+the live ropes of every editable tab, including unsaved documents. Exact phrases rank ahead of lines containing all query words;
 results show document, line, column, and preview. Arrow keys move through the virtualized list and
 Enter activates the tab, reveals it in the ribbon, selects the match, and focuses the editor.
 
-Workspace Search (Command-Shift-F) remains the folder-wide disk search. It scans indexed files on a
-background executor and streams matches into a virtualized result list. Starting another query
+Workspace Search (Command-Shift-F on macOS or Control-Shift-F elsewhere) remains the folder-wide
+disk search. It scans indexed files on a background executor and streams matches into a virtualized result list. Starting another query
 cancels the previous scan. Binary files and files over `search_max_file_bytes` are skipped; result
 count is bounded by `search_max_matches`.
 
-Command-Option-P opens the tab navigator with up to ten visible rows. It lists every tab immediately,
-supports arrows across longer lists, filters with fuzzy text or ordered `*` fragments, and opens the
-highlighted tab with Enter.
+Command-Option-P on macOS or Control-Alt-P elsewhere opens the tab navigator with up to ten visible
+rows. It lists every tab immediately, supports arrows across longer lists, filters with fuzzy text
+or ordered `*` fragments, and opens the highlighted tab with Enter.
 
 ## File-dialog context and text encodings
 
@@ -105,14 +106,14 @@ enable Use Tab Characters to insert literal tab characters, and choose a width f
 Shift-Tab removes one available leading indentation level even when the prefix is partial spaces or
 does not match the current tabs-versus-spaces setting; repeated presses remove the full prefix.
 
-Command-, opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
+Command-, on macOS or Control-, elsewhere opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
 from installed system families; a configured family remains selectable if it is temporarily
 unavailable. Appearance changes apply to tabs that have not been individually zoomed. Show Tagline
 controls only “A fast place for text,” while View → Toggle Title Bar controls the complete heading;
 both choices persist. Recovery copies are revisioned, atomic, and stored under `Backups/` when no
 custom location is selected. Untitled recovery and unsaved changes to named files can be enabled
-independently. Saving or discarding a tab removes its active recovery copy; Command-Q writes a final
-snapshot before exiting. Recent Files controls a newest-first local Open Recent list (1–100 entries,
+independently. Saving or discarding a tab removes its active recovery copy; the platform's primary
+shortcut plus Q writes a final snapshot before exiting. Recent Files controls a newest-first local Open Recent list (1–100 entries,
 default 10); disabling it clears the list, and Clear History is also available independently. See
 [privacy.md](privacy.md) for the complete local-data boundary.
 
@@ -131,13 +132,15 @@ the viewport like a vertical scrollbar without scanning every line on repaint.
 
 ## Native menus and editor gestures
 
-Textify installs Textify, File, Edit, View, and Window menus in the macOS menu bar. The View menu and
-Command-Shift-P palette expose per-tab word wrap; Option-Z is its direct shortcut. Large and huge
-files always remain unwrapped. The palette and View menu also expose the per-tab minimap.
-Command-scroll adjusts only the hovered active tab's size, while preserving its visible caret
-position; Command-T creates a new tab. Overflowed tabs accept horizontal trackpad or ordinary wheel
+Textify installs Textify, File, Edit, View, and Window menus in the macOS menu bar and an equivalent
+in-window application menu on Windows and Linux. The View menu and Command-Shift-P palette on macOS
+(Control-Shift-P elsewhere) expose per-tab word wrap; Option-Z on macOS or Alt-Z elsewhere is its
+direct shortcut. Large and huge files always remain unwrapped. The palette and View menu also expose
+the per-tab minimap. Command-scroll on macOS or Control-scroll elsewhere adjusts only the hovered
+active tab's size, while preserving its visible caret position; Command-T or Control-T creates a new
+tab. Overflowed tabs accept horizontal trackpad or ordinary wheel
 scrolling, activating a tab reveals it, and the ribbon chevron lists every open document.
-Command-Option-P opens the searchable Open Tabs switcher, whose
+Command-Option-P on macOS or Control-Alt-P elsewhere opens the searchable Open Tabs switcher, whose
 query supports fuzzy text and ordered `*` wildcard fragments. Every overlay shows a highlighted
 selection and supports Up, Down, Enter, and Escape. Dirty tabs close through a modal Save / Don't
 Save / Cancel decision, and Save closes only after a successful write. Dropped files follow the same
@@ -150,11 +153,11 @@ Default `keymap.json`:
 
 ```json
 {
-  "command_palette": "cmd-shift-p",
-  "search_open_tabs": "cmd-p",
-  "workspace_search": "cmd-shift-f",
-  "open_folder": "cmd-shift-o",
-  "toggle_sidebar": "cmd-b",
+  "command_palette": "secondary-shift-p",
+  "search_open_tabs": "secondary-p",
+  "workspace_search": "secondary-shift-f",
+  "open_folder": "secondary-shift-o",
+  "toggle_sidebar": "secondary-b",
   "go_to_definition": "f12"
 }
 ```
@@ -162,6 +165,10 @@ Default `keymap.json`:
 Newly loaded shortcuts become active immediately. GPUI does not expose selective removal from its
 keymap, so a shortcut replaced during the current process remains as an alias until Textify is
 restarted; the newly configured shortcut is active without a restart.
+
+`secondary` means Command on macOS and Control on Windows and Linux. The generated default editor
+font is SF Mono on macOS, Consolas on Windows, and DejaVu Sans Mono on Linux; the `settings.json`
+example above shows the macOS value.
 
 ## Git
 
