@@ -58,7 +58,7 @@ Default `settings.json`:
 ```json
 {
   "appearance": {
-    "font_family": "SFMono-Regular",
+    "font_family": "Menlo",
     "font_size": 14,
     "minimap_on_by_default": false,
     "show_line_numbers": true,
@@ -106,9 +106,10 @@ enable Use Tab Characters to insert literal tab characters, and choose a width f
 Shift-Tab removes one available leading indentation level even when the prefix is partial spaces or
 does not match the current tabs-versus-spaces setting; repeated presses remove the full prefix.
 
-Command-, on macOS or Control-, elsewhere opens the native-styled Settings panel. Editor Font is a searchable dropdown populated
-from installed system families; a configured family remains selectable if it is temporarily
-unavailable. Appearance changes apply to tabs that have not been individually zoomed. Show Tagline
+Command-, on macOS or Control-, elsewhere opens the native-styled Settings panel. Editor Font is a
+searchable dropdown populated from installed system families. If a configured family is unavailable,
+Textify uses an installed native monospace family so the editor never silently falls back to
+proportional text. Appearance changes apply to tabs that have not been individually zoomed. Show Tagline
 controls only “A fast place for text,” while View → Toggle Title Bar controls the complete heading;
 both choices persist. Recovery copies are revisioned, atomic, and stored under `Backups/` when no
 custom location is selected. Untitled recovery and unsaved changes to named files can be enabled
@@ -167,7 +168,7 @@ keymap, so a shortcut replaced during the current process remains as an alias un
 restarted; the newly configured shortcut is active without a restart.
 
 `secondary` means Command on macOS and Control on Windows and Linux. The generated default editor
-font is SF Mono on macOS, Consolas on Windows, and DejaVu Sans Mono on Linux; the `settings.json`
+font is Menlo on macOS, Consolas on Windows, and DejaVu Sans Mono on Linux; the `settings.json`
 example above shows the macOS value.
 
 ## Git

@@ -67,10 +67,44 @@ pub fn textify_data_dir() -> PathBuf {
 
 fn default_editor_font(platform: HostPlatform) -> &'static str {
     match platform {
-        HostPlatform::Macos => "SFMono-Regular",
+        HostPlatform::Macos => "Menlo",
         HostPlatform::Windows => "Consolas",
         HostPlatform::Unix => "DejaVu Sans Mono",
     }
+}
+
+fn editor_font_candidates(platform: HostPlatform) -> &'static [&'static str] {
+    match platform {
+        HostPlatform::Macos => &["Menlo", ".SF NS Mono", "Andale Mono"],
+        HostPlatform::Windows => &["Consolas", "Cascadia Mono", "Courier New"],
+        HostPlatform::Unix => &[
+            "DejaVu Sans Mono",
+            "Liberation Mono",
+            "Noto Sans Mono",
+            "Ubuntu Mono",
+            "Cascadia Mono",
+            "Source Code Pro",
+        ],
+    }
+}
+
+pub fn available_editor_font(configured: &str, installed: &[String]) -> String {
+    if let Some(font) = installed
+        .iter()
+        .find(|font| font.eq_ignore_ascii_case(configured))
+    {
+        return font.clone();
+    }
+
+    editor_font_candidates(host_platform())
+        .iter()
+        .find_map(|candidate| {
+            installed
+                .iter()
+                .find(|font| font.eq_ignore_ascii_case(candidate))
+                .cloned()
+        })
+        .unwrap_or_else(|| default_editor_font(host_platform()).to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,9 +156,19 @@ impl TextifySettings {
             Ok(bytes) => {
                 let mut settings: Self = serde_json::from_slice(&bytes)
                     .with_context(|| format!("could not parse {}", path.display()))?;
+                let original = settings.clone();
                 settings.appearance.normalize();
                 settings.indentation.normalize();
                 settings.recent_files.normalize();
+                if settings != original
+                    && let Err(error) = settings.save(path)
+                {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "could not persist normalized settings"
+                    );
+                }
                 Ok(settings)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -223,9 +267,13 @@ impl AppearanceSettings {
     pub const MAX_FONT_SIZE: u16 = 40;
 
     pub fn normalize(&mut self) {
+        self.normalize_for(host_platform());
+    }
+
+    fn normalize_for(&mut self, platform: HostPlatform) {
         self.font_family = self.font_family.trim().to_owned();
-        if self.font_family.is_empty() {
-            self.font_family = Self::default().font_family;
+        if self.font_family.is_empty() || self.font_family.eq_ignore_ascii_case("SFMono-Regular") {
+            self.font_family = default_editor_font(platform).to_owned();
         }
         self.font_size = self
             .font_size
@@ -465,9 +513,58 @@ mod tests {
 
     #[test]
     fn editor_fonts_have_native_cross_platform_defaults() {
-        assert_eq!(default_editor_font(HostPlatform::Macos), "SFMono-Regular");
+        assert_eq!(default_editor_font(HostPlatform::Macos), "Menlo");
         assert_eq!(default_editor_font(HostPlatform::Windows), "Consolas");
         assert_eq!(default_editor_font(HostPlatform::Unix), "DejaVu Sans Mono");
+    }
+
+    #[test]
+    fn legacy_generated_macos_font_migrates_to_each_platform_default() {
+        for (platform, expected) in [
+            (HostPlatform::Macos, "Menlo"),
+            (HostPlatform::Windows, "Consolas"),
+            (HostPlatform::Unix, "DejaVu Sans Mono"),
+        ] {
+            let mut appearance = AppearanceSettings {
+                font_family: "SFMono-Regular".to_owned(),
+                ..AppearanceSettings::default()
+            };
+            appearance.normalize_for(platform);
+            assert_eq!(appearance.font_family, expected);
+        }
+    }
+
+    #[test]
+    fn unavailable_editor_font_uses_an_installed_monospace_candidate() {
+        let candidates = editor_font_candidates(host_platform());
+        let installed = vec!["Proportional Sans".to_owned(), candidates[1].to_owned()];
+        assert_eq!(
+            available_editor_font("Missing Font", &installed),
+            candidates[1]
+        );
+        assert_eq!(
+            available_editor_font("proportional sans", &installed),
+            "Proportional Sans"
+        );
+    }
+
+    #[test]
+    fn loading_rewrites_the_legacy_generated_font() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("settings.json");
+        let mut settings = TextifySettings::default();
+        settings.appearance.font_family = "SFMono-Regular".to_owned();
+        settings.save(&path).expect("save legacy settings");
+
+        let loaded = TextifySettings::load(&path).expect("load settings");
+        assert_eq!(
+            loaded.appearance.font_family,
+            default_editor_font(host_platform())
+        );
+        let persisted: TextifySettings =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("parse migrated settings");
+        assert_eq!(persisted, loaded);
     }
 
     #[test]

@@ -6,6 +6,7 @@ const MACOS_PACKAGER: &str = include_str!("../scripts/package-macos-release.sh")
 const MACOS_SMOKE_TEST: &str = include_str!("../scripts/smoke-macos.sh");
 const LINUX_PACKAGER: &str = include_str!("../scripts/package-linux.sh");
 const LINUX_SMOKE_TEST: &str = include_str!("../scripts/smoke-linux.sh");
+const LINUX_CONTROL: &str = include_str!("../packaging/linux/control");
 const LINUX_DESKTOP: &str = include_str!("../packaging/linux/com.shaun.textify.desktop");
 const WINDOWS_PACKAGER: &str = include_str!("../scripts/package-windows.ps1");
 const WINDOWS_INSTALLER: &str = include_str!("../packaging/windows/Textify.iss");
@@ -42,6 +43,7 @@ fn macos_bundle_registers_as_a_text_document_editor() {
 #[test]
 fn local_installer_refreshes_launch_services_registration() {
     assert!(LOCAL_INSTALLER.contains("LaunchServices.framework/Support/lsregister"));
+    assert!(LOCAL_INSTALLER.contains("-u \"${stale_distribution_bundle}\""));
     assert!(LOCAL_INSTALLER.contains("\"${launch_services}\" -f \"${bundle_link}\""));
 }
 
@@ -74,6 +76,7 @@ fn macos_distribution_is_a_copied_universal_bundle() {
 fn linux_distribution_has_archive_deb_and_desktop_integration() {
     assert!(LINUX_PACKAGER.contains("cargo build --locked --release --bin textify"));
     assert!(LINUX_PACKAGER.contains("dpkg-deb --root-owner-group --build"));
+    assert!(LINUX_CONTROL.contains("fonts-dejavu-core"));
     assert!(LINUX_PACKAGER.contains("tar -C"));
     assert!(LINUX_DESKTOP.contains("Exec=textify %F"));
     assert!(LINUX_DESKTOP.contains("MimeType=text/plain;"));

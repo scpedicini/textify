@@ -17,6 +17,7 @@ fi
     dbus-x11 \
     dpkg-dev \
     file \
+    fonts-dejavu-core \
     git \
     libasound2-dev \
     libclang-dev \

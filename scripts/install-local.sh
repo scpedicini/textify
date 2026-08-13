@@ -6,6 +6,7 @@ script_directory="${0:A:h}"
 repository_root="${script_directory:h}"
 binary_target="${repository_root}/target/release/textify"
 bundle_target="${repository_root}/target/release/Textify.app"
+stale_distribution_bundle="${repository_root}/dist/Textify.app"
 binary_link="${HOME}/bin/textify"
 bundle_link="${HOME}/Applications/Textify.app"
 launch_services="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -24,6 +25,11 @@ done
 ln -sfn "${binary_target}" "${binary_link}"
 ln -sfn "${bundle_target}" "${bundle_link}"
 if [[ -x "${launch_services}" ]]; then
+    # A locally opened distribution build has the same bundle identifier and can otherwise remain
+    # eligible in Launch Services/Raycast after a development rebuild.
+    if [[ -d "${stale_distribution_bundle}" ]]; then
+        "${launch_services}" -u "${stale_distribution_bundle}" 2>/dev/null || true
+    fi
     "${launch_services}" -f "${bundle_link}"
 fi
 

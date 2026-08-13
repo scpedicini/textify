@@ -177,6 +177,8 @@ impl EditorBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{AppearanceSettings, available_editor_font};
+    use gpui::{TextRun, black, font};
 
     struct EditorHarness {
         editor: EditorBackend,
@@ -188,7 +190,7 @@ mod tests {
             _: &mut Window,
             cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
-            self.editor.render("SFMono-Regular", 14, false, cx)
+            self.editor.render("Menlo", 14, false, cx)
         }
     }
 
@@ -209,7 +211,7 @@ mod tests {
                 window,
                 cx,
             );
-            let input = editor.render("SFMono-Regular", 14, false, cx);
+            let input = editor.render("Menlo", 14, false, cx);
             assert!(!input.has_border());
             EditorHarness { editor }
         });
@@ -232,7 +234,58 @@ mod tests {
                 window,
                 cx,
             );
-            assert!(editor.render("SFMono-Regular", 14, true, cx).has_minimap());
+            assert!(editor.render("Menlo", 14, true, cx).has_minimap());
+            EditorHarness { editor }
+        });
+    }
+
+    #[gpui::test]
+    fn platform_editor_font_keeps_box_drawing_columns_aligned(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let banner = [
+                "╔══════════════════════════════════════════════════════════════════════════╗",
+                "║                                                                          ║",
+                "║                        A R T I C L E S                                   ║",
+                "║                                                                          ║",
+                "╚══════════════════════════════════════════════════════════════════════════╝",
+            ];
+            let configured = AppearanceSettings::default().font_family;
+            let font_family =
+                available_editor_font(&configured, &cx.text_system().all_font_names());
+            let widths = banner.map(|line| {
+                window
+                    .text_system()
+                    .shape_line(
+                        line.to_owned().into(),
+                        gpui::px(14.),
+                        &[TextRun {
+                            len: line.len(),
+                            font: font(font_family.clone()),
+                            color: black(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                    .width
+            });
+            assert!(widths.iter().all(|width| *width == widths[0]));
+
+            let editor = EditorBackend::new(
+                banner.join("\n"),
+                Some("markdown"),
+                FileMode::Normal,
+                EditorConfiguration {
+                    budgets: EditorBudgets::default(),
+                    indentation: IndentationSettings::default(),
+                    line_numbers: true,
+                    soft_wrap: false,
+                },
+                window,
+                cx,
+            );
             EditorHarness { editor }
         });
     }

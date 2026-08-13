@@ -57,7 +57,7 @@ use crate::{
     session::{SessionState, SessionTab, load_session, save_session},
     settings::{
         AppearanceSettings, IndentationSettings, RecoverySettings, TextifyKeymap, TextifySettings,
-        ensure_config_files, textify_data_dir,
+        available_editor_font, ensure_config_files, textify_data_dir,
     },
     watcher::FileWatcher,
 };
@@ -725,11 +725,15 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let data_dir = textify_data_dir();
-        let settings =
+        let mut settings =
             TextifySettings::load(&data_dir.join("settings.json")).unwrap_or_else(|error| {
                 tracing::warn!(%error, "using default settings");
                 TextifySettings::default()
             });
+        settings.appearance.font_family = available_editor_font(
+            &settings.appearance.font_family,
+            &cx.text_system().all_font_names(),
+        );
         let keymap = TextifyKeymap::load(&data_dir.join("keymap.json")).unwrap_or_else(|error| {
             tracing::warn!(%error, "using default keymap");
             TextifyKeymap::default()
@@ -3052,7 +3056,11 @@ impl Workspace {
                     let mut settings_changed = false;
                     let mut keymap_changed = false;
                     match settings {
-                        Ok(settings) => {
+                        Ok(mut settings) => {
+                            settings.appearance.font_family = available_editor_font(
+                                &settings.appearance.font_family,
+                                &cx.text_system().all_font_names(),
+                            );
                             settings_changed = workspace.settings != settings;
                             if settings_changed {
                                 let lsp_changed = workspace.settings.lsp != settings.lsp;
@@ -6735,10 +6743,10 @@ mod tests {
         );
         assert_eq!(
             normalize_editor_font_families(
-                vec!["SFMONO-REGULAR".to_owned(), "Other".to_owned()],
-                "SFMono-Regular",
+                vec!["MISSING MONO".to_owned(), "Other".to_owned()],
+                "Missing Mono",
             ),
-            ["Other", "SFMono-Regular"]
+            ["Missing Mono", "Other"]
         );
     }
 
@@ -7671,7 +7679,7 @@ mod tests {
                     !workspace
                         .active_document()
                         .editor
-                        .render("SFMono-Regular", 14, false, cx)
+                        .render("Menlo", 14, false, cx)
                         .has_minimap()
                 );
             });
