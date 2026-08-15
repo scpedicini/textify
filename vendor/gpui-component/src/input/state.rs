@@ -998,19 +998,11 @@ impl InputState {
     }
 
     pub(super) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mode.is_single_line() {
-            return;
-        }
-        let offset = self.start_of_line().saturating_sub(1);
-        self.select_to(self.previous_boundary(offset), cx);
+        self.select_vertical(-1, cx);
     }
 
     pub(super) fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mode.is_single_line() {
-            return;
-        }
-        let offset = (self.end_of_line() + 1).min(self.text.len());
-        self.select_to(self.next_boundary(offset), cx);
+        self.select_vertical(1, cx);
     }
 
     pub(super) fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -1406,10 +1398,18 @@ impl InputState {
             return;
         }
 
-        // Double click to select word
-        if event.button == MouseButton::Left && event.click_count == 2 {
-            self.select_word(offset, window, cx);
-            return;
+        if event.button == MouseButton::Left {
+            // Triple click selects the complete logical line, including its line ending.
+            if event.click_count == 3 && self.mode.is_multi_line() {
+                self.select_line(offset, window, cx);
+                return;
+            }
+
+            // Double click selects a word.
+            if event.click_count == 2 {
+                self.select_word(offset, window, cx);
+                return;
+            }
         }
 
         // Show Mouse context menu
@@ -2632,6 +2632,62 @@ mod tests {
                 input.set_soft_wrap(true, window, cx);
 
                 assert_eq!(input.text_wrapper.wrap_width(), Some(expected));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn shift_up_and_down_select_one_soft_wrapped_row(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let value = "word ".repeat(400);
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            InputState::new(window, cx)
+                .code_editor("text")
+                .soft_wrap(false)
+                .default_value(value)
+        });
+        cx.simulate_resize(gpui::size(px(320.), px(300.)));
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_soft_wrap(true, window, cx));
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                assert!(input.text_wrapper.lines[0].lines_len() >= 3);
+                input.move_to(3, None, cx);
+                let anchor = input.cursor();
+                let first_row = input.text_wrapper.offset_to_display_point(anchor).row;
+
+                input.select_down(&SelectDown, window, cx);
+                let first_target = input.cursor();
+                assert_eq!(
+                    input.text_wrapper.offset_to_display_point(first_target).row,
+                    first_row + 1
+                );
+                assert_eq!(
+                    input.selections(),
+                    vec![Selection::new(anchor, first_target)]
+                );
+
+                input.select_down(&SelectDown, window, cx);
+                let second_target = input.cursor();
+                assert_eq!(
+                    input
+                        .text_wrapper
+                        .offset_to_display_point(second_target)
+                        .row,
+                    first_row + 2
+                );
+
+                input.select_up(&SelectUp, window, cx);
+                assert_eq!(input.cursor(), first_target);
+                assert_eq!(
+                    input.selections(),
+                    vec![Selection::new(anchor, first_target)]
+                );
             });
         });
     }

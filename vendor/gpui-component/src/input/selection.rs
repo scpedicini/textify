@@ -56,10 +56,33 @@ impl InputState {
         self.selected_word_range = Some(self.selected_range);
         cx.notify()
     }
+
+    /// Select the logical line at the given offset on triple-click.
+    pub(super) fn select_line(&mut self, offset: usize, _: &mut Window, cx: &mut Context<Self>) {
+        let range = TextSelector::line_range(&self.text, offset);
+        self.selected_range = range.clone().into();
+        self.secondary_selected_ranges.clear();
+        self.selected_word_range = Some(self.selected_range);
+        self.selection_reversed = false;
+        cx.notify()
+    }
 }
 
 struct TextSelector;
 impl TextSelector {
+    /// Select a complete logical line, including its line ending when one is present.
+    fn line_range(text: &Rope, offset: usize) -> Range<usize> {
+        let offset = text.clip_offset(offset.min(text.len()), Bias::Left);
+        let row = text.offset_to_point(offset).row;
+        let start = text.line_start_offset(row);
+        let end = if row + 1 < text.lines_len() {
+            text.line_start_offset(row + 1)
+        } else {
+            text.len()
+        };
+        start..end
+    }
+
     /// Select a word in the given text at the specified offset.
     ///
     /// The offset is the UTF-8 offset.
@@ -167,5 +190,14 @@ mod tests {
             let expect = expected.map(|s| s.to_string());
             assert_eq!(actual, expect, "line {}, column {}", line, column);
         }
+    }
+
+    #[test]
+    fn test_line_range_includes_the_line_ending() {
+        let rope = Rope::from("first\nsecond\r\nthird");
+
+        assert_eq!(TextSelector::line_range(&rope, 2), 0..6);
+        assert_eq!(TextSelector::line_range(&rope, 9), 6..14);
+        assert_eq!(TextSelector::line_range(&rope, rope.len()), 14..19);
     }
 }
