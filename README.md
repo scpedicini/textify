@@ -1,4 +1,4 @@
-<img src="packaging/Textify.svg" alt="Textify icon" width="88" align="right">
+<img src="packaging/Textify.svg" alt="Textify icon" width="48" align="right">
 
 # Textify
 
