@@ -1,10 +1,24 @@
 name: Production release
 
+# Runs after every merge into prod. It raises the package version according to
+# the merged pull request's release:* label, rebuilds every platform from that
+# commit, and publishes a GitHub Release only if all three builds pass.
+
 on:
   push:
     branches:
       - prod
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to raise
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
 
 concurrency:
   group: prod-release-${{ github.ref }}
@@ -13,167 +27,90 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: "1"
-
 jobs:
-  linux-x64:
-    name: Linux x64
+  version:
+    name: Raise version
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
+      previous-tag: ${{ steps.bump.outputs.previous-tag }}
     steps:
-      - name: Check out source
+      - name: Check out prod
         uses: actions/checkout@v6
-
-      - name: Install native build and smoke-test dependencies
-        run: ./scripts/install-linux-build-deps.sh
-
-      - name: Restore Rust build cache
-        uses: actions/cache@v5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-
-            linux-x64-cargo-
+          ref: prod
+          fetch-depth: 0
 
-      - name: Verify formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run Linux tests
-        run: cargo test --locked --workspace --all-targets -- --test-threads=1
-
-      - name: Build Linux packages
-        run: ./scripts/package-linux.sh
-
-      - name: Smoke-test the Linux GUI with software graphics
+      - name: Read the bump level from the merged pull request
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_LEVEL: ${{ inputs.bump }}
         run: |
-          mkdir -p dist/deb-smoke
-          dpkg-deb --extract ./dist/textify-*-linux-amd64.deb dist/deb-smoke
-          ./scripts/smoke-linux.sh ./dist/deb-smoke/usr/bin/textify
+          set -euo pipefail
+          if [ -n "${DISPATCH_LEVEL}" ]; then
+            level="${DISPATCH_LEVEL}"
+            reason="the workflow_dispatch input"
+          else
+            labels="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[].labels[].name' || true)"
+            if grep -Fxq 'release:major' <<<"${labels}"; then
+              level="major"
+              reason="the release:major pull request label"
+            elif grep -Fxq 'release:minor' <<<"${labels}"; then
+              level="minor"
+              reason="the release:minor pull request label"
+            elif grep -Fxq 'release:patch' <<<"${labels}"; then
+              level="patch"
+              reason="the release:patch pull request label"
+            else
+              level="patch"
+              reason="the default, because the commit carried no release:* label"
+            fi
+          fi
+          echo "level=${level}" >> "${GITHUB_OUTPUT}"
+          echo "Raising the ${level} version from ${reason}." >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Inspect Linux packages
+      - name: Bump the version and commit it to prod
+        id: bump
+        env:
+          LEVEL: ${{ steps.level.outputs.level }}
         run: |
-          file target/release/textify
-          dpkg-deb --info dist/*.deb
-          tar -tzf dist/*.tar.gz >/dev/null
+          set -euo pipefail
+          previous_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          version="$(./scripts/bump-version.sh "${LEVEL}")"
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "Tag v${version} already exists. Raise the version in Cargo.toml by hand and push again." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${version}"
+          git push origin HEAD:prod
+          {
+            echo "version=${version}"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "previous-tag=${previous_tag}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Building Textify v${version}." >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload Linux release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x64
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-          if-no-files-found: error
-          retention-days: 14
-
-  windows-x64:
-    name: Windows x64
-    runs-on: windows-2022
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Restore Rust build cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~\.cargo\registry
-            ~\.cargo\git
-            target
-          key: windows-x64-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            windows-x64-cargo-${{ hashFiles('Cargo.lock') }}-
-            windows-x64-cargo-
-
-      - name: Run Windows tests
-        shell: pwsh
-        run: cargo test --locked --workspace --all-targets -- --test-threads=1
-
-      - name: Build portable ZIP and installer
-        shell: pwsh
-        run: ./scripts/package-windows.ps1
-
-      - name: Install and smoke-test the Windows build
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $installer = Get-ChildItem dist\*-setup.exe | Select-Object -First 1
-          $installDirectory = Join-Path $env:RUNNER_TEMP "Textify-installed"
-          $installerProcess = Start-Process -FilePath $installer.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDirectory" -Wait -PassThru
-          if ($installerProcess.ExitCode -ne 0) { throw "Installer exited with $($installerProcess.ExitCode)" }
-          $executable = Join-Path $installDirectory "Textify.exe"
-          if (-not (Test-Path $executable)) { throw "Installer did not create Textify.exe" }
-          $env:TEXTIFY_DATA_DIR = Join-Path $env:RUNNER_TEMP "Textify-data"
-          $textify = Start-Process -FilePath $executable -PassThru
-          Start-Sleep -Seconds 10
-          if ($textify.HasExited) { throw "Textify exited during the Windows startup smoke test with $($textify.ExitCode)" }
-          Stop-Process -Id $textify.Id -Force
-
-      - name: Upload Windows release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows-x64
-          path: |
-            dist/*.zip
-            dist/*-setup.exe
-          if-no-files-found: error
-          retention-days: 14
-
-  macos-universal:
-    name: macOS universal
-    runs-on: macos-15
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Restore Rust build cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-universal-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            macos-universal-cargo-${{ hashFiles('Cargo.lock') }}-
-            macos-universal-cargo-
-
-      - name: Run native macOS tests
-        run: cargo test --locked --workspace --all-targets -- --test-threads=1
-
-      - name: Build universal macOS app
-        run: ./scripts/package-macos-release.sh
-
-      - name: Inspect macOS bundle
-        run: |
-          plutil -lint dist/Textify.app/Contents/Info.plist
-          lipo -verify_arch arm64 x86_64 dist/Textify.app/Contents/MacOS/Textify
-          file dist/Textify.app/Contents/MacOS/Textify
-          unzip -t dist/*.zip
-
-      - name: Smoke-test the packaged macOS GUI
-        run: ./scripts/smoke-macos.sh dist/Textify.app/Contents/MacOS/Textify
-
-      - name: Upload macOS release file
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-macos-universal
-          path: dist/*.zip
-          if-no-files-found: error
-          retention-days: 14
+  build:
+    name: Build
+    needs: version
+    uses: ./.github/workflows/build-platforms.yml
+    with:
+      ref: ${{ needs.version.outputs.sha }}
 
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
     needs:
-      - linux-x64
-      - windows-x64
-      - macos-universal
+      - version
+      - build
     permissions:
       contents: write
     steps:
@@ -184,22 +121,51 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate checksums and release tag
-        id: release
-        shell: bash
+      - name: Generate checksums
         run: |
+          set -euo pipefail
           cd dist
           shasum -a 256 ./*.zip ./*.tar.gz ./*.deb ./*.exe > SHA256SUMS
-          short_sha="${GITHUB_SHA::7}"
-          echo "tag=prod-${GITHUB_RUN_NUMBER}-${short_sha}" >> "${GITHUB_OUTPUT}"
+          cat SHA256SUMS
+
+      - name: Write release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.version.outputs.previous-tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Native builds of Textify ${VERSION}. No runtime or toolchain is needed to run them."
+            echo
+            echo "| Platform | Download |"
+            echo "| --- | --- |"
+            echo "| macOS 12+ (Apple Silicon and Intel) | \`textify-${VERSION}-macos-universal.zip\` |"
+            echo "| Windows 10/11 x64 | \`textify-${VERSION}-windows-x64-setup.exe\` (installer) or \`textify-${VERSION}-windows-x64.zip\` (portable) |"
+            echo "| Linux x64 (glibc 2.35+) | \`textify-${VERSION}-linux-amd64.deb\` or \`textify-${VERSION}-linux-x64.tar.gz\` |"
+            echo
+            echo "These files are **not code-signed**. macOS Gatekeeper and Windows SmartScreen warn on first launch."
+            echo "On macOS, remove the download quarantine after moving the app to /Applications:"
+            echo
+            echo '```sh'
+            echo "xattr -dr com.apple.quarantine /Applications/Textify.app"
+            echo '```'
+            echo
+            echo "Verify a download with \`shasum -a 256 -c SHA256SUMS\`."
+            if [ -n "${PREVIOUS_TAG}" ]; then
+              echo
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...v${VERSION}"
+            fi
+          } > release-notes.md
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_SHA: ${{ needs.version.outputs.sha }}
         run: |
-          gh release create "${RELEASE_TAG}" dist/* \
-            --target "${GITHUB_SHA}" \
-            --title "Textify ${RELEASE_TAG}" \
-            --notes "Automated production build from commit ${GITHUB_SHA}. These artifacts are currently unsigned; verify SHA256SUMS after downloading." \
+          set -euo pipefail
+          gh release create "v${VERSION}" dist/* \
+            --target "${RELEASE_SHA}" \
+            --title "Textify v${VERSION}" \
+            --notes-file release-notes.md \
             --latest

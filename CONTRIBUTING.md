@@ -46,6 +46,14 @@ Include the operating system you tested and the steps needed to exercise the cha
 screenshot for visible interface changes. Do not commit `target/`, `dist/`, local settings, session
 files, or recovery copies.
 
+## Releases
+
+Pull requests target `main`. Releases happen separately, by merging `main` into the `prod` branch
+through a pull request labeled `release:major`, `release:minor`, or `release:patch`. That merge
+raises the version, builds macOS, Windows, and Linux packages, and publishes a GitHub Release. Do
+not edit `version` in `Cargo.toml` by hand; the release workflow owns it.
+[docs/deployment.md](docs/deployment.md) describes the whole process.
+
 ## Source layout
 
 Application code lives in `src/`. File decoding and atomic writes are kept separate from the GPUI

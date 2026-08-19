@@ -1,0 +1,177 @@
+name: Build platforms
+
+# Builds, tests, and smoke-tests the release packages for every supported
+# platform, then uploads them as workflow artifacts named `release-*`.
+# Called by prod-release.yml (to publish) and prod-pr-check.yml (to gate merges).
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build. Defaults to the ref that triggered the caller.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux-x64:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install native build and smoke-test dependencies
+        run: ./scripts/install-linux-build-deps.sh
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-
+            linux-x64-cargo-
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Linux tests
+        run: cargo test --locked --workspace --all-targets -- --test-threads=1
+
+      - name: Build Linux packages
+        run: ./scripts/package-linux.sh
+
+      - name: Smoke-test the Linux GUI with software graphics
+        run: |
+          mkdir -p dist/deb-smoke
+          dpkg-deb --extract ./dist/textify-*-linux-amd64.deb dist/deb-smoke
+          ./scripts/smoke-linux.sh ./dist/deb-smoke/usr/bin/textify
+
+      - name: Inspect Linux packages
+        run: |
+          file target/release/textify
+          dpkg-deb --info dist/*.deb
+          tar -tzf dist/*.tar.gz >/dev/null
+
+      - name: Upload Linux release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: windows-x64-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            windows-x64-cargo-${{ hashFiles('Cargo.lock') }}-
+            windows-x64-cargo-
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: cargo test --locked --workspace --all-targets -- --test-threads=1
+
+      - name: Build portable ZIP and installer
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+
+      - name: Install and smoke-test the Windows build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Get-ChildItem dist\*-setup.exe | Select-Object -First 1
+          $installDirectory = Join-Path $env:RUNNER_TEMP "Textify-installed"
+          $installerProcess = Start-Process -FilePath $installer.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDirectory" -Wait -PassThru
+          if ($installerProcess.ExitCode -ne 0) { throw "Installer exited with $($installerProcess.ExitCode)" }
+          $executable = Join-Path $installDirectory "Textify.exe"
+          if (-not (Test-Path $executable)) { throw "Installer did not create Textify.exe" }
+          $env:TEXTIFY_DATA_DIR = Join-Path $env:RUNNER_TEMP "Textify-data"
+          $textify = Start-Process -FilePath $executable -PassThru
+          Start-Sleep -Seconds 10
+          if ($textify.HasExited) { throw "Textify exited during the Windows startup smoke test with $($textify.ExitCode)" }
+          Stop-Process -Id $textify.Id -Force
+
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-universal:
+    name: macOS universal
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-universal-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            macos-universal-cargo-${{ hashFiles('Cargo.lock') }}-
+            macos-universal-cargo-
+
+      - name: Run native macOS tests
+        run: cargo test --locked --workspace --all-targets -- --test-threads=1
+
+      - name: Build universal macOS app
+        run: ./scripts/package-macos-release.sh
+
+      - name: Inspect macOS bundle
+        run: |
+          plutil -lint dist/Textify.app/Contents/Info.plist
+          lipo dist/Textify.app/Contents/MacOS/Textify -verify_arch arm64 x86_64
+          file dist/Textify.app/Contents/MacOS/Textify
+          unzip -t dist/*.zip
+
+      - name: Smoke-test the packaged macOS GUI
+        run: ./scripts/smoke-macos.sh dist/Textify.app/Contents/MacOS/Textify
+
+      - name: Upload macOS release file
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
