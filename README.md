@@ -12,6 +12,12 @@ It has tabs, syntax highlighting, a project explorer, workspace search, multiple
 recovery, and optional language-server support. It does not include telemetry, an update checker,
 or an application network client.
 
+## Why
+
+I simply couldn’t find a solid replacement for Sublime. Everything else either felt significantly overpowered (full-fledged IDEs like Zed, VS Codium, etc) or didn’t quite have the OS native feel I was looking for. I just wanted a quick, lightweight, horizontally tab-based text editor that I could quickly throw notes in without necessarily even having to persist the files.
+
+The closest I found was [Kate](https://github.com/kde/kate) (based on the Qt framework). But it never felt truly native on my Mac, and it also had some small issues with unsaved buffers.
+
 ## Download
 
 Ready-to-run builds are attached to [GitHub Releases](https://github.com/scpedicini/textify/releases).
