@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Textify
-Comment=A fast, focused native text editor
+Comment=A native editor for text, source code, and large files
 Exec=textify %F
 Icon=com.shaun.textify
 Terminal=false

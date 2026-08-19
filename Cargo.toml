@@ -2,9 +2,14 @@
 name = "textify"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.93.1"
 default-run = "textify"
-description = "A fast, focused native text editor for macOS, Linux, and Windows"
+description = "A native text editor for macOS, Linux, and Windows"
 license = "MIT"
+repository = "https://github.com/scpedicini/textify"
+readme = "README.md"
+keywords = ["editor", "text-editor", "gpui"]
+categories = ["text-editors"]
 
 [workspace]
 members = [".", "vendor/gpui-component"]

@@ -2,7 +2,8 @@
 <component type="desktop-application">
   <id>com.shaun.textify</id>
   <name>Textify</name>
-  <summary>A fast, focused native text editor</summary>
+  <summary>A native text editor for text, source code, and large files</summary>
+  <developer_name>Textify contributors</developer_name>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
@@ -10,4 +11,11 @@
   </description>
   <launchable type="desktop-id">com.shaun.textify.desktop</launchable>
   <url type="homepage">https://github.com/scpedicini/textify</url>
+  <url type="bugtracker">https://github.com/scpedicini/textify/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/scpedicini/textify/main/docs/images/textify.png</image>
+      <caption>Editing a Markdown file in Textify</caption>
+    </screenshot>
+  </screenshots>
 </component>
