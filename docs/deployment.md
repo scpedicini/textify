@@ -4,10 +4,34 @@ Textify ships as native Rust/GPUI code. It does not bundle a browser engine or E
 Production builds are created on the matching operating system so each release is both compiled and
 tested with its native windowing and graphics stack.
 
-## Automated production releases
+## Releasing
 
-[`prod-release.yml`](../.github/workflows/prod-release.yml) runs after every push to the `prod`
-branch. It can also be started manually from the Actions page. Three jobs run in parallel:
+`prod` is the release branch. Work lands on `main` as usual; a release happens when `main` is merged
+into `prod` through a pull request.
+
+```sh
+gh pr create --base prod --head main --title "Release" --label release:minor
+```
+
+The `release:*` label on that pull request decides the new version:
+
+| Label | Effect on `0.4.2` |
+| --- | --- |
+| `release:major` | `1.0.0` |
+| `release:minor` | `0.5.0` |
+| `release:patch`, or no label | `0.4.3` |
+
+Three workflows implement this:
+
+- [`prod-pr-check.yml`](../.github/workflows/prod-pr-check.yml) runs on every pull request that
+  targets `prod`. It builds the real release packages on all three platforms and reports which
+  version part the label will raise, so merge-time failures are rare.
+- [`prod-release.yml`](../.github/workflows/prod-release.yml) runs after the merge. Its first job
+  reads the merged pull request's labels, runs [`bump-version.sh`](../scripts/bump-version.sh),
+  and commits `chore(release): v<version>` to `prod`. Every platform is then rebuilt from that exact
+  commit, so the version inside the binaries matches the release.
+- [`build-platforms.yml`](../.github/workflows/build-platforms.yml) is the shared build called by
+  both of the above:
 
 | Runner | Release files | Verification |
 | --- | --- | --- |
@@ -15,24 +39,40 @@ branch. It can also be started manually from the Actions page. Three jobs run in
 | Windows Server 2022 x64 | `textify-<version>-windows-x64.zip`, `textify-<version>-windows-x64-setup.exe` | Complete test suite, silent installer test, and a ten-second launch of the installed executable |
 | macOS 15 ARM64 | `textify-<version>-macos-universal.zip` | Complete native test suite, validation that the app contains ARM64 and Intel x64 slices, and a ten-second packaged-app launch |
 
-The publish job runs only after all three jobs succeed. It downloads the verified files, creates
-`SHA256SUMS`, and publishes a GitHub Release using a unique tag such as
-`prod-42-a1b2c3d`. The built-in, short-lived `GITHUB_TOKEN` is used; no personal access token is
-needed. The workflow grants write access only to the publish job.
+The publish job runs only after all three builds succeed. It downloads the verified files, writes
+`SHA256SUMS`, and publishes a GitHub Release tagged `v<version>`. The tag is created by that release,
+so a failed build never leaves a tag behind. The built-in, short-lived `GITHUB_TOKEN` is used; no
+personal access token is needed, and write access is granted only to the two jobs that need it.
 
-Before the first release, make sure GitHub Actions is enabled for the repository and that repository
-or organization policy permits workflows to write repository contents. Then create or update the
-branch normally:
+A release can also be started by hand from the Actions page with the **Production release** workflow,
+which takes the bump level as an input.
+
+The version is raised before the builds run, because the number has to be inside the binaries and
+package names. If a build then fails, `prod` keeps the raised version but no tag or release is
+created, so the next successful release simply skips that number. Nothing needs to be cleaned up.
+
+### One-time setup
+
+GitHub Actions must be enabled, workflows must be permitted to write repository contents
+(Settings → Actions → General → Workflow permissions), and the labels must exist:
 
 ```sh
-git switch -c prod       # only when the branch does not exist yet
-git push -u origin prod
+gh label create release:major --color B60205 --description "Merging raises the major version"
+gh label create release:minor --color 0E8A16 --description "Merging raises the minor version"
+gh label create release:patch --color 1D76DB --description "Merging raises the patch version"
+git switch -c prod && git push -u origin prod
 ```
 
-Afterward, any push to `prod` starts another release. A failed build, test, package inspection,
-installer run, or smoke test prevents publication. The `prod` concurrency group allows only one
-release run at a time and retains the newest pending push. Branch protection requiring a review
-before updates to `prod` is recommended when releases become public-facing.
+Branch protection on `prod` should require the pull request checks, but must allow the
+`github-actions[bot]` push that carries the version bump. If protection blocks that push, either
+exempt the bot or drop the "restrict who can push" rule for `prod`.
+
+### Version bookkeeping
+
+Only `Cargo.toml` and `Cargo.lock` carry the version, and only `prod` is bumped. `main` keeps the
+older number until the next release merge brings the bump commit back in the merge base, which
+resolves without conflict because `main` never edits that line. If you prefer the numbers to match,
+merge `prod` back into `main` after a release.
 
 ## Signing status
 
@@ -125,14 +165,14 @@ text documents to either the local or distribution app through Open With.
 
 ## Manual verification
 
-Useful checks before pushing `prod` are:
+Useful checks before opening a release pull request are:
 
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets -- -D warnings
-actionlint .github/workflows/prod-release.yml
-shellcheck scripts/*.sh
+actionlint .github/workflows/*.yml
+shellcheck scripts/bump-version.sh scripts/package-linux.sh scripts/smoke-linux.sh
 ```
 
 Windows execution cannot be reproduced natively on macOS. The workflow handles that gap by running

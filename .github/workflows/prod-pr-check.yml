@@ -1,0 +1,45 @@
+name: Prod pull request check
+
+# Gates every pull request that targets prod. It builds and smoke-tests the
+# real release packages on all three platforms, so a merge into prod is very
+# unlikely to fail after the version has already been raised.
+
+on:
+  pull_request:
+    branches:
+      - prod
+
+concurrency:
+  group: prod-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-label:
+    name: Check release label
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Report the version part this pull request will raise
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          set -euo pipefail
+          for level in major minor patch; do
+            case " ${LABELS} " in
+              *" release:${level} "*)
+                echo "This pull request raises the ${level} version." >> "${GITHUB_STEP_SUMMARY}"
+                exit 0
+                ;;
+            esac
+          done
+          {
+            echo "No \`release:*\` label found, so merging raises the **patch** version."
+            echo
+            echo "Add \`release:minor\` or \`release:major\` if that is wrong."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  build:
+    name: Build
+    uses: ./.github/workflows/build-platforms.yml
