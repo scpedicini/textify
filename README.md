@@ -66,9 +66,9 @@ for local storage and the explicit optional-LSP boundary.
 
 Open File, Open Folder, and Save As begin in the active saved tab's directory; an untitled tab falls
 back to the open workspace. Textify automatically opens valid UTF-8 and recognizes text-like CP437
-DOS files. The clickable UTF-8 / CP437 status control can reopen a clean saved file with an explicit
-decoder. Saves retain the tab's encoding and fail safely if a CP437 edit contains an unrepresentable
-character.
+DOS files. The clickable UTF-8 / CP437 status control chooses the save encoding for an untitled
+document or reopens a clean saved file with an explicit decoder. Saves retain the tab's encoding and
+fail safely if a CP437 edit contains an unrepresentable character.
 
 ## Run it
 
@@ -139,8 +139,9 @@ The current measurements and methodology are in [docs/performance.md](docs/perfo
 The tab ribbon accepts wheel/trackpad scrolling and its chevron lists every open tab. Right-click a
 saved-file tab to copy its full path or reveal the file in Finder, File Explorer, or the Linux file
 manager. Click the status bar's WRAP / NO
-WRAP control to toggle wrapping for the active tab. Click the language label (for example `JSON`)
-or use the command palette to toggle syntax highlighting independently for the active tab. The status bar
+WRAP control to toggle wrapping for the active tab. Click the language label (for example `Plain Text`)
+to choose a syntax language such as JSON before or after saving. The View menu and command palette
+can toggle syntax highlighting independently for the active tab. The status bar
 progressively hides secondary details and truncates long paths as the window narrows. The View menu
 can hide the Textify title bar or the editor's line-number gutter; Settings persists both choices,
 can independently hide the tagline, and provides a

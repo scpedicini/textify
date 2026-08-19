@@ -55,6 +55,8 @@ Initial settings for a proper full-featured text editor:
 - [x] A saved-file tab's right-click menu can copy its full canonical path or reveal the file in
   Finder; path commands stay disabled for untitled tabs and target the clicked tab.
 - [x] Command overlays close directly from Escape or an outside click and return focus to the editor.
+- [x] Returning to Textify through application switching restores the active editor's action context,
+  avoiding an orphaned focus state with disabled native menus.
 - [x] Enabling word wrap immediately reflows against the usable text width without edge clipping.
 - [x] Command-scroll zoom preserves the document row under the pointer through every reflow, with
   the visible caret as a fallback when the pointer is outside the editor.
@@ -105,8 +107,10 @@ Initial settings for a proper full-featured text editor:
   grammar and display as Shell.
 - [x] Text-like invalid UTF-8 can be detected and decoded as CP437; binary-looking files remain
   rejected.
-- [x] The clickable encoding status opens a keyboard-driven UTF-8 / CP437 “Reopen With Encoding”
-  picker for clean saved files, and the explicit choice survives session restore.
+- [x] The clickable encoding status chooses UTF-8 / CP437 for untitled documents or reopens clean
+  saved files with an explicit decoder, and the explicit choice survives session restore.
+- [x] Untitled documents can choose Plain Text, CSS, JSON, HTML, Shell, or Markdown from the
+  language status control before saving, with the selected parser applied immediately.
 - [x] CP437 documents save atomically back to CP437 without a document-sized conversion buffer;
   unrepresentable edits fail without replacing the original file.
 

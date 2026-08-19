@@ -22,7 +22,8 @@ impl TextEncoding {
 }
 
 /// The initial editor intentionally ships only the grammars we can continuously benchmark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Language {
     PlainText,
     Css,
@@ -33,6 +34,15 @@ pub enum Language {
 }
 
 impl Language {
+    pub const ALL: [Self; 6] = [
+        Self::PlainText,
+        Self::Css,
+        Self::Json,
+        Self::Html,
+        Self::Shell,
+        Self::Markdown,
+    ];
+
     pub fn detect(path: Option<&Path>) -> Self {
         let Some(path) = path else {
             return Self::PlainText;
@@ -82,6 +92,17 @@ impl Language {
             Self::Html => Some("html"),
             Self::Shell => Some("bash"),
             Self::Markdown => Some("markdown"),
+        }
+    }
+
+    pub const fn preferred_extension(self) -> &'static str {
+        match self {
+            Self::PlainText => "txt",
+            Self::Css => "css",
+            Self::Json => "json",
+            Self::Html => "html",
+            Self::Shell => "sh",
+            Self::Markdown => "md",
         }
     }
 }

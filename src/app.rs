@@ -454,6 +454,7 @@ struct EditorDocument {
     word_wrap: bool,
     minimap_override: Option<bool>,
     syntax_highlighting: bool,
+    language_override: Option<Language>,
 }
 
 struct DocumentSeed {
@@ -467,6 +468,7 @@ struct DocumentSeed {
     font_size_override: Option<u16>,
     word_wrap: bool,
     minimap: Option<bool>,
+    language_override: Option<Language>,
 }
 
 enum OpenedFile {
@@ -478,7 +480,13 @@ enum OpenedFile {
 }
 
 enum RestoredFile {
-    Opened(OpenedFile, Option<u16>, bool, Option<bool>),
+    Opened(
+        OpenedFile,
+        Option<u16>,
+        bool,
+        Option<bool>,
+        Option<Language>,
+    ),
     Recovered(DocumentSeed),
 }
 
@@ -486,8 +494,11 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
     if let Some(recovery_path) = tab.recovery_path.clone() {
         let text = load_snapshot(&recovery_path)?;
         let analysis = FileAnalysis::from_bytes(text.as_bytes());
-        let metadata =
+        let mut metadata =
             DocumentMetadata::new_with_encoding(tab.path.clone(), analysis, policy, tab.encoding);
+        if let Some(language) = tab.language_override {
+            metadata.language = language;
+        }
         let disk_revision = tab
             .path
             .as_deref()
@@ -505,6 +516,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
             font_size_override: tab.font_size_override,
             word_wrap: tab.word_wrap,
             minimap: tab.minimap_override,
+            language_override: tab.language_override,
         }));
     }
 
@@ -515,11 +527,20 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
                 tab.font_size_override,
                 tab.word_wrap,
                 tab.minimap_override,
+                tab.language_override,
             )
         });
     }
 
-    let metadata = DocumentMetadata::new(None, FileAnalysis::from_bytes(b""), policy);
+    let mut metadata = DocumentMetadata::new_with_encoding(
+        None,
+        FileAnalysis::from_bytes(b""),
+        policy,
+        tab.encoding,
+    );
+    if let Some(language) = tab.language_override {
+        metadata.language = language;
+    }
     Ok(RestoredFile::Recovered(DocumentSeed {
         text: String::new(),
         metadata,
@@ -531,6 +552,7 @@ fn restore_session_tab(tab: SessionTab, policy: FilePolicy) -> anyhow::Result<Re
         font_size_override: tab.font_size_override,
         word_wrap: tab.word_wrap,
         minimap: tab.minimap_override,
+        language_override: tab.language_override,
     }))
 }
 
@@ -540,6 +562,7 @@ enum OverlayMode {
     OpenTabs,
     RecentFiles,
     Encodings,
+    Languages,
     OpenTabSearch,
     WorkspaceSearch,
 }
@@ -578,6 +601,7 @@ enum OverlayTarget {
     Tab(u64),
     File(PathBuf),
     Encoding { id: u64, encoding: TextEncoding },
+    Language { id: u64, language: Language },
     Search(WorkspaceMatch),
     OpenTabSearch { id: u64, location: TextLocation },
 }
@@ -767,6 +791,11 @@ impl Workspace {
                         _ => {}
                     }
                 }),
+                cx.observe_window_activation(window, |workspace, window, cx| {
+                    if window.is_window_active() {
+                        workspace.restore_focus_after_activation(window, cx);
+                    }
+                }),
             ];
         let watcher = FileWatcher::new()
             .map_err(|error| {
@@ -864,6 +893,7 @@ impl Workspace {
                 font_size_override: None,
                 word_wrap: false,
                 minimap: None,
+                language_override: None,
                 metadata,
             },
             window,
@@ -892,6 +922,7 @@ impl Workspace {
                 font_size_override: None,
                 word_wrap: false,
                 minimap: None,
+                language_override: None,
             },
             window,
             cx,
@@ -945,6 +976,7 @@ impl Workspace {
                 font_size_override: None,
                 word_wrap: false,
                 minimap: None,
+                language_override: None,
             },
             window,
             cx,
@@ -977,6 +1009,7 @@ impl Workspace {
             font_size_override,
             word_wrap,
             minimap,
+            language_override,
         } = seed;
         let focus_editor = metadata.mode != FileMode::HugeViewer;
         let id = self.next_id;
@@ -1045,6 +1078,7 @@ impl Workspace {
             word_wrap,
             minimap_override: minimap,
             syntax_highlighting: true,
+            language_override,
         });
         self.active_index = self.documents.len() - 1;
         self.tab_scroll_handle.scroll_to_item(self.active_index);
@@ -1122,6 +1156,7 @@ impl Workspace {
                             && recovery_enabled
                             && document.recovery_path.is_some(),
                         encoding: document.metadata.encoding,
+                        language_override: document.language_override,
                         font_size_override: document.font_size_override,
                         word_wrap: document.word_wrap,
                         minimap_override: document.minimap_override,
@@ -1382,12 +1417,24 @@ impl Workspace {
                                         font_size_override,
                                         word_wrap,
                                         minimap,
+                                        language_override,
                                     )) => {
                                         workspace.push_opened(opened, window, cx);
+                                        let policy = workspace.policy;
                                         let document = workspace.active_document_mut();
                                         document.font_size_override = font_size_override;
                                         document.word_wrap = word_wrap;
                                         document.minimap_override = minimap;
+                                        document.language_override = language_override;
+                                        if let Some(language) = language_override {
+                                            document.metadata.language = language;
+                                            let parser = if document.syntax_highlighting {
+                                                document.metadata.parser_name(policy)
+                                            } else {
+                                                None
+                                            };
+                                            document.editor.set_parser(parser, cx);
+                                        }
                                         if document.metadata.mode == FileMode::Normal
                                             && document.huge_viewer.is_none()
                                         {
@@ -1713,6 +1760,7 @@ impl Workspace {
                             font_size_override: None,
                             word_wrap: false,
                             minimap: None,
+                            language_override: None,
                         },
                         window,
                         cx,
@@ -1761,6 +1809,7 @@ impl Workspace {
                                 font_size_override: None,
                                 word_wrap: false,
                                 minimap: None,
+                                language_override: None,
                             },
                             window,
                             cx,
@@ -1997,6 +2046,7 @@ impl Workspace {
             OverlayMode::OpenTabs => "Find an open tab",
             OverlayMode::RecentFiles => "Find a recent file",
             OverlayMode::Encodings => "Choose an encoding",
+            OverlayMode::Languages => "Choose a language mode",
             OverlayMode::OpenTabSearch => "Search text across open tabs",
             OverlayMode::WorkspaceSearch => "Search text in the workspace",
         };
@@ -2036,6 +2086,30 @@ impl Workspace {
     fn focus_active_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_document().huge_viewer.is_none() {
             self.active_document().editor.focus(window, cx);
+        }
+    }
+
+    fn restore_focus_after_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) || self.settings_visible {
+            return;
+        }
+
+        if self.overlay_mode.is_some() {
+            let input = self.overlay_input.clone();
+            input.update(cx, |input, cx| input.focus(window, cx));
+            window.defer(cx, move |window, cx| {
+                if window.is_window_active() {
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                }
+            });
+        } else if self.active_document().huge_viewer.is_none() {
+            let editor = self.active_document().editor.clone();
+            editor.focus(window, cx);
+            window.defer(cx, move |window, cx| {
+                if window.is_window_active() {
+                    editor.focus(window, cx);
+                }
+            });
         }
     }
 
@@ -2093,17 +2167,40 @@ impl Workspace {
             OverlayMode::Encodings => {
                 let id = self.active_id();
                 let current = self.active_document().metadata.encoding;
+                let untitled = self.active_document().metadata.path.is_none();
                 let items = TextEncoding::ALL
                     .into_iter()
                     .map(|encoding| OverlayItem {
                         title: encoding.label().to_owned(),
                         subtitle: if encoding == current {
                             "Current encoding".to_owned()
+                        } else if untitled {
+                            format!("Save this document using {}", encoding.label())
                         } else {
                             "Reopen the file from disk with this encoding".to_owned()
                         },
                         search_text: encoding.label().to_ascii_lowercase(),
                         target: OverlayTarget::Encoding { id, encoding },
+                    })
+                    .collect();
+                self.overlay_items = matching_open_tab_items(items, &query);
+            }
+            OverlayMode::Languages => {
+                let id = self.active_id();
+                let current = self.active_document().metadata.language;
+                let items = Language::ALL
+                    .into_iter()
+                    .map(|language| OverlayItem {
+                        title: language.label().to_owned(),
+                        subtitle: if language == current {
+                            "Current language mode".to_owned()
+                        } else if language.parser_name().is_some() {
+                            "Use this syntax highlighting mode".to_owned()
+                        } else {
+                            "Disable syntax parsing for this document".to_owned()
+                        },
+                        search_text: language.label().to_ascii_lowercase(),
+                        target: OverlayTarget::Language { id, language },
                     })
                     .collect();
                 self.overlay_items = matching_open_tab_items(items, &query);
@@ -2337,7 +2434,10 @@ impl Workspace {
             }
             OverlayTarget::File(path) => self.open_path_at(path, None, window, cx),
             OverlayTarget::Encoding { id, encoding } => {
-                self.reopen_document_as_encoding(id, encoding, window, cx)
+                self.select_document_encoding(id, encoding, window, cx)
+            }
+            OverlayTarget::Language { id, language } => {
+                self.set_document_language(id, language, window, cx)
             }
             OverlayTarget::Search(item) => self.open_path_at(
                 item.path,
@@ -2654,13 +2754,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if document.metadata.path.is_none() {
-            self.status_message =
-                Some("Save this document before reopening it with another encoding".to_owned());
-            cx.notify();
-            return;
-        }
-        if document.dirty {
+        if document.metadata.path.is_some() && document.dirty {
             self.status_message = Some(
                 "Save or discard this tab's changes before reopening it with another encoding"
                     .to_owned(),
@@ -2669,6 +2763,71 @@ impl Workspace {
             return;
         }
         self.show_overlay(OverlayMode::Encodings, window, cx);
+    }
+
+    fn select_document_encoding(
+        &mut self,
+        id: u64,
+        encoding: TextEncoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        if self.documents[index].metadata.path.is_some() {
+            self.reopen_document_as_encoding(id, encoding, window, cx);
+            return;
+        }
+
+        self.documents[index].metadata.encoding = encoding;
+        self.documents[index].editor.focus(window, cx);
+        self.status_message = Some(format!(
+            "This document will be saved as {}",
+            encoding.label()
+        ));
+        self.persist_session(cx);
+        cx.notify();
+    }
+
+    fn show_language_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_document().huge_viewer.is_some() {
+            self.status_message =
+                Some("Language modes are unavailable in the huge-file viewer".to_owned());
+            cx.notify();
+            return;
+        }
+        self.show_overlay(OverlayMode::Languages, window, cx);
+    }
+
+    fn set_document_language(
+        &mut self,
+        id: u64,
+        language: Language,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.document_index(id) else {
+            return;
+        };
+        if self.documents[index].huge_viewer.is_some() {
+            return;
+        }
+
+        let policy = self.policy;
+        let document = &mut self.documents[index];
+        document.metadata.language = language;
+        document.language_override = Some(language);
+        let parser = if document.syntax_highlighting {
+            document.metadata.parser_name(policy)
+        } else {
+            None
+        };
+        document.editor.set_parser(parser, cx);
+        document.editor.focus(window, cx);
+        self.status_message = Some(format!("Language mode set to {}", language.label()));
+        self.persist_session(cx);
+        cx.notify();
     }
 
     fn reopen_document_as_encoding(
@@ -2707,7 +2866,7 @@ impl Workspace {
             let loaded = task.await;
             workspace
                 .update_in(window, |workspace, window, cx| match loaded {
-                    Ok(loaded) => {
+                    Ok(mut loaded) => {
                         let Some(index) = workspace.document_index(id) else {
                             return;
                         };
@@ -2718,6 +2877,9 @@ impl Workspace {
                                 Some("The document changed before it could be reopened".to_owned());
                             cx.notify();
                             return;
+                        }
+                        if let Some(language) = workspace.documents[index].language_override {
+                            loaded.metadata.language = language;
                         }
                         let editor = workspace.documents[index].editor.clone();
                         let parser = if workspace.documents[index].syntax_highlighting {
@@ -3551,7 +3713,9 @@ impl Workspace {
         let suggested = if document.metadata.path.is_some() {
             document.display_name(cx)
         } else {
-            suggested_save_path(&directory, document.untitled_number)
+            let mut suggested = suggested_save_path(&directory, document.untitled_number);
+            suggested.set_extension(document.metadata.language.preferred_extension());
+            suggested
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Untitled.txt")
@@ -3588,6 +3752,7 @@ impl Workspace {
         document.saving = true;
         let revision = document.revision;
         let encoding = document.metadata.encoding;
+        let language_override = document.language_override;
         let rope = document.editor.rope(cx);
         let expected = (document.metadata.path.as_deref() == Some(path.as_path()))
             .then(|| document.disk_revision.clone())
@@ -3616,12 +3781,15 @@ impl Workspace {
                         };
                         let mut analysis = analysis;
                         analysis.bytes = disk_revision.bytes;
-                        let metadata = DocumentMetadata::new_with_encoding(
+                        let mut metadata = DocumentMetadata::new_with_encoding(
                             Some(path.clone()),
                             analysis,
                             workspace.policy,
                             encoding,
                         );
+                        if let Some(language) = language_override {
+                            metadata.language = language;
+                        }
                         let parser = if workspace.documents[index].syntax_highlighting {
                             metadata.parser_name(policy)
                         } else {
@@ -4206,7 +4374,11 @@ impl Workspace {
                             .label(document.metadata.encoding.label())
                             .disabled(document.huge_viewer.is_some())
                             .debug_selector(|| "encoding-status-control".to_owned())
-                            .tooltip("Reopen file with another encoding")
+                            .tooltip(if document.metadata.path.is_none() {
+                                "Choose the encoding used when this document is saved"
+                            } else {
+                                "Reopen file with another encoding"
+                            })
                             .on_click(cx.listener(|workspace, _, window, cx| {
                                 workspace.show_encoding_picker(window, cx)
                             }))
@@ -4217,28 +4389,16 @@ impl Workspace {
                             .then_some(document.metadata.analysis.line_ending.label()),
                     )
                     .children(visibility.language.then(|| {
-                        Button::new("toggle-highlighting-status")
+                        Button::new("change-language-mode")
                             .ghost()
                             .xsmall()
                             .compact()
                             .label(language_label)
-                            .disabled(!can_toggle_highlighting)
-                            .debug_selector(|| "highlighting-status-toggle".to_owned())
-                            .tooltip(if can_toggle_highlighting {
-                                if highlighting_enabled {
-                                    "Disable syntax highlighting for this tab"
-                                } else {
-                                    "Enable syntax highlighting for this tab"
-                                }
-                            } else {
-                                "Syntax highlighting is unavailable for this tab"
-                            })
+                            .disabled(document.huge_viewer.is_some())
+                            .debug_selector(|| "language-status-control".to_owned())
+                            .tooltip("Choose the syntax language for this document")
                             .on_click(cx.listener(|workspace, _, window, cx| {
-                                workspace.on_toggle_syntax_highlighting(
-                                    &ToggleSyntaxHighlighting,
-                                    window,
-                                    cx,
-                                )
+                                workspace.show_language_picker(window, cx)
                             }))
                     })),
             )
@@ -4389,7 +4549,8 @@ impl Workspace {
             Some(OverlayMode::Commands) => "COMMAND PALETTE",
             Some(OverlayMode::OpenTabs) => "OPEN TABS",
             Some(OverlayMode::RecentFiles) => "OPEN RECENT",
-            Some(OverlayMode::Encodings) => "REOPEN WITH ENCODING",
+            Some(OverlayMode::Encodings) => "CHOOSE ENCODING",
+            Some(OverlayMode::Languages) => "CHOOSE LANGUAGE MODE",
             Some(OverlayMode::OpenTabSearch) => "SEARCH OPEN TABS",
             Some(OverlayMode::WorkspaceSearch) => "WORKSPACE SEARCH",
             None => "",
@@ -5753,6 +5914,7 @@ fn native_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Toggle Word Wrap", ToggleWordWrap),
                 MenuItem::action("Toggle Minimap", ToggleMinimap),
+                MenuItem::action("Toggle Syntax Highlighting", ToggleSyntaxHighlighting),
                 MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
                 MenuItem::action("Toggle Title Bar", ToggleTitleBar),
                 MenuItem::action("Toggle File Explorer", ToggleSidebar),
@@ -6327,6 +6489,7 @@ mod tests {
                 label_override: None,
                 dirty: true,
                 encoding: TextEncoding::Cp437,
+                language_override: None,
                 font_size_override: Some(17),
                 word_wrap: true,
                 minimap_override: Some(true),
@@ -6364,6 +6527,7 @@ mod tests {
                 label_override: None,
                 dirty: false,
                 encoding: TextEncoding::Cp437,
+                language_override: None,
                 font_size_override: None,
                 word_wrap: false,
                 minimap_override: None,
@@ -6372,7 +6536,8 @@ mod tests {
         )
         .expect("restore");
 
-        let RestoredFile::Opened(OpenedFile::Editable(loaded), None, false, None) = restored else {
+        let RestoredFile::Opened(OpenedFile::Editable(loaded), None, false, None, None) = restored
+        else {
             panic!("expected editable restored file");
         };
         assert_eq!(loaded.metadata.encoding, TextEncoding::Cp437);
@@ -6671,6 +6836,7 @@ mod tests {
             label_override: None,
             dirty: false,
             encoding: TextEncoding::Utf8,
+            language_override: None,
             font_size_override: None,
             word_wrap: false,
             minimap_override: None,
@@ -7157,6 +7323,49 @@ mod tests {
                 .paths
                 .is_empty()
         );
+    }
+
+    #[gpui::test]
+    fn window_reactivation_restores_editor_focus_from_an_orphaned_component(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::Focusable as _;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.run_until_parked();
+
+        let orphaned_input = cx.update(|window, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            input.update(cx, |input, cx| input.focus(window, cx));
+            assert!(input.read(cx).focus_handle(cx).is_focused(window));
+            input
+        });
+
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(!orphaned_input.read(cx).focus_handle(cx).is_focused(window));
+            assert!(
+                workspace
+                    .read(cx)
+                    .active_document()
+                    .editor
+                    .state()
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        });
     }
 
     #[gpui::test]
@@ -7747,7 +7956,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn status_language_control_toggles_syntax_highlighting(cx: &mut gpui::TestAppContext) {
+    fn status_language_control_sets_json_highlighting_on_an_untitled_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
         use std::{cell::RefCell, rc::Rc};
 
         cx.update(gpui_component::init);
@@ -7759,47 +7970,40 @@ mod tests {
             Root::new(workspace, window, cx)
         });
         let workspace = workspace_slot.borrow().clone().expect("workspace");
-        cx.update(|_, cx| {
-            workspace.update(cx, |workspace, cx| {
-                let analysis = FileAnalysis::from_bytes(br#"{"enabled":true}"#);
-                workspace.documents[0].metadata = DocumentMetadata::new(
-                    Some(PathBuf::from("status.json")),
-                    analysis,
-                    workspace.policy,
-                );
-                workspace.documents[0].editor.set_parser(Some("json"), cx);
-                cx.notify();
-            });
-        });
-
         cx.run_until_parked();
         let language_control = cx
-            .debug_bounds("highlighting-status-toggle")
+            .debug_bounds("language-status-control")
             .expect("visible language status control");
         cx.simulate_click(language_control.center(), gpui::Modifiers::none());
-        workspace.update(&mut cx.cx, |workspace, cx| {
-            assert!(!workspace.active_document().syntax_highlighting);
-            assert_eq!(
-                workspace
-                    .active_document()
-                    .editor
-                    .state()
-                    .read(cx)
-                    .highlighter_language(),
-                Some("text")
-            );
-            assert_eq!(
-                workspace.status_message.as_deref(),
-                Some("Syntax highlighting disabled for this tab")
-            );
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, Some(OverlayMode::Languages));
+            assert_eq!(workspace.overlay_items.len(), Language::ALL.len());
+            workspace.overlay_selected_index = workspace
+                .overlay_items
+                .iter()
+                .position(|item| {
+                    matches!(
+                        &item.target,
+                        OverlayTarget::Language {
+                            language: Language::Json,
+                            ..
+                        }
+                    )
+                })
+                .expect("JSON language option");
         });
-
+        cx.simulate_keystrokes("enter");
         cx.run_until_parked();
-        let language_control = cx
-            .debug_bounds("highlighting-status-toggle")
-            .expect("language status control remains visible");
-        cx.simulate_click(language_control.center(), gpui::Modifiers::none());
         workspace.update(&mut cx.cx, |workspace, cx| {
+            assert!(workspace.active_document().metadata.path.is_none());
+            assert_eq!(
+                workspace.active_document().metadata.language,
+                Language::Json
+            );
+            assert_eq!(
+                workspace.active_document().language_override,
+                Some(Language::Json)
+            );
             assert!(workspace.active_document().syntax_highlighting);
             assert_eq!(
                 workspace
@@ -7809,6 +8013,10 @@ mod tests {
                     .read(cx)
                     .highlighter_language(),
                 Some("json")
+            );
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Language mode set to JSON")
             );
         });
     }
@@ -7915,6 +8123,59 @@ mod tests {
             assert_eq!(
                 workspace.status_message.as_deref(),
                 Some("Reopened as CP437")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn encoding_picker_sets_the_save_encoding_for_a_dirty_untitled_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.run_until_parked();
+        cx.simulate_keystrokes("draft");
+        let encoding_control = cx
+            .debug_bounds("encoding-status-control")
+            .expect("visible encoding status control");
+        cx.simulate_click(encoding_control.center(), gpui::Modifiers::none());
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.overlay_mode, Some(OverlayMode::Encodings));
+            workspace.overlay_selected_index = workspace
+                .overlay_items
+                .iter()
+                .position(|item| {
+                    matches!(
+                        &item.target,
+                        OverlayTarget::Encoding {
+                            encoding: TextEncoding::Cp437,
+                            ..
+                        }
+                    )
+                })
+                .expect("CP437 option");
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            let document = workspace.active_document();
+            assert!(document.metadata.path.is_none());
+            assert!(document.dirty);
+            assert_eq!(document.metadata.encoding, TextEncoding::Cp437);
+            assert_eq!(document.editor.rope(cx).to_string(), "draft");
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("This document will be saved as CP437")
             );
         });
     }
