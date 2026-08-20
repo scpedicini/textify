@@ -6042,6 +6042,11 @@ mod tests {
         assert_eq!(preferred_dialog_directory(None, Some(workspace)), workspace);
     }
 
+    // application_file_paths handles the file URLs macOS delivers for Open With, and
+    // it treats anything Url::parse rejects as a literal path. A Windows path such as
+    // C:\tmp\notes.txt parses as a URL whose scheme is "c", so the fallback means
+    // something different there and the Unix spelling is the behavior under test.
+    #[cfg(unix)]
     #[test]
     fn application_file_urls_decode_paths_and_ignore_web_urls() {
         let encoded = Url::from_file_path("/tmp/Textify notes #1.txt")
