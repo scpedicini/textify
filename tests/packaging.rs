@@ -12,6 +12,9 @@ const WINDOWS_PACKAGER: &str = include_str!("../scripts/package-windows.ps1");
 const WINDOWS_INSTALLER: &str = include_str!("../packaging/windows/Textify.iss");
 const WINDOWS_ICON: &[u8] = include_bytes!("../packaging/windows/Textify.ico");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/prod-release.yml");
+const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build-platforms.yml");
+const PROD_PULL_REQUEST_WORKFLOW: &str = include_str!("../.github/workflows/prod-pr-check.yml");
+const VERSION_BUMPER: &str = include_str!("../scripts/bump-version.sh");
 
 #[test]
 fn macos_bundle_declares_the_textify_icon_resource() {
@@ -95,17 +98,56 @@ fn windows_distribution_has_embedded_icon_portable_zip_and_installer() {
 }
 
 #[test]
+fn shared_build_covers_every_native_runner_and_smoke_test() {
+    assert!(BUILD_WORKFLOW.contains("workflow_call"));
+    assert!(BUILD_WORKFLOW.contains("runs-on: ubuntu-22.04"));
+    assert!(BUILD_WORKFLOW.contains("runs-on: windows-2022"));
+    assert!(BUILD_WORKFLOW.contains("runs-on: macos-15"));
+    assert!(BUILD_WORKFLOW.contains("smoke-macos.sh"));
+    assert!(BUILD_WORKFLOW.contains("smoke-linux.sh"));
+    // lipo reads the file before the command, so the reversed form always fails.
+    assert!(BUILD_WORKFLOW.contains("MacOS/Textify -verify_arch arm64 x86_64"));
+    for artifact in [
+        "release-linux-x64",
+        "release-windows-x64",
+        "release-macos-universal",
+    ] {
+        assert!(BUILD_WORKFLOW.contains(artifact), "missing {artifact}");
+    }
+}
+
+#[test]
 fn prod_workflow_gates_publication_on_all_native_runner_builds() {
     assert!(RELEASE_WORKFLOW.contains("branches:\n      - prod"));
-    assert!(RELEASE_WORKFLOW.contains("runs-on: ubuntu-22.04"));
-    assert!(RELEASE_WORKFLOW.contains("runs-on: windows-2022"));
-    assert!(RELEASE_WORKFLOW.contains("runs-on: macos-15"));
-    assert!(RELEASE_WORKFLOW.contains("smoke-macos.sh"));
-    assert!(
-        RELEASE_WORKFLOW
-            .contains("needs:\n      - linux-x64\n      - windows-x64\n      - macos-universal")
-    );
+    assert!(RELEASE_WORKFLOW.contains("uses: ./.github/workflows/build-platforms.yml"));
+    assert!(RELEASE_WORKFLOW.contains("needs:\n      - version\n      - build"));
     assert!(RELEASE_WORKFLOW.contains("permissions:\n      contents: write"));
     assert!(RELEASE_WORKFLOW.contains("gh release create"));
     assert!(RELEASE_WORKFLOW.contains("SHA256SUMS"));
+}
+
+#[test]
+fn prod_pull_requests_run_the_same_platform_builds() {
+    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("pull_request:"));
+    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("branches:\n      - prod"));
+    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("uses: ./.github/workflows/build-platforms.yml"));
+}
+
+#[test]
+fn release_version_is_raised_from_pull_request_labels() {
+    for level in ["major", "minor", "patch"] {
+        assert!(
+            RELEASE_WORKFLOW.contains(&format!("release:{level}")),
+            "workflow ignores release:{level}"
+        );
+        assert!(
+            VERSION_BUMPER.contains(&format!("{level})")),
+            "bump script ignores {level}"
+        );
+    }
+    assert!(RELEASE_WORKFLOW.contains("./scripts/bump-version.sh"));
+    assert!(RELEASE_WORKFLOW.contains("chore(release): v${version}"));
+    // Both files carry the version, and CI builds with --locked.
+    assert!(VERSION_BUMPER.contains("Cargo.toml"));
+    assert!(VERSION_BUMPER.contains("Cargo.lock"));
 }
