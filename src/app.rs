@@ -6690,11 +6690,15 @@ mod tests {
             .debug_bounds("active-tab-close")
             .expect("visible active-tab close control");
         cx.simulate_click(close_tab.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
         assert!(cx.debug_bounds("active-dialog").is_some());
         let discard = cx
             .debug_bounds("discard-close")
             .expect("visible Don't Save control");
         cx.simulate_click(discard.center(), gpui::Modifiers::none());
+        // Closing the document runs through the dialog's callback, so the document
+        // list is only settled once the pending work has drained.
+        cx.run_until_parked();
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_eq!(workspace.documents.len(), 1);
             assert_ne!(workspace.active_id(), dirty_id);
