@@ -1,13 +1,19 @@
 use std::{
     fs::{self, File},
     ops::Range,
-    os::unix::fs::FileExt as _,
     path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+// Positional reads keep the huge-file viewer off the shared file cursor. Both
+// traits are named FileExt but only one exists per platform.
+#[cfg(unix)]
+use std::os::unix::fs::FileExt as _;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt as _;
 
 use anyhow::{Context, Result, bail};
 
@@ -360,8 +366,11 @@ impl LineIndex {
 }
 
 fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> Result<usize> {
-    file.read_at(buffer, offset)
-        .with_context(|| format!("could not read huge file at byte {offset}"))
+    #[cfg(unix)]
+    let read = file.read_at(buffer, offset);
+    #[cfg(windows)]
+    let read = file.seek_read(buffer, offset);
+    read.with_context(|| format!("could not read huge file at byte {offset}"))
 }
 
 fn valid_utf8_window(bytes: &[u8], allow_partial_prefix: bool) -> Result<(usize, &str)> {
