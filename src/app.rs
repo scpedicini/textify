@@ -6042,6 +6042,11 @@ mod tests {
         assert_eq!(preferred_dialog_directory(None, Some(workspace)), workspace);
     }
 
+    // application_file_paths handles the file URLs macOS delivers for Open With, and
+    // it treats anything Url::parse rejects as a literal path. A Windows path such as
+    // C:\tmp\notes.txt parses as a URL whose scheme is "c", so the fallback means
+    // something different there and the Unix spelling is the behavior under test.
+    #[cfg(unix)]
     #[test]
     fn application_file_urls_decode_paths_and_ignore_web_urls() {
         let encoded = Url::from_file_path("/tmp/Textify notes #1.txt")
@@ -6685,11 +6690,15 @@ mod tests {
             .debug_bounds("active-tab-close")
             .expect("visible active-tab close control");
         cx.simulate_click(close_tab.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
         assert!(cx.debug_bounds("active-dialog").is_some());
         let discard = cx
             .debug_bounds("discard-close")
             .expect("visible Don't Save control");
         cx.simulate_click(discard.center(), gpui::Modifiers::none());
+        // Closing the document runs through the dialog's callback, so the document
+        // list is only settled once the pending work has drained.
+        cx.run_until_parked();
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_eq!(workspace.documents.len(), 1);
             assert_ne!(workspace.active_id(), dirty_id);
