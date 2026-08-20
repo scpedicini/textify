@@ -336,6 +336,13 @@ mod tests {
 
     use super::*;
 
+    // Url::from_file_path rejects a path that is not absolute for the host, and
+    // Windows absolute paths need a drive letter.
+    #[cfg(unix)]
+    const SAMPLE_DIRECTORY: &str = "/tmp";
+    #[cfg(windows)]
+    const SAMPLE_DIRECTORY: &str = r"C:\tmp";
+
     #[test]
     fn protocol_reader_respects_content_length() {
         let body = br#"{"jsonrpc":"2.0","id":7,"result":null}"#;
@@ -349,9 +356,11 @@ mod tests {
 
     #[test]
     fn file_uris_and_definition_links_round_trip_spaces() {
-        let path = Path::new("/tmp/Textify Project/main.rs");
-        let uri = path_to_file_uri(path).expect("file URI");
-        assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
+        let path = Path::new(SAMPLE_DIRECTORY)
+            .join("Textify Project")
+            .join("main.rs");
+        let uri = path_to_file_uri(&path).expect("file URI");
+        assert_eq!(uri_to_path(&uri).as_deref(), Some(path.as_path()));
         let result = json!([{
             "targetUri": uri,
             "targetSelectionRange": {
@@ -374,11 +383,12 @@ mod tests {
 
     #[test]
     fn diagnostics_notification_is_parsed() {
+        let uri = path_to_file_uri(&Path::new(SAMPLE_DIRECTORY).join("main.rs")).expect("file URI");
         let event = parse_event(json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
             "params": {
-                "uri": "file:///tmp/main.rs",
+                "uri": uri,
                 "diagnostics": [{
                     "range": {
                         "start": {"line": 1, "character": 2},
