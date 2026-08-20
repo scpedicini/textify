@@ -7297,8 +7297,21 @@ mod tests {
         cx.simulate_input("alpha");
         cx.run_until_parked();
         workspace.update(&mut cx.cx, |workspace, _| {
-            assert_eq!(workspace.overlay_items.len(), 1);
-            assert_eq!(workspace.overlay_items[0].title, "alpha.txt");
+            // Recent files are scored on the whole path, and the fallback in
+            // fuzzy_command_token_score matches loose subsequences, so a temporary
+            // directory such as /var/folders/... can supply "a", "l", "p", "h" on its
+            // own. Assert on ranking instead of the match count, which depends on the
+            // ambient path and differs between Linux, macOS, and Windows.
+            let alpha = paths[0].file_name().and_then(|name| name.to_str()).unwrap();
+            assert_eq!(workspace.overlay_items[0].title, alpha);
+            assert_eq!(
+                workspace
+                    .overlay_items
+                    .iter()
+                    .filter(|item| item.title == alpha)
+                    .count(),
+                1
+            );
         });
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
