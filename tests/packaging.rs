@@ -97,6 +97,12 @@ fn windows_distribution_has_embedded_icon_portable_zip_and_installer() {
     assert!(WINDOWS_INSTALLER.contains("SupportedTypes"));
 }
 
+/// Git checks these files out with CRLF on Windows, so multi-line patterns have to
+/// be compared against normalized text.
+fn unix_newlines(contents: &str) -> String {
+    contents.replace("\r\n", "\n")
+}
+
 #[test]
 fn shared_build_covers_every_native_runner_and_smoke_test() {
     assert!(BUILD_WORKFLOW.contains("workflow_call"));
@@ -118,19 +124,21 @@ fn shared_build_covers_every_native_runner_and_smoke_test() {
 
 #[test]
 fn prod_workflow_gates_publication_on_all_native_runner_builds() {
-    assert!(RELEASE_WORKFLOW.contains("branches:\n      - prod"));
-    assert!(RELEASE_WORKFLOW.contains("uses: ./.github/workflows/build-platforms.yml"));
-    assert!(RELEASE_WORKFLOW.contains("needs:\n      - version\n      - build"));
-    assert!(RELEASE_WORKFLOW.contains("permissions:\n      contents: write"));
-    assert!(RELEASE_WORKFLOW.contains("gh release create"));
-    assert!(RELEASE_WORKFLOW.contains("SHA256SUMS"));
+    let workflow = unix_newlines(RELEASE_WORKFLOW);
+    assert!(workflow.contains("branches:\n      - prod"));
+    assert!(workflow.contains("uses: ./.github/workflows/build-platforms.yml"));
+    assert!(workflow.contains("needs:\n      - version\n      - build"));
+    assert!(workflow.contains("permissions:\n      contents: write"));
+    assert!(workflow.contains("gh release create"));
+    assert!(workflow.contains("SHA256SUMS"));
 }
 
 #[test]
 fn prod_pull_requests_run_the_same_platform_builds() {
-    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("pull_request:"));
-    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("branches:\n      - prod"));
-    assert!(PROD_PULL_REQUEST_WORKFLOW.contains("uses: ./.github/workflows/build-platforms.yml"));
+    let workflow = unix_newlines(PROD_PULL_REQUEST_WORKFLOW);
+    assert!(workflow.contains("pull_request:"));
+    assert!(workflow.contains("branches:\n      - prod"));
+    assert!(workflow.contains("uses: ./.github/workflows/build-platforms.yml"));
 }
 
 #[test]
