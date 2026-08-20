@@ -160,6 +160,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job only downloads artifacts, so there is no checkout for gh to read
+          # the repository from.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.version.outputs.version }}
           RELEASE_SHA: ${{ needs.version.outputs.sha }}
         run: |

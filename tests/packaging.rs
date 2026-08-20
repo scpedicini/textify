@@ -131,6 +131,8 @@ fn prod_workflow_gates_publication_on_all_native_runner_builds() {
     assert!(workflow.contains("permissions:\n      contents: write"));
     assert!(workflow.contains("gh release create"));
     assert!(workflow.contains("SHA256SUMS"));
+    // The publish job has no checkout, so gh needs the repository from the environment.
+    assert!(workflow.contains("GH_REPO:"));
 }
 
 #[test]
