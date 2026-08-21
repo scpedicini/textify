@@ -11,6 +11,16 @@ Textify's changes are limited to its editor requirements:
 - unknown and explicit `text` languages never initialize a Tree-sitter parser.
 - editor builders expose an approximate undo-memory budget and a search-decoration limit.
 - Command-scroll is passed to the host application for Textify's per-tab text zoom.
+- text zoom keeps the document row under the pointer (or the caret row) anchored across
+  font-size changes: `InputState::preserve_zoom_anchor_at` / `preserve_cursor_anchor` capture
+  the anchor, and `prepaint` in `input/element.rs` applies it to the scroll offset *before*
+  the visible line range is computed. That ordering is load-bearing — the visible range is
+  derived from the scroll offset, so correcting the offset any later shapes lines for the
+  stale position and the anchored frame paints a blank, flashing gap mid-document
+  (`zoom_anchor_moves_the_scroll_offset_before_the_next_visible_range` in `input/state.rs`
+  guards the contract).
+- `InputState::scroll_offset` is public so the host application can assert editor scroll
+  behavior (modal occlusion, zoom) in its own tests.
 - selection sets provide contained multicursor editing, rectangular selection, and grouped undo.
 
 Upgrade by replacing the upstream sources, reapplying these contained changes, and running the

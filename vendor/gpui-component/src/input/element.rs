@@ -980,14 +980,19 @@ impl Element for TextElement {
         let style = window.text_style();
         let font = style.font();
         let text_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = window.line_height();
 
         self.state.update(cx, |state, cx| {
             state.text_wrapper.set_font(font, text_size, cx);
             state.text_wrapper.prepare_if_need(&state.text, cx);
+            // The visible range below is derived from the scroll offset, so a
+            // pending zoom anchor has to move the offset now; applying it only
+            // in layout_cursor would shape lines for the stale offset and the
+            // anchored frame would paint with an uncovered, flashing gap.
+            state.apply_zoom_anchor(line_height);
         });
 
         let state = self.state.read(cx);
-        let line_height = window.line_height();
 
         let (visible_range, visible_top) =
             self.calculate_visible_range(&state, line_height, bounds.size.height);

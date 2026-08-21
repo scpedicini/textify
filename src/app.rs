@@ -803,6 +803,17 @@ impl Workspace {
                 error
             })
             .ok();
+        // The close button quits Textify through the same persistence path as
+        // Quit. Letting the window close on its own would strand a windowless
+        // process that Raycast/the Dock can no longer surface, and would skip
+        // the final recovery and session writes.
+        let close_target = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            close_target
+                .update(cx, |workspace, cx| workspace.begin_quit(window, cx))
+                .ok();
+            false
+        });
         let mut workspace = Self {
             documents: Vec::new(),
             active_index: 0,
@@ -1359,16 +1370,22 @@ impl Workspace {
         if self.restoring_session {
             return;
         }
-        let paths = self
+        let batches = self
             .application_open_paths
             .as_ref()
-            .map(|receiver| receiver.try_iter().flatten().collect::<Vec<_>>())
+            .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
             .unwrap_or_default();
-        if paths.is_empty() {
+        if batches.is_empty() {
             return;
         }
+        // A batch with no paths is a hand-off from a second launch that only
+        // wants the running instance brought to the front.
+        cx.activate(true);
         window.activate_window();
-        self.open_external_paths(paths, window, cx);
+        let paths = batches.concat();
+        if !paths.is_empty() {
+            self.open_external_paths(paths, window, cx);
+        }
     }
 
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3106,6 +3123,15 @@ impl Workspace {
     }
 
     fn on_quit_textify(&mut self, _: &QuitTextify, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_quit(window, cx);
+    }
+
+    /// Persist recovery snapshots and the final session, then quit.
+    ///
+    /// Shared by the Quit action and the window close button so both leave the
+    /// same state on disk; the close button must never strand a windowless
+    /// process or skip the final session write.
+    fn begin_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.quitting {
             return;
         }
@@ -4667,6 +4693,9 @@ impl Workspace {
             .id("ide-overlay-backdrop")
             .absolute()
             .inset_0()
+            // The workspace beneath must not react to pointer or scroll input
+            // while the overlay is up.
+            .occlude()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|workspace, _, window, cx| workspace.dismiss_overlay(window, cx)),
@@ -4702,12 +4731,16 @@ impl Workspace {
         let recent_workspace = cx.entity();
 
         div()
+            .id("settings-backdrop")
             .absolute()
             .top_0()
             .right_0()
             .bottom_0()
             .left_0()
             .bg(cx.theme().background.opacity(0.78))
+            // Settings is modal: the editor beneath must not scroll, zoom, or
+            // otherwise react to mouse input while it is open.
+            .occlude()
             .child(
                 v_flex()
                     .absolute()
@@ -5967,6 +6000,20 @@ pub fn run() {
 
     let (open_path_sender, open_path_receiver) = mpsc::channel();
     let argument_paths = application_argument_paths(std::env::args_os().skip(1));
+
+    // Only one Textify may run per user: a second launch (Raycast, Spotlight,
+    // the command line) hands its paths to the running instance — which brings
+    // its window to the front — and exits before any UI or session state is
+    // touched. Two live instances would clobber each other's persisted session.
+    let Some(_single_instance) = crate::instance::acquire(
+        &textify_data_dir(),
+        &argument_paths,
+        open_path_sender.clone(),
+    ) else {
+        tracing::info!("a running Textify instance took over this launch");
+        return;
+    };
+
     if !argument_paths.is_empty() && open_path_sender.send(argument_paths).is_err() {
         tracing::warn!("could not queue files requested on the command line");
     }
@@ -6477,6 +6524,114 @@ mod tests {
                 Some("Opened 1 file(s)")
             );
         });
+    }
+
+    #[gpui::test]
+    fn settings_modal_blocks_scrolling_the_editor_beneath(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        let text = (0..400)
+            .map(|index| format!("line {index}: long enough to scroll"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .active_document()
+                    .editor
+                    .set_text(text, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let center = cx.update(|window, _| {
+            let viewport = window.viewport_size();
+            gpui::point(viewport.width / 2., viewport.height / 2.)
+        });
+        let scroll = ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Lines(gpui::point(0., -5.)),
+            ..ScrollWheelEvent::default()
+        };
+        let editor_offset = |workspace: &Workspace, cx: &gpui::App| {
+            workspace.active_document().editor.state().read(cx).scroll_offset()
+        };
+
+        // Sanity: with no modal up, the wheel scrolls the editor.
+        cx.simulate_event(scroll.clone());
+        let scrolled = workspace.update(&mut cx.cx, |workspace, cx| editor_offset(workspace, cx));
+        assert!(scrolled.y < gpui::px(0.), "editor should scroll when no modal is up");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.show_settings(window, cx));
+        });
+        cx.run_until_parked();
+
+        // With the Settings modal up, the editor beneath must not move.
+        cx.simulate_event(scroll);
+        let after = workspace.update(&mut cx.cx, |workspace, cx| editor_offset(workspace, cx));
+        assert_eq!(
+            after, scrolled,
+            "the editor scrolled behind the Settings modal"
+        );
+    }
+
+    #[gpui::test]
+    fn window_close_request_saves_state_and_quits_instead_of_lingering(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("close-request directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let session_path = directory.path().join("session.json");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = session_path.clone();
+                workspace.recent_files_path = directory.path().join("recent-files.json");
+                workspace.active_document().editor.set_text(
+                    "unsaved words that must survive the close button".to_owned(),
+                    window,
+                    cx,
+                );
+                workspace.documents[0].dirty = true;
+            });
+        });
+        cx.run_until_parked();
+
+        // The red close button must not close the window directly: the quit
+        // flow persists state first and then exits the whole process, so no
+        // windowless instance can linger.
+        assert!(!cx.simulate_close(), "close must defer to the quit flow");
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.quitting, "closing the window must quit Textify");
+        });
+        assert!(
+            session_path.exists(),
+            "the final session must be persisted before the process exits"
+        );
     }
 
     #[test]
