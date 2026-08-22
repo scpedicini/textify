@@ -1,0 +1,53 @@
+name: Main check
+
+# Fast feedback on main. Runs the cheap checks that used to only surface at
+# release time, so formatting or test breakage is caught in about a minute
+# instead of when prod-release.yml is already building packages.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: main-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: Format and tests
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install native build and smoke-test dependencies
+        run: ./scripts/install-linux-build-deps.sh
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            linux-x64-cargo-${{ hashFiles('Cargo.lock') }}-
+            linux-x64-cargo-
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run tests
+        run: cargo test --locked --workspace --all-targets -- --test-threads=1
