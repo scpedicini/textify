@@ -46,7 +46,10 @@ pub fn acquire(
 ) -> Option<PrimaryInstance> {
     if let Err(error) = std::fs::create_dir_all(data_dir) {
         tracing::warn!(%error, "could not prepare the data directory; running without single-instance protection");
-        return Some(PrimaryInstance { endpoint: None, shutdown: None });
+        return Some(PrimaryInstance {
+            endpoint: None,
+            shutdown: None,
+        });
     }
     platform::acquire(data_dir, launch_paths, sender)
 }
@@ -58,7 +61,10 @@ fn encode_paths(paths: &[PathBuf]) -> String {
         // represented and is dropped rather than corrupting the stream.
         let text = path.to_string_lossy();
         if text.contains('\n') {
-            tracing::warn!(?path, "skipping path with embedded newline in instance hand-off");
+            tracing::warn!(
+                ?path,
+                "skipping path with embedded newline in instance hand-off"
+            );
             continue;
         }
         payload.push_str(&text);
@@ -136,7 +142,10 @@ mod platform {
             Ok(listener) => listener,
             Err(error) => {
                 tracing::warn!(%error, "could not bind the single-instance socket; running without protection");
-                return Some(PrimaryInstance { endpoint: None, shutdown: None });
+                return Some(PrimaryInstance {
+                    endpoint: None,
+                    shutdown: None,
+                });
             }
         };
 
@@ -243,14 +252,20 @@ mod platform {
                 Ok(()) => return None,
                 Err(error) => {
                     tracing::warn!(%error, "could not hand off to the running instance; continuing this launch");
-                    return Some(PrimaryInstance { endpoint: None, shutdown: None });
+                    return Some(PrimaryInstance {
+                        endpoint: None,
+                        shutdown: None,
+                    });
                 }
             }
         }
 
         if let Err(error) = std::fs::write(&heartbeat_path, b"textify") {
             tracing::warn!(%error, "could not claim the single-instance heartbeat; running without protection");
-            return Some(PrimaryInstance { endpoint: None, shutdown: None });
+            return Some(PrimaryInstance {
+                endpoint: None,
+                shutdown: None,
+            });
         }
         let _ = std::fs::create_dir_all(&mailbox_dir);
 
@@ -306,7 +321,10 @@ mod tests {
             &[PathBuf::from("/tmp/example-notes.txt")],
             unused_sender,
         );
-        assert!(handed_off.is_none(), "second launch must not become primary");
+        assert!(
+            handed_off.is_none(),
+            "second launch must not become primary"
+        );
 
         let batch = receiver
             .recv_timeout(Duration::from_secs(5))
@@ -327,7 +345,10 @@ mod tests {
         let batch = receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("activation batch");
-        assert!(batch.is_empty(), "a pathless launch forwards an empty batch");
+        assert!(
+            batch.is_empty(),
+            "a pathless launch forwards an empty batch"
+        );
         drop(primary);
     }
 
@@ -341,7 +362,10 @@ mod tests {
 
         let (sender, _receiver) = mpsc::channel();
         let primary = acquire(directory.path(), &[], sender);
-        assert!(primary.is_some(), "stale endpoint must not block a new launch");
+        assert!(
+            primary.is_some(),
+            "stale endpoint must not block a new launch"
+        );
     }
 
     #[test]
