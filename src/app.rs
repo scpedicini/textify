@@ -6686,13 +6686,21 @@ mod tests {
             ..ScrollWheelEvent::default()
         };
         let editor_offset = |workspace: &Workspace, cx: &gpui::App| {
-            workspace.active_document().editor.state().read(cx).scroll_offset()
+            workspace
+                .active_document()
+                .editor
+                .state()
+                .read(cx)
+                .scroll_offset()
         };
 
         // Sanity: with no modal up, the wheel scrolls the editor.
         cx.simulate_event(scroll.clone());
         let scrolled = workspace.update(&mut cx.cx, |workspace, cx| editor_offset(workspace, cx));
-        assert!(scrolled.y < gpui::px(0.), "editor should scroll when no modal is up");
+        assert!(
+            scrolled.y < gpui::px(0.),
+            "editor should scroll when no modal is up"
+        );
 
         cx.update(|window, cx| {
             workspace.update(cx, |workspace, cx| workspace.show_settings(window, cx));

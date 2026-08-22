@@ -2901,7 +2901,10 @@ mod tests {
             let new_line_height = old_line_height * 1.5;
             input.apply_zoom_anchor(new_line_height);
 
-            let display_row = input.text_wrapper.offset_to_display_point(anchor_offset).row as f32;
+            let display_row = input
+                .text_wrapper
+                .offset_to_display_point(anchor_offset)
+                .row as f32;
             let expected = (anchor_viewport_y - display_row * new_line_height).min(px(0.));
             assert_eq!(input.scroll_handle.offset().y, expected);
             // The anchored row still sits at its captured viewport position.
