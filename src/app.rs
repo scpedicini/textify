@@ -660,6 +660,7 @@ struct SettingsDraft {
     show_tagline: bool,
     show_line_numbers: bool,
     minimap_on_by_default: bool,
+    word_wrap_on_by_default: bool,
     indentation: IndentationSettings,
     recovery: RecoverySettings,
     recent_files: crate::settings::RecentFileSettings,
@@ -702,6 +703,8 @@ pub struct Workspace {
     recent_files_path: PathBuf,
     recent_files_revision: u64,
     recent_files_persisting: bool,
+    session_revision: u64,
+    session_persisting: bool,
     watcher: Option<FileWatcher>,
     session_path: PathBuf,
     restoring_session: bool,
@@ -710,6 +713,9 @@ pub struct Workspace {
     created_at: Instant,
     first_paint_logged: bool,
     data_dir: PathBuf,
+    // Keeps each GPUI test's private application-data directory alive for the
+    // lifetime of its workspace. Production workspaces leave this empty.
+    _ephemeral_data_dir: Option<tempfile::TempDir>,
     keymap: TextifyKeymap,
     config_reload_in_progress: bool,
     project: Option<ProjectIndex>,
@@ -748,7 +754,29 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let data_dir = textify_data_dir();
+        #[cfg(test)]
+        {
+            let data_dir = tempfile::tempdir().expect("isolated Textify test data");
+            return Self::new_at_data_dir(
+                data_dir.path().to_path_buf(),
+                false,
+                Some(data_dir),
+                window,
+                cx,
+            );
+        }
+
+        #[cfg(not(test))]
+        Self::new_at_data_dir(textify_data_dir(), true, None, window, cx)
+    }
+
+    fn new_at_data_dir(
+        data_dir: PathBuf,
+        restoring_session: bool,
+        ephemeral_data_dir: Option<tempfile::TempDir>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut settings =
             TextifySettings::load(&data_dir.join("settings.json")).unwrap_or_else(|error| {
                 tracing::warn!(%error, "using default settings");
@@ -803,6 +831,17 @@ impl Workspace {
                 error
             })
             .ok();
+        // The close button quits Textify through the same persistence path as
+        // Quit. Letting the window close on its own would strand a windowless
+        // process that Raycast/the Dock can no longer surface, and would skip
+        // the final recovery and session writes.
+        let close_target = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            close_target
+                .update(cx, |workspace, cx| workspace.begin_quit(window, cx))
+                .ok();
+            false
+        });
         let mut workspace = Self {
             documents: Vec::new(),
             active_index: 0,
@@ -814,14 +853,17 @@ impl Workspace {
             recent_files_path,
             recent_files_revision: 0,
             recent_files_persisting: false,
+            session_revision: 0,
+            session_persisting: false,
             watcher,
             session_path: data_dir.join("session.json"),
-            restoring_session: false,
+            restoring_session,
             application_open_paths: None,
             external_scan_in_progress: false,
             created_at: Instant::now(),
             first_paint_logged: false,
             data_dir,
+            _ephemeral_data_dir: ephemeral_data_dir,
             keymap,
             config_reload_in_progress: false,
             project: None,
@@ -880,6 +922,7 @@ impl Workspace {
     fn add_untitled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let analysis = FileAnalysis::from_bytes(b"");
         let metadata = DocumentMetadata::new(None, analysis, self.policy);
+        let word_wrap = self.default_word_wrap(metadata.mode);
         let untitled_number = self.next_untitled_number;
         self.next_untitled_number += 1;
         self.push_document(
@@ -891,7 +934,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
-                word_wrap: false,
+                word_wrap,
                 minimap: None,
                 language_override: None,
                 metadata,
@@ -910,6 +953,7 @@ impl Workspace {
         }
 
         let path = loaded.metadata.path.clone();
+        let word_wrap = self.default_word_wrap(loaded.metadata.mode);
         self.push_document(
             DocumentSeed {
                 text: loaded.text,
@@ -920,7 +964,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
-                word_wrap: false,
+                word_wrap,
                 minimap: None,
                 language_override: None,
             },
@@ -964,6 +1008,7 @@ impl Workspace {
                 return;
             }
         };
+        let word_wrap = self.default_word_wrap(metadata.mode);
         self.push_document(
             DocumentSeed {
                 text: String::new(),
@@ -974,7 +1019,7 @@ impl Workspace {
                 dirty: false,
                 recovery_path: None,
                 font_size_override: None,
-                word_wrap: false,
+                word_wrap,
                 minimap: None,
                 language_override: None,
             },
@@ -995,6 +1040,10 @@ impl Workspace {
         document._huge_subscription = Some(subscription);
         self.persist_session(cx);
         cx.notify();
+    }
+
+    fn default_word_wrap(&self, mode: FileMode) -> bool {
+        self.settings.appearance.word_wrap_on_by_default && mode == FileMode::Normal
     }
 
     fn push_document(&mut self, seed: DocumentSeed, window: &mut Window, cx: &mut Context<Self>) {
@@ -1109,11 +1158,22 @@ impl Workspace {
         window.set_window_title(&format!("{} — Textify", self.active_document().title(cx)));
     }
 
-    fn persist_session(&self, cx: &mut Context<Self>) {
-        if self.restoring_session {
+    fn persist_session(&mut self, cx: &mut Context<Self>) {
+        if self.restoring_session || self.quitting {
             return;
         }
 
+        self.session_revision = self.session_revision.wrapping_add(1);
+        self.start_session_persist(cx);
+    }
+
+    fn start_session_persist(&mut self, cx: &mut Context<Self>) {
+        if self.session_persisting || self.restoring_session || self.quitting {
+            return;
+        }
+
+        self.session_persisting = true;
+        let revision = self.session_revision;
         let tabs = self.session_tabs();
         let active_id = self.active_id();
         let active_index = tabs
@@ -1125,10 +1185,23 @@ impl Workspace {
             SessionState::from_tabs(active_index, tabs.into_iter().map(|(_, tab)| tab).collect())
                 .with_workspace_root(workspace_root);
         let path = self.session_path.clone();
-        cx.background_spawn(async move {
-            if let Err(error) = save_session(&path, &state) {
-                tracing::warn!(%error, "could not persist session");
-            }
+        let task = cx.background_spawn(async move { save_session(&path, &state) });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let Some(workspace) = workspace.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.session_persisting = false;
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "could not persist session");
+                    }
+                    if workspace.session_revision != revision {
+                        workspace.start_session_persist(cx);
+                    }
+                })
+                .ok();
         })
         .detach();
     }
@@ -1359,16 +1432,22 @@ impl Workspace {
         if self.restoring_session {
             return;
         }
-        let paths = self
+        let batches = self
             .application_open_paths
             .as_ref()
-            .map(|receiver| receiver.try_iter().flatten().collect::<Vec<_>>())
+            .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
             .unwrap_or_default();
-        if paths.is_empty() {
+        if batches.is_empty() {
             return;
         }
+        // A batch with no paths is a hand-off from a second launch that only
+        // wants the running instance brought to the front.
+        cx.activate(true);
         window.activate_window();
-        self.open_external_paths(paths, window, cx);
+        let paths = batches.concat();
+        if !paths.is_empty() {
+            self.open_external_paths(paths, window, cx);
+        }
     }
 
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1398,9 +1477,9 @@ impl Workspace {
             let restored = task.await;
             workspace
                 .update_in(window, |workspace, window, cx| {
-                    workspace.restoring_session = false;
                     match restored {
                         Ok((active_index, loaded, workspace_root)) => {
+                            let mut failures = 0usize;
                             let had_paths = loaded.iter().any(Result::is_ok);
                             if had_paths
                                 && workspace.documents.len() == 1
@@ -1447,11 +1526,14 @@ impl Workspace {
                                             .max(seed.untitled_number.saturating_add(1));
                                         workspace.push_document(seed, window, cx);
                                     }
-                                    Err((path, error)) => tracing::warn!(
-                                        %error,
-                                        path = %path.display(),
-                                        "could not restore tab"
-                                    ),
+                                    Err((path, error)) => {
+                                        failures += 1;
+                                        tracing::warn!(
+                                            %error,
+                                            path = %path.display(),
+                                            "could not restore tab"
+                                        );
+                                    }
                                 }
                             }
                             if workspace.documents.is_empty() {
@@ -1466,10 +1548,26 @@ impl Workspace {
                             if let Some(root) = workspace_root {
                                 workspace.start_project_index(root, window, cx);
                             }
+                            workspace.restoring_session = false;
+                            if failures == 0 {
+                                workspace.persist_session(cx);
+                            } else {
+                                workspace.status_message = Some(format!(
+                                    "Could not restore {failures} tab(s); previous session metadata was preserved"
+                                ));
+                                cx.notify();
+                            }
                         }
-                        Err(error) => tracing::warn!(%error, "could not restore session"),
+                        Err(error) => {
+                            workspace.restoring_session = false;
+                            workspace.status_message = Some(
+                                "Could not restore the previous session; session metadata was preserved"
+                                    .to_owned(),
+                            );
+                            tracing::warn!(%error, "could not restore session");
+                            cx.notify();
+                        }
                     }
-                    workspace.persist_session(cx);
                 })
                 .ok()
         })
@@ -1746,6 +1844,7 @@ impl Workspace {
                 .update_in(window, |workspace, window, cx| {
                     let analysis = FileAnalysis::from_bytes(comparison.as_bytes());
                     let metadata = DocumentMetadata::new(None, analysis, workspace.policy);
+                    let word_wrap = workspace.default_word_wrap(metadata.mode);
                     let untitled_number = workspace.next_untitled_number;
                     workspace.next_untitled_number += 1;
                     workspace.push_document(
@@ -1758,7 +1857,7 @@ impl Workspace {
                             dirty: false,
                             recovery_path: None,
                             font_size_override: None,
-                            word_wrap: false,
+                            word_wrap,
                             minimap: None,
                             language_override: None,
                         },
@@ -1795,6 +1894,7 @@ impl Workspace {
                     Ok(text) => {
                         let analysis = FileAnalysis::from_bytes(text.as_bytes());
                         let metadata = DocumentMetadata::new(None, analysis, workspace.policy);
+                        let word_wrap = workspace.default_word_wrap(metadata.mode);
                         let untitled_number = workspace.next_untitled_number;
                         workspace.next_untitled_number += 1;
                         workspace.push_document(
@@ -1807,7 +1907,7 @@ impl Workspace {
                                 dirty: true,
                                 recovery_path: None,
                                 font_size_override: None,
-                                word_wrap: false,
+                                word_wrap,
                                 minimap: None,
                                 language_override: None,
                             },
@@ -2546,6 +2646,7 @@ impl Workspace {
             show_tagline: self.settings.appearance.show_tagline,
             show_line_numbers: self.settings.appearance.show_line_numbers,
             minimap_on_by_default: self.settings.appearance.minimap_on_by_default,
+            word_wrap_on_by_default: self.settings.appearance.word_wrap_on_by_default,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -2625,6 +2726,7 @@ impl Workspace {
         settings.appearance.show_tagline = draft.show_tagline;
         settings.appearance.show_line_numbers = draft.show_line_numbers;
         settings.appearance.minimap_on_by_default = draft.minimap_on_by_default;
+        settings.appearance.word_wrap_on_by_default = draft.word_wrap_on_by_default;
         settings.appearance.normalize();
         settings.indentation = draft.indentation;
         settings.indentation.normalize();
@@ -3106,6 +3208,15 @@ impl Workspace {
     }
 
     fn on_quit_textify(&mut self, _: &QuitTextify, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_quit(window, cx);
+    }
+
+    /// Persist recovery snapshots and the final session, then quit.
+    ///
+    /// Shared by the Quit action and the window close button so both leave the
+    /// same state on disk; the close button must never strand a windowless
+    /// process or skip the final session write.
+    fn begin_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.quitting {
             return;
         }
@@ -4667,6 +4778,9 @@ impl Workspace {
             .id("ide-overlay-backdrop")
             .absolute()
             .inset_0()
+            // The workspace beneath must not react to pointer or scroll input
+            // while the overlay is up.
+            .occlude()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|workspace, _, window, cx| workspace.dismiss_overlay(window, cx)),
@@ -4680,6 +4794,7 @@ impl Workspace {
             show_tagline: self.settings.appearance.show_tagline,
             show_line_numbers: self.settings.appearance.show_line_numbers,
             minimap_on_by_default: self.settings.appearance.minimap_on_by_default,
+            word_wrap_on_by_default: self.settings.appearance.word_wrap_on_by_default,
             indentation: self.settings.indentation,
             recovery: self.settings.recovery.clone(),
             recent_files: self.settings.recent_files.clone(),
@@ -4689,6 +4804,7 @@ impl Workspace {
         let tagline_enabled = draft.show_tagline;
         let line_numbers_enabled = draft.show_line_numbers;
         let minimap_on_by_default = draft.minimap_on_by_default;
+        let word_wrap_on_by_default = draft.word_wrap_on_by_default;
         let tab_width = draft.indentation.tab_width;
         let hard_tabs = draft.indentation.hard_tabs;
         let recent_enabled = draft.recent_files.enabled;
@@ -4698,16 +4814,21 @@ impl Workspace {
         let tagline_workspace = cx.entity();
         let line_numbers_workspace = cx.entity();
         let minimap_workspace = cx.entity();
+        let word_wrap_workspace = cx.entity();
         let indentation_workspace = cx.entity();
         let recent_workspace = cx.entity();
 
         div()
+            .id("settings-backdrop")
             .absolute()
             .top_0()
             .right_0()
             .bottom_0()
             .left_0()
             .bg(cx.theme().background.opacity(0.78))
+            // Settings is modal: the editor beneath must not scroll, zoom, or
+            // otherwise react to mouse input while it is open.
+            .occlude()
             .child(
                 v_flex()
                     .absolute()
@@ -4797,6 +4918,40 @@ impl Workspace {
                                                         cx.notify();
                                                     },
                                                 );
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Word Wrap On By Default"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Wrap long lines in newly opened tabs."),
+                                            ),
+                                    )
+                                    .child(
+                                        Switch::new("settings-word-wrap-default")
+                                            .checked(word_wrap_on_by_default)
+                                            .on_click(move |checked, _, cx| {
+                                                word_wrap_workspace.update(cx, |workspace, cx| {
+                                                    if let Some(draft) =
+                                                        &mut workspace.settings_draft
+                                                    {
+                                                        draft.word_wrap_on_by_default = *checked;
+                                                    }
+                                                    cx.notify();
+                                                });
                                             }),
                                     ),
                             )
@@ -5967,6 +6122,20 @@ pub fn run() {
 
     let (open_path_sender, open_path_receiver) = mpsc::channel();
     let argument_paths = application_argument_paths(std::env::args_os().skip(1));
+
+    // Only one Textify may run per user: a second launch (Raycast, Spotlight,
+    // the command line) hands its paths to the running instance — which brings
+    // its window to the front — and exits before any UI or session state is
+    // touched. Two live instances would clobber each other's persisted session.
+    let Some(_single_instance) = crate::instance::acquire(
+        &textify_data_dir(),
+        &argument_paths,
+        open_path_sender.clone(),
+    ) else {
+        tracing::info!("a running Textify instance took over this launch");
+        return;
+    };
+
     if !argument_paths.is_empty() && open_path_sender.send(argument_paths).is_err() {
         tracing::warn!("could not queue files requested on the command line");
     }
@@ -6479,6 +6648,114 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn settings_modal_blocks_scrolling_the_editor_beneath(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        let text = (0..400)
+            .map(|index| format!("line {index}: long enough to scroll"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .active_document()
+                    .editor
+                    .set_text(text, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let center = cx.update(|window, _| {
+            let viewport = window.viewport_size();
+            gpui::point(viewport.width / 2., viewport.height / 2.)
+        });
+        let scroll = ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Lines(gpui::point(0., -5.)),
+            ..ScrollWheelEvent::default()
+        };
+        let editor_offset = |workspace: &Workspace, cx: &gpui::App| {
+            workspace.active_document().editor.state().read(cx).scroll_offset()
+        };
+
+        // Sanity: with no modal up, the wheel scrolls the editor.
+        cx.simulate_event(scroll.clone());
+        let scrolled = workspace.update(&mut cx.cx, |workspace, cx| editor_offset(workspace, cx));
+        assert!(scrolled.y < gpui::px(0.), "editor should scroll when no modal is up");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.show_settings(window, cx));
+        });
+        cx.run_until_parked();
+
+        // With the Settings modal up, the editor beneath must not move.
+        cx.simulate_event(scroll);
+        let after = workspace.update(&mut cx.cx, |workspace, cx| editor_offset(workspace, cx));
+        assert_eq!(
+            after, scrolled,
+            "the editor scrolled behind the Settings modal"
+        );
+    }
+
+    #[gpui::test]
+    fn window_close_request_saves_state_and_quits_instead_of_lingering(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("close-request directory");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        let session_path = directory.path().join("session.json");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = session_path.clone();
+                workspace.recent_files_path = directory.path().join("recent-files.json");
+                workspace.active_document().editor.set_text(
+                    "unsaved words that must survive the close button".to_owned(),
+                    window,
+                    cx,
+                );
+                workspace.documents[0].dirty = true;
+            });
+        });
+        cx.run_until_parked();
+
+        // The red close button must not close the window directly: the quit
+        // flow persists state first and then exits the whole process, so no
+        // windowless instance can linger.
+        assert!(!cx.simulate_close(), "close must defer to the quit flow");
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert!(workspace.quitting, "closing the window must quit Textify");
+        });
+        assert!(
+            session_path.exists(),
+            "the final session must be persisted before the process exits"
+        );
+    }
+
     #[test]
     fn recovered_named_file_keeps_disk_identity_and_draft_text() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -6550,6 +6827,145 @@ mod tests {
     }
 
     #[gpui::test]
+    fn startup_restore_preserves_and_reopens_every_recovery_tab(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let backups = directory.path().join("Backups");
+        let first = write_snapshot(&backups, 101, 7, ["first recovered draft"])
+            .expect("first recovery snapshot");
+        let second = write_snapshot(&backups, 102, 9, ["second recovered draft"])
+            .expect("second recovery snapshot");
+        let tab = |recovery_path: PathBuf, untitled_number| SessionTab {
+            path: None,
+            recovery_path: Some(recovery_path),
+            untitled_number,
+            label_override: None,
+            dirty: true,
+            encoding: TextEncoding::Utf8,
+            language_override: None,
+            font_size_override: None,
+            word_wrap: false,
+            minimap_override: None,
+        };
+        let expected = SessionState::from_tabs(1, vec![tab(first, 1), tab(second, 2)]);
+        let session_path = directory.path().join("session.json");
+        save_session(&session_path, &expected).expect("session fixture");
+
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let data_dir = directory.path().to_path_buf();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace =
+                cx.new(|cx| Workspace::new_at_data_dir(data_dir.clone(), true, None, window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        assert_eq!(
+            load_session(&session_path).expect("untouched session"),
+            expected
+        );
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.restore_session(window, cx));
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(workspace.documents.len(), 2);
+            assert_eq!(workspace.active_index, 1);
+            assert_eq!(
+                workspace.documents[0].editor.rope(cx).to_string(),
+                "first recovered draft"
+            );
+            assert_eq!(
+                workspace.documents[1].editor.rope(cx).to_string(),
+                "second recovered draft"
+            );
+            assert!(!workspace.restoring_session);
+        });
+        assert_eq!(
+            load_session(&session_path).expect("restored session"),
+            expected
+        );
+    }
+
+    #[gpui::test]
+    fn failed_startup_restore_does_not_replace_session_metadata(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let session_path = directory.path().join("session.json");
+        let state = SessionState::from_tabs(
+            0,
+            vec![SessionTab {
+                path: None,
+                recovery_path: Some(directory.path().join("missing-recovery.txt")),
+                untitled_number: 3,
+                label_override: Some("Important draft".to_owned()),
+                dirty: true,
+                encoding: TextEncoding::Utf8,
+                language_override: None,
+                font_size_override: None,
+                word_wrap: true,
+                minimap_override: None,
+            }],
+        );
+        save_session(&session_path, &state).expect("session fixture");
+        let original = fs::read(&session_path).expect("original session bytes");
+
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let data_dir = directory.path().to_path_buf();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace =
+                cx.new(|cx| Workspace::new_at_data_dir(data_dir.clone(), true, None, window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.restore_session(window, cx));
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            fs::read(&session_path).expect("preserved session bytes"),
+            original
+        );
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_eq!(workspace.documents.len(), 1);
+            assert_eq!(
+                workspace.status_message.as_deref(),
+                Some("Could not restore 1 tab(s); previous session metadata was preserved")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn gpui_workspaces_use_isolated_application_data(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        workspace.update(&mut cx.cx, |workspace, _| {
+            assert_ne!(workspace.data_dir, textify_data_dir());
+            assert!(workspace._ephemeral_data_dir.is_some());
+        });
+    }
+
+    #[gpui::test]
     fn settings_window_uses_current_appearance_and_recovery_values(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -6591,6 +7007,10 @@ mod tests {
             assert_eq!(
                 draft.minimap_on_by_default,
                 workspace.settings.appearance.minimap_on_by_default
+            );
+            assert_eq!(
+                draft.word_wrap_on_by_default,
+                workspace.settings.appearance.word_wrap_on_by_default
             );
             assert_eq!(draft.indentation, workspace.settings.indentation);
             assert_eq!(draft.recovery, workspace.settings.recovery);
@@ -7840,6 +8260,59 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn word_wrap_default_is_saved_and_applied_to_new_tabs(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("settings directory");
+        let path = directory.path().join("newly-opened.txt");
+        fs::write(&path, "a long line in a newly opened file\n").expect("fixture");
+        let loaded = load_text(&path, FilePolicy::default()).expect("loaded fixture");
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.show_settings(window, cx);
+                workspace
+                    .settings_draft
+                    .as_mut()
+                    .expect("settings draft")
+                    .word_wrap_on_by_default = true;
+                workspace.save_settings_window(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                assert!(workspace.settings.appearance.word_wrap_on_by_default);
+
+                workspace.add_untitled(window, cx);
+                assert!(workspace.active_document().word_wrap);
+                workspace.on_toggle_word_wrap(&ToggleWordWrap, window, cx);
+                assert!(!workspace.active_document().word_wrap);
+
+                workspace.push_loaded(loaded, window, cx);
+                assert!(workspace.active_document().word_wrap);
+            });
+        });
+        cx.run_until_parked();
+
+        let saved =
+            TextifySettings::load(&directory.path().join("settings.json")).expect("saved settings");
+        assert!(saved.appearance.word_wrap_on_by_default);
     }
 
     #[gpui::test]

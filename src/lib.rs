@@ -6,6 +6,7 @@ pub mod editor;
 pub mod file_io;
 pub mod huge_file;
 pub mod huge_viewer;
+pub mod instance;
 pub mod lsp;
 pub mod performance;
 pub mod project;

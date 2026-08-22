@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use anyhow::{Context, Result};
@@ -10,6 +12,17 @@ use crate::document::{Language, TextEncoding};
 use crate::file_io::save_atomic;
 
 const SESSION_VERSION: u32 = 3;
+static SESSION_SAVE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn session_save_lock(path: &Path) -> Arc<Mutex<()>> {
+    SESSION_SAVE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTab {
@@ -135,6 +148,12 @@ pub fn load_session(path: &Path) -> Result<SessionState> {
 }
 
 pub fn save_session(path: &Path, state: &SessionState) -> Result<()> {
+    // Session writes originate from background tasks. Serialize them so an older,
+    // slower save can never replace a newer save or the final quit snapshot.
+    let save_lock = session_save_lock(path);
+    let _guard = save_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let json = serde_json::to_string_pretty(state).context("could not serialize session")?;
     save_atomic(path, &json)
 }

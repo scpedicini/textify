@@ -1583,6 +1583,29 @@ impl InputState {
         self.preserve_zoom_anchor_for_offset(self.cursor())
     }
 
+    /// Move the scroll offset so the pending zoom anchor's row stays at its
+    /// captured viewport position under `line_height`.
+    ///
+    /// This must run before a frame's visible line range is computed: the range
+    /// is derived from the scroll offset, so correcting the offset any later
+    /// leaves that frame's shaped lines short of the anchored viewport and the
+    /// uncovered region paints as a background-colored flash.
+    pub(super) fn apply_zoom_anchor(&mut self, line_height: Pixels) {
+        let Some(anchor) = self.zoom_anchor else {
+            return;
+        };
+        let display_point = self.text_wrapper.offset_to_display_point(anchor.offset);
+        let document_y = display_point.row as f32 * line_height;
+        let mut offset = self.scroll_handle.offset();
+        offset.y = (anchor.viewport_y - document_y).min(px(0.));
+        self.scroll_handle.set_offset(offset);
+    }
+
+    /// The current scroll offset of the editor viewport.
+    pub fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll_handle.offset()
+    }
+
     /// Scroll to make the given offset visible.
     ///
     /// If `direction` is Some, will keep edges at the same side.
@@ -2828,6 +2851,62 @@ mod tests {
             assert!((after - before).abs() <= px(1.));
             assert_eq!(input.cursor_position().line, 5);
             assert!(input.zoom_anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn zoom_anchor_moves_the_scroll_offset_before_the_next_visible_range(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let input_slot = Rc::new(RefCell::new(None));
+        let capture = input_slot.clone();
+        let text = (0..200)
+            .map(|index| format!("line {index}: scrolled text under the pointer"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .soft_wrap(false)
+                    .default_value(text)
+            });
+            *capture.borrow_mut() = Some(input.clone());
+            ZoomHarness {
+                input,
+                font_size: px(14.),
+            }
+        });
+        let input = input_slot.borrow().clone().expect("input");
+
+        input.update(&mut cx.cx, |input, cx| {
+            input.scroll_to(input.text.line_start_offset(120), None, cx);
+        });
+        cx.run_until_parked();
+
+        input.update(&mut cx.cx, |input, _| {
+            let pointer = point(
+                input.input_bounds.left() + px(120.),
+                input.input_bounds.top() + input.input_bounds.size.height / 2.,
+            );
+            let anchor_offset = input.index_for_mouse_position(pointer);
+            assert!(input.preserve_zoom_anchor_at(pointer));
+            let anchor_viewport_y = input.zoom_anchor.expect("anchor").viewport_y;
+            let old_line_height = input.last_layout.as_ref().expect("layout").line_height;
+
+            // The offset must be anchored synchronously: the next frame computes
+            // its visible line range from this offset, and any later correction
+            // paints a frame whose shaped lines do not cover the viewport.
+            let new_line_height = old_line_height * 1.5;
+            input.apply_zoom_anchor(new_line_height);
+
+            let display_row = input.text_wrapper.offset_to_display_point(anchor_offset).row as f32;
+            let expected = (anchor_viewport_y - display_row * new_line_height).min(px(0.));
+            assert_eq!(input.scroll_handle.offset().y, expected);
+            // The anchored row still sits at its captured viewport position.
+            let after = display_row * new_line_height + input.scroll_handle.offset().y;
+            assert!((after - anchor_viewport_y).abs() <= px(1.));
         });
     }
 }

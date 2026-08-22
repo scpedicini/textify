@@ -62,7 +62,12 @@ live under `scripts/` and `packaging/`.
 
 `vendor/gpui-component` is a source dependency with a few local changes. Read
 [`vendor/gpui-component/TEXTIFY_FORK.md`](vendor/gpui-component/TEXTIFY_FORK.md) before editing it,
-and keep unrelated upstream formatting changes out of the same pull request.
+and keep unrelated upstream formatting changes out of the same pull request. The documented fork
+changes are pinned by `tests/vendor_fork.rs`; if you re-vendor upstream sources, that test fails
+until the fork changes are reapplied (or deliberately retired in both the guard and the document).
+To pull in a new upstream version, use `scripts/upgrade-gpui-component.sh`, which replaces the
+sources and reapplies the fork from `vendor/patches/gpui-component-textify.patch`; after editing
+the vendored crate, regenerate that patch with the same script.
 
 ## File behavior
 
