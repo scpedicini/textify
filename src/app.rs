@@ -6901,6 +6901,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn recovered_unsaved_markdown_restores_its_live_parser(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        const SOURCE: &str = "Why isn't this *middle* part italicized and this end part **bold**?";
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let recovery_path = write_snapshot(&directory.path().join("Backups"), 105, 1, [SOURCE])
+            .expect("recovery snapshot");
+        let expected = SessionState::from_tabs(
+            0,
+            vec![SessionTab {
+                path: None,
+                recovery_path: Some(recovery_path),
+                untitled_number: 3,
+                label_override: None,
+                dirty: true,
+                encoding: TextEncoding::Utf8,
+                language_override: Some(Language::Markdown),
+                font_size_override: Some(17),
+                word_wrap: true,
+                minimap_override: None,
+            }],
+        );
+        let session_path = directory.path().join("session.json");
+        save_session(&session_path, &expected).expect("session fixture");
+
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let data_dir = directory.path().to_path_buf();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace =
+                cx.new(|cx| Workspace::new_at_data_dir(data_dir.clone(), true, None, window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.restore_session(window, cx));
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            let document = workspace.active_document();
+            assert_eq!(document.editor.rope(cx).to_string(), SOURCE);
+            assert_eq!(document.metadata.language, Language::Markdown);
+            assert_eq!(document.language_override, Some(Language::Markdown));
+            assert!(document.syntax_highlighting);
+            assert_eq!(
+                document.editor.state().read(cx).highlighter_language(),
+                Some("markdown")
+            );
+            assert_eq!(document.font_size_override, Some(17));
+            assert!(document.word_wrap);
+        });
+    }
+
+    #[gpui::test]
     fn failed_startup_restore_does_not_replace_session_metadata(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 

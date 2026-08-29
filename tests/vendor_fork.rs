@@ -46,6 +46,7 @@ fn fork_document_exists_and_lists_the_local_changes() {
         "zoom",
         "scroll_offset",
         "multicursor",
+        "Markdown inline",
     ] {
         assert!(
             document.contains(topic),
@@ -171,7 +172,10 @@ fn reapplyable_fork_patch_exists_and_covers_the_key_files() {
         "b/src/input/state.rs",
         "b/src/input/element.rs",
         "b/src/input/multicursor.rs",
+        "b/src/highlighter/highlighter.rs",
         "b/src/highlighter/languages.rs",
+        "b/src/highlighter/languages/markdown_inline/highlights.scm",
+        "b/src/theme/default-theme.json",
     ] {
         assert!(
             patch.contains(file),
@@ -190,5 +194,44 @@ fn multicursor_editing_support_exists() {
         "src/input/multicursor.rs",
         "rectangular_selections",
         "selection sets provide multicursor and rectangular selection",
+    );
+}
+
+#[test]
+fn markdown_semantic_font_styles_survive_revendoring() {
+    let highlighter = vendor_source("src/highlighter/highlighter.rs");
+    assert_marker(
+        &highlighter,
+        "src/highlighter/highlighter.rs",
+        "styles_with_monospace_ranges",
+        "Markdown inline and fenced code use monospace text runs",
+    );
+    assert_marker(
+        &highlighter,
+        "src/highlighter/highlighter.rs",
+        "Markdown emphasis nodes overlap their delimiter",
+        "Markdown inline injections retain overlapping emphasis captures",
+    );
+
+    let markdown_inline = vendor_source("src/highlighter/languages/markdown_inline/highlights.scm");
+    assert_marker(
+        &markdown_inline,
+        "src/highlighter/languages/markdown_inline/highlights.scm",
+        "(code_span) @text.literal",
+        "Markdown inline code is captured as monospace text",
+    );
+
+    let element = vendor_source("src/input/element.rs");
+    assert_marker(
+        &element,
+        "src/input/element.rs",
+        "run.font.family = monospace_font_family.clone()",
+        "Markdown code ranges use the platform monospace font",
+    );
+    assert_marker(
+        &element,
+        "src/input/element.rs",
+        "font-only transition is therefore swallowed",
+        "Markdown emphasis font boundaries survive GPUI 0.2.2 run coalescing",
     );
 }

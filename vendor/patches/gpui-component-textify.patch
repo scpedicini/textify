@@ -428,8 +428,8 @@ diff -ruN a/src/dialog.rs b/src/dialog.rs
                      .w(view_size.width)
                      .h(view_size.height)
 diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
---- a/src/highlighter/highlighter.rs	2026-08-20 19:13:51
-+++ b/src/highlighter/highlighter.rs	2026-08-10 15:24:53
+--- a/src/highlighter/highlighter.rs	2026-08-29 11:11:22
++++ b/src/highlighter/highlighter.rs	2026-08-29 11:10:03
 @@ -6,7 +6,7 @@
  
  use ropey::{ChunkCursor, Rope};
@@ -483,7 +483,100 @@ diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
              }
          }
  
-@@ -648,55 +640,76 @@
+@@ -467,7 +459,6 @@
+         let mut query_cursor = QueryCursor::new();
+         let mut matches = query_cursor.matches(query, tree.root_node(), source);
+ 
+-        let mut last_end = start_offset;
+         while let Some(m) = matches.next() {
+             for cap in m.captures {
+                 let cap_node = cap.node;
+@@ -475,15 +466,13 @@
+                 let node_range: Range<usize> =
+                     start_offset + cap_node.start_byte()..start_offset + cap_node.end_byte();
+ 
+-                if node_range.start < last_end {
++                if node_range.end > end_offset {
+                     continue;
+                 }
+-                if node_range.end > end_offset {
+-                    break;
+-                }
+ 
+                 if let Some(highlight_name) = query.capture_names().get(cap.index as usize) {
+-                    last_end = node_range.end;
++                    // Keep overlapping captures. Markdown emphasis nodes overlap their delimiter
++                    // children, and unique_styles combines their font and punctuation treatments.
+                     cache.push((node_range, highlight_name.to_string()));
+                 }
+             }
+@@ -593,10 +582,44 @@
+         range: &Range<usize>,
+         theme: &HighlightTheme,
+     ) -> Vec<(Range<usize>, HighlightStyle)> {
++        self.styles_with_monospace_ranges(range, theme).0
++    }
++
++    /// Returns syntax styles together with source ranges that should use a monospace font.
++    ///
++    /// Markdown captures inline and fenced code as `text.literal`. Color, weight, and italic
++    /// treatments fit in [`HighlightStyle`], but font families do not, so the code editor uses
++    /// this additional range metadata when it builds text runs.
++    pub fn styles_with_monospace_ranges(
++        &self,
++        range: &Range<usize>,
++        theme: &HighlightTheme,
++    ) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<Range<usize>>) {
+         let mut styles = vec![];
+         let start_offset = range.start;
+ 
+         let highlights = self.match_styles(range.clone());
++        let mut monospace_ranges = highlights
++            .iter()
++            .filter(|item| item.name.as_ref() == "text.literal")
++            .filter_map(|item| {
++                let start = item.range.start.max(range.start);
++                let end = item.range.end.min(range.end);
++                (start < end).then_some(start..end)
++            })
++            .collect::<Vec<_>>();
++        monospace_ranges.sort_unstable_by_key(|range| (range.start, range.end));
++        let mut merged_monospace_ranges: Vec<Range<usize>> =
++            Vec::with_capacity(monospace_ranges.len());
++        for range in monospace_ranges {
++            if let Some(previous) = merged_monospace_ranges.last_mut()
++                && range.start <= previous.end
++            {
++                previous.end = previous.end.max(range.end);
++            } else {
++                merged_monospace_ranges.push(range);
++            }
++        }
+ 
+         // let mut iter_count = 0;
+         for item in highlights {
+@@ -615,7 +638,10 @@
+ 
+         // If the matched styles is empty, return a default range.
+         if styles.len() == 0 {
+-            return vec![(start_offset..range.end, HighlightStyle::default())];
++            return (
++                vec![(start_offset..range.end, HighlightStyle::default())],
++                merged_monospace_ranges,
++            );
+         }
+ 
+         let styles = unique_styles(&range, styles);
+@@ -626,7 +652,7 @@
+         // }
+         // println!("--------------------------------");
+ 
+-        styles
++        (styles, merged_monospace_ranges)
+     }
+ }
+ 
+@@ -648,55 +674,76 @@
      total_range: &Range<usize>,
      styles: Vec<(Range<usize>, HighlightStyle)>,
  ) -> Vec<(Range<usize>, HighlightStyle)> {
@@ -587,7 +680,16 @@ diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
          }
      }
  
-@@ -837,5 +850,105 @@
+@@ -746,7 +793,7 @@
+ 
+ #[cfg(test)]
+ mod tests {
+-    use gpui::Hsla;
++    use gpui::{FontStyle, FontWeight, Hsla};
+ 
+     use super::*;
+     use crate::Colorize as _;
+@@ -837,5 +884,298 @@
                  (60..65, clean),
              ],
          );
@@ -691,8 +793,210 @@ diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
 +        assert!(!styles.is_empty());
 +        assert!(styles.len() < 5_000);
 +        assert!(maximum_overlap <= 8);
++    }
++
++    fn markdown_styles(source: &str) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<Range<usize>>) {
++        let rope = Rope::from(source);
++        let mut highlighter = SyntaxHighlighter::new("markdown");
++        highlighter.update(None, &rope);
++        highlighter
++            .styles_with_monospace_ranges(&(0..source.len()), &HighlightTheme::default_dark())
++    }
++
++    #[track_caller]
++    fn style_at(
++        source: &str,
++        styles: &[(Range<usize>, HighlightStyle)],
++        needle: &str,
++    ) -> HighlightStyle {
++        let offset = source.find(needle).expect("fixture text should exist");
++        styles
++            .iter()
++            .find_map(|(range, style)| range.contains(&offset).then_some(*style))
++            .expect("fixture text should have a highlight style")
++    }
++
++    #[test]
++    fn markdown_emphasis_is_scoped_to_its_delimiters() {
++        struct Case {
++            source: &'static str,
++            italic: &'static [&'static str],
++            bold: &'static [&'static str],
++            both: &'static [&'static str],
++            normal: &'static [&'static str],
++        }
++
++        let cases = [
++            Case {
++                source: "before *middle* after",
++                italic: &["middle"],
++                bold: &[],
++                both: &[],
++                normal: &["before", "after"],
++            },
++            Case {
++                source: "before _middle_ after",
++                italic: &["middle"],
++                bold: &[],
++                both: &[],
++                normal: &["before", "after"],
++            },
++            Case {
++                source: "before **middle** after",
++                italic: &[],
++                bold: &["middle"],
++                both: &[],
++                normal: &["before", "after"],
++            },
++            Case {
++                source: "*ITALIC* then plain",
++                italic: &["ITALIC"],
++                bold: &[],
++                both: &[],
++                normal: &["then plain"],
++            },
++            Case {
++                source: "**BOLD** then plain",
++                italic: &[],
++                bold: &["BOLD"],
++                both: &[],
++                normal: &["then plain"],
++            },
++            Case {
++                source: "before ***middle*** after",
++                italic: &[],
++                bold: &[],
++                both: &["middle"],
++                normal: &["before", "after"],
++            },
++            Case {
++                source: "one *first* between _second_ end",
++                italic: &["first", "second"],
++                bold: &[],
++                both: &[],
++                normal: &["one", "between", "end"],
++            },
++            Case {
++                source: "Why isn't this *middle* part italicized and this end part **bold**?",
++                italic: &["middle"],
++                bold: &["bold"],
++                both: &[],
++                normal: &["Why", "part italicized", "this end part"],
++            },
++            Case {
++                source: "Unicode α *βeta* γ stays scoped",
++                italic: &["βeta"],
++                bold: &[],
++                both: &[],
++                normal: &["Unicode", "γ stays scoped"],
++            },
++            Case {
++                source: r"escaped \*not italic\* and foo_bar_baz stay plain",
++                italic: &[],
++                bold: &[],
++                both: &[],
++                normal: &["not italic", "foo_bar_baz"],
++            },
++            Case {
++                source: "an unmatched * delimiter stays plain",
++                italic: &[],
++                bold: &[],
++                both: &[],
++                normal: &["unmatched", "delimiter"],
++            },
++        ];
++
++        for case in cases {
++            let (styles, _) = markdown_styles(case.source);
++            for needle in case.italic {
++                let style = style_at(case.source, &styles, needle);
++                assert_eq!(
++                    style.font_style,
++                    Some(FontStyle::Italic),
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++                assert_eq!(
++                    style.font_weight,
++                    None,
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++            }
++            for needle in case.bold {
++                let style = style_at(case.source, &styles, needle);
++                assert_eq!(
++                    style.font_style,
++                    None,
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++                assert_eq!(
++                    style.font_weight,
++                    Some(FontWeight::BOLD),
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++            }
++            for needle in case.both {
++                let style = style_at(case.source, &styles, needle);
++                assert_eq!(
++                    style.font_style,
++                    Some(FontStyle::Italic),
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++                assert_eq!(
++                    style.font_weight,
++                    Some(FontWeight::BOLD),
++                    "{case_source:?}: {needle:?}",
++                    case_source = case.source
++                );
++            }
++            for needle in case.normal {
++                let style = style_at(case.source, &styles, needle);
++                assert_eq!(
++                    style.font_style,
++                    None,
++                    "italic leaked in {case_source:?} at {needle:?}",
++                    case_source = case.source
++                );
++                assert_eq!(
++                    style.font_weight,
++                    None,
++                    "bold leaked in {case_source:?} at {needle:?}",
++                    case_source = case.source
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn markdown_code_is_monospace_without_enabling_emphasis_inside_it() {
++        let source = "plain `*inline* **code**` tail\n\n```\n*fenced* **code**\n```\n";
++        let (styles, monospace_ranges) = markdown_styles(source);
++        let is_monospace = |needle: &str| {
++            let offset = source.find(needle).expect("fixture text should exist");
++            monospace_ranges.iter().any(|range| range.contains(&offset))
++        };
++
++        assert!(is_monospace("inline"));
++        assert!(is_monospace("fenced"));
++        assert!(!is_monospace("plain"));
++        assert_eq!(style_at(source, &styles, "inline").font_style, None);
++        assert_eq!(style_at(source, &styles, "code**`").font_weight, None);
++        assert_eq!(style_at(source, &styles, "fenced").font_style, None);
      }
  }
+diff -ruN a/src/highlighter/languages/markdown_inline/highlights.scm b/src/highlighter/languages/markdown_inline/highlights.scm
+--- a/src/highlighter/languages/markdown_inline/highlights.scm	2026-02-05 04:58:01
++++ b/src/highlighter/languages/markdown_inline/highlights.scm	2026-08-29 10:35:07
+@@ -1,3 +1,5 @@
++(code_span) @text.literal
++
+ [
+   (emphasis_delimiter)
+   (code_span_delimiter)
 diff -ruN a/src/highlighter/languages/rust/README.md b/src/highlighter/languages/rust/README.md
 --- a/src/highlighter/languages/rust/README.md	2026-02-05 04:58:01
 +++ b/src/highlighter/languages/rust/README.md	1969-12-31 18:00:00
@@ -1051,8 +1355,19 @@ diff -ruN a/src/input/change.rs b/src/input/change.rs
  }
 diff -ruN a/src/input/element.rs b/src/input/element.rs
 --- a/src/input/element.rs	2026-02-05 04:58:01
-+++ b/src/input/element.rs	2026-08-20 15:35:45
-@@ -237,6 +237,12 @@
++++ b/src/input/element.rs	2026-08-29 11:10:03
+@@ -25,6 +25,10 @@
+     placeholder: SharedString,
+ }
+ 
++struct SyntaxHighlighting {
++    ranges: Vec<(Range<usize>, HighlightStyle, bool)>,
++}
++
+ impl TextElement {
+     pub(super) fn new(state: Entity<InputState>) -> Self {
+         Self {
+@@ -237,6 +241,12 @@
              ));
          }
  
@@ -1065,7 +1380,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
          if let Some(deferred_scroll_offset) = state.deferred_scroll_offset {
              scroll_offset = deferred_scroll_offset;
          }
-@@ -443,34 +449,85 @@
+@@ -443,34 +453,85 @@
          last_layout: &LastLayout,
          bounds: &mut Bounds<Pixels>,
          cx: &mut App,
@@ -1172,7 +1487,139 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
      }
  
      /// Calculate the visible range of lines in the viewport.
-@@ -803,7 +860,8 @@
+@@ -739,7 +800,7 @@
+         _visible_top: Pixels,
+         visible_byte_range: Range<usize>,
+         cx: &mut App,
+-    ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
++    ) -> Option<SyntaxHighlighting> {
+         let state = self.state.read(cx);
+         let text = &state.text;
+         let is_multi_line = state.mode.is_multi_line();
+@@ -756,6 +817,7 @@
+ 
+         let mut offset = visible_byte_range.start;
+         let mut styles = vec![];
++        let mut monospace_ranges = vec![];
+ 
+         for line in text
+             .iter_lines()
+@@ -770,8 +832,10 @@
+             };
+ 
+             let range = offset..offset + line_len;
+-            let line_styles = highlighter.styles(&range, &cx.theme().highlight_theme);
++            let (line_styles, line_monospace_ranges) =
++                highlighter.styles_with_monospace_ranges(&range, &cx.theme().highlight_theme);
+             styles = gpui::combine_highlights(styles, line_styles).collect();
++            monospace_ranges.extend(line_monospace_ranges);
+ 
+             offset = range.end;
+         }
+@@ -786,10 +850,101 @@
+         // Combine marker styles
+         styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
+ 
+-        Some(styles)
++        Some(SyntaxHighlighting {
++            ranges: split_styles_for_monospace(styles, &monospace_ranges),
++        })
+     }
+ }
+ 
++fn split_styles_for_monospace(
++    styles: Vec<(Range<usize>, HighlightStyle)>,
++    monospace_ranges: &[Range<usize>],
++) -> Vec<(Range<usize>, HighlightStyle, bool)> {
++    let mut result = Vec::with_capacity(styles.len() + monospace_ranges.len() * 2);
++    let mut monospace_index = 0;
++
++    for (range, style) in styles {
++        while monospace_ranges
++            .get(monospace_index)
++            .is_some_and(|monospace| monospace.end <= range.start)
++        {
++            monospace_index += 1;
++        }
++
++        let mut offset = range.start;
++        let mut index = monospace_index;
++        while let Some(monospace) = monospace_ranges.get(index) {
++            if monospace.start >= range.end {
++                break;
++            }
++
++            let monospace_start = monospace.start.max(range.start);
++            let monospace_end = monospace.end.min(range.end);
++            if offset < monospace_start {
++                result.push((offset..monospace_start, style, false));
++            }
++            if monospace_start < monospace_end {
++                result.push((monospace_start..monospace_end, style, true));
++                offset = monospace_end;
++            }
++            index += 1;
++        }
++
++        if offset < range.end {
++            result.push((offset..range.end, style, false));
++        }
++    }
++
++    result
++}
++
++fn syntax_text_runs(
++    highlighting: &SyntaxHighlighting,
++    text_style: &TextStyle,
++    monospace_font_family: &SharedString,
++    ime_marked_range: Option<&Range<usize>>,
++    marked_run: &TextRun,
++) -> Vec<TextRun> {
++    highlighting
++        .ranges
++        .iter()
++        .map(|(range, style, monospace)| {
++            let mut run = text_style.clone().highlight(*style).to_run(range.len());
++            if *monospace {
++                run.font.family = monospace_font_family.clone();
++            }
++            // GPUI 0.2.2's line shaper merges adjacent runs before resolving the next run's
++            // font. A font-only transition is therefore swallowed unless a decoration also
++            // changes: regular text can consume mid-line emphasis, or leading emphasis can
++            // leak across the rest of a line. Zero-width transparent decorations create a
++            // layout boundary without painting a visible underline or strike.
++            if (*monospace || style.font_style.is_some()) && run.underline.is_none() {
++                run.underline = Some(UnderlineStyle {
++                    thickness: px(0.),
++                    color: Some(Hsla::transparent_black()),
++                    wavy: *monospace,
++                });
++            }
++            if style.font_weight.is_some() && run.strikethrough.is_none() {
++                run.strikethrough = Some(gpui::StrikethroughStyle {
++                    thickness: px(0.),
++                    color: Some(Hsla::transparent_black()),
++                });
++            }
++            if let Some(ime_marked_range) = ime_marked_range
++                && range.start >= ime_marked_range.start
++                && range.end <= ime_marked_range.end
++            {
++                run.color = marked_run.color;
++                run.strikethrough = marked_run.strikethrough;
++                run.underline = marked_run.underline;
++            }
++            run
++        })
++        .filter(|run| run.len > 0)
++        .collect()
++}
++
+ pub(super) struct PrepaintState {
+     /// The lines of entire lines.
+     last_layout: LastLayout,
+@@ -803,7 +958,8 @@
      cursor_scroll_offset: Point<Pixels>,
      /// row index (zero based), no wrap, same line as the cursor.
      current_row: Option<usize>,
@@ -1182,7 +1629,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
      hover_highlight_path: Option<Path<Pixels>>,
      search_match_paths: Vec<(Path<Pixels>, bool)>,
      document_color_paths: Vec<(Path<Pixels>, Hsla)>,
-@@ -922,14 +980,19 @@
+@@ -922,14 +1078,19 @@
          let style = window.text_style();
          let font = style.font();
          let text_size = style.font_size.to_pixels(window.rem_size());
@@ -1203,7 +1650,55 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
  
          let (visible_range, visible_top) =
              self.calculate_visible_range(&state, line_height, bounds.size.height);
-@@ -1075,24 +1138,32 @@
+@@ -938,7 +1099,7 @@
+             .text
+             .line_end_offset(visible_range.end.saturating_sub(1));
+ 
+-        let highlight_styles = self.highlight_lines(
++        let syntax_highlighting = self.highlight_lines(
+             &visible_range,
+             visible_top,
+             visible_start_offset..visible_end_offset,
+@@ -1012,25 +1173,19 @@
+         };
+ 
+         let runs = if !is_empty {
+-            if let Some(highlight_styles) = highlight_styles {
+-                let mut runs = vec![];
+-
+-                runs.extend(highlight_styles.iter().map(|(range, style)| {
+-                    let mut run = text_style.clone().highlight(*style).to_run(range.len());
+-                    if let Some(ime_marked_range) = &state.ime_marked_range {
+-                        if range.start >= ime_marked_range.start
+-                            && range.end <= ime_marked_range.end
+-                        {
+-                            run.color = marked_run.color;
+-                            run.strikethrough = marked_run.strikethrough;
+-                            run.underline = marked_run.underline;
+-                        }
+-                    }
+-
+-                    run
+-                }));
+-
+-                runs.into_iter().filter(|run| run.len > 0).collect()
++            if let Some(syntax_highlighting) = syntax_highlighting {
++                let monospace_font_family = cx.theme().mono_font_family.clone();
++                let ime_marked_range = state
++                    .ime_marked_range
++                    .as_ref()
++                    .map(|range| range.start..range.end);
++                syntax_text_runs(
++                    &syntax_highlighting,
++                    &text_style,
++                    &monospace_font_family,
++                    ime_marked_range.as_ref(),
++                    &marked_run,
++                )
+             } else {
+                 vec![run]
+             }
+@@ -1075,24 +1230,32 @@
          // 1. Single line
          // 2. Multi-line with soft wrap disabled.
          if state.mode.is_single_line() || !state.soft_wrap {
@@ -1254,7 +1749,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
          }
          last_layout.lines = Rc::new(lines);
  
-@@ -1163,7 +1234,8 @@
+@@ -1163,7 +1326,8 @@
          last_layout.cursor_bounds = cursor_bounds;
  
          let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
@@ -1264,7 +1759,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
          let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
          let document_color_paths =
              self.layout_document_colors(&document_colors, &last_layout, &bounds);
-@@ -1227,7 +1299,8 @@
+@@ -1227,7 +1391,8 @@
              cursor_bounds,
              cursor_scroll_offset,
              current_row,
@@ -1274,7 +1769,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
              search_match_paths,
              hover_highlight_path,
              hover_definition_hitbox,
-@@ -1345,7 +1418,7 @@
+@@ -1345,7 +1510,7 @@
                  }
              }
  
@@ -1283,7 +1778,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
                  window.paint_path(path, cx.theme().selection);
              }
  
-@@ -1405,6 +1478,9 @@
+@@ -1405,6 +1570,9 @@
              if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
                  window.paint_quad(fill(cursor_bounds, cx.theme().caret));
              }
@@ -1293,7 +1788,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
          }
  
          // Paint line numbers
-@@ -1462,6 +1538,7 @@
+@@ -1462,6 +1630,7 @@
              state.scroll_size = prepaint.scroll_size;
              state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
              state.deferred_scroll_offset = None;
@@ -1301,6 +1796,129 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
  
              cx.notify();
          });
+@@ -1594,8 +1763,24 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    use gpui::{AppContext as _, Render, Styled as _};
++
++    use crate::input::Input;
++
+     use super::*;
+ 
++    struct MarkdownHarness {
++        input: Entity<InputState>,
++    }
++
++    impl Render for MarkdownHarness {
++        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
++            Input::new(&self.input)
++                .font_family("Menlo")
++                .text_size(px(17.))
++        }
++    }
++
+     #[test]
+     fn test_runs_for_range() {
+         let run = TextRun {
+@@ -1652,6 +1837,97 @@
+         assert_runs(runs_for_range(&runs, 3, &(0..3)), &[1, 2]);
+         assert_runs(runs_for_range(&runs, 3, &(2..10)), &[4, 1, 3]);
+         assert_runs(runs_for_range(&runs, 9, &(0..8)), &[1, 7]);
++    }
++
++    #[test]
++    fn syntax_styles_are_split_at_monospace_boundaries() {
++        let style = HighlightStyle::default();
++        let ranges = split_styles_for_monospace(vec![(0..20, style)], &[3..8, 12..17]);
++
++        assert_eq!(
++            ranges,
++            vec![
++                (0..3, style, false),
++                (3..8, style, true),
++                (8..12, style, false),
++                (12..17, style, true),
++                (17..20, style, false),
++            ]
++        );
++    }
++
++    #[gpui::test]
++    fn markdown_styles_reach_exact_prepaint_text_runs(cx: &mut gpui::TestAppContext) {
++        const SOURCE: &str = "Why isn't this *middle* part italicized and this end part **bold**?\n\
++*ITALIC* italic tail\n\
++**BOLD** bold tail\n\
++plain `code` code tail";
++        cx.update(crate::init);
++        let (harness, cx) = cx.add_window_view(|window, cx| {
++            let input = cx.new(|cx| {
++                InputState::new(window, cx)
++                    .code_editor("markdown")
++                    .soft_wrap(false)
++                    .default_value(SOURCE)
++            });
++            MarkdownHarness { input }
++        });
++        cx.run_until_parked();
++
++        harness.update(&mut cx.cx, |harness, cx| {
++            let mut element = TextElement::new(harness.input.clone());
++            let highlighting = element
++                .highlight_lines(&(0..4), px(0.), 0..SOURCE.len(), cx)
++                .expect("active Markdown highlighter");
++            let mut text_style = TextStyle::default();
++            text_style.font_family = "Helvetica".into();
++            let marked_run = text_style.clone().to_run(0);
++            let runs = syntax_text_runs(
++                &highlighting,
++                &text_style,
++                &"Menlo".into(),
++                None,
++                &marked_run,
++            );
++            let run_at = |needle: &str| {
++                let offset = SOURCE.find(needle).expect("fixture text should exist");
++                highlighting
++                    .ranges
++                    .iter()
++                    .zip(&runs)
++                    .find_map(|((range, _, _), run)| range.contains(&offset).then_some(run))
++                    .expect("fixture text should have a prepaint text run")
++            };
++
++            assert_eq!(run_at("Why").font.style, gpui::FontStyle::Normal);
++            assert_eq!(run_at("middle").font.style, gpui::FontStyle::Italic);
++            assert_eq!(
++                run_at("part italicized").font.style,
++                gpui::FontStyle::Normal
++            );
++            assert_eq!(
++                run_at("this end part").font.weight,
++                gpui::FontWeight::NORMAL
++            );
++            assert_eq!(run_at("bold").font.weight, gpui::FontWeight::BOLD);
++            assert_eq!(run_at("ITALIC").font.style, gpui::FontStyle::Italic);
++            assert_eq!(run_at("italic tail").font.style, gpui::FontStyle::Normal);
++            assert_eq!(run_at("BOLD").font.weight, gpui::FontWeight::BOLD);
++            assert_eq!(run_at("bold tail").font.weight, gpui::FontWeight::NORMAL);
++            assert_eq!(run_at("code").font.family.as_ref(), "Menlo");
++            assert_eq!(run_at("code tail").font.family.as_ref(), "Helvetica");
++
++            for pair in runs.windows(2) {
++                if pair[0].font != pair[1].font {
++                    assert!(
++                        pair[0].color != pair[1].color
++                            || pair[0].underline != pair[1].underline
++                            || pair[0].strikethrough != pair[1].strikethrough,
++                        "font-only boundary would be swallowed by GPUI's line shaper: {pair:?}"
++                    );
++                }
++            }
++        });
+     }
+ 
+     #[test]
 diff -ruN a/src/input/indent.rs b/src/input/indent.rs
 --- a/src/input/indent.rs	2026-02-05 04:58:01
 +++ b/src/input/indent.rs	2026-08-10 20:48:52
@@ -2008,7 +2626,7 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
      }
  }
 diff -ruN a/src/input/mod.rs b/src/input/mod.rs
---- a/src/input/mod.rs	2026-08-20 19:13:50
+--- a/src/input/mod.rs	2026-08-29 11:11:21
 +++ b/src/input/mod.rs	2026-08-08 20:32:47
 @@ -9,6 +9,7 @@
  mod mask_pattern;
@@ -2825,7 +3443,7 @@ diff -ruN a/src/input/search.rs b/src/input/search.rs
      }
  }
 diff -ruN a/src/input/selection.rs b/src/input/selection.rs
---- a/src/input/selection.rs	2026-08-20 19:13:50
+--- a/src/input/selection.rs	2026-08-29 11:11:21
 +++ b/src/input/selection.rs	2026-08-14 00:16:04
 @@ -52,13 +52,37 @@
          };
@@ -2882,7 +3500,7 @@ diff -ruN a/src/input/selection.rs b/src/input/selection.rs
  }
 diff -ruN a/src/input/state.rs b/src/input/state.rs
 --- a/src/input/state.rs	2026-02-05 04:58:01
-+++ b/src/input/state.rs	2026-08-20 15:36:03
++++ b/src/input/state.rs	2026-08-29 11:06:14
 @@ -18,8 +18,16 @@
  use unicode_segmentation::*;
  
@@ -3563,7 +4181,7 @@ diff -ruN a/src/input/state.rs b/src/input/state.rs
          self.lsp.reset();
  
          let range = range_utf16
-@@ -2174,5 +2515,398 @@
+@@ -2174,5 +2515,494 @@
              .children(self.diagnostic_popover.clone())
              .children(self.context_menu.as_ref().map(|menu| menu.render()))
              .children(self.hover_popover.clone())
@@ -3575,14 +4193,36 @@ diff -ruN a/src/input/state.rs b/src/input/state.rs
 +    use std::{cell::RefCell, rc::Rc};
 +
 +    use gpui::{ClipboardItem, IntoElement, Render, Styled as _, div};
++    use ropey::Rope;
 +
 +    use super::*;
++    use crate::highlighter::{HighlightTheme, SyntaxHighlighter};
 +
 +    fn has_active_highlighter(input: &InputState) -> bool {
 +        match &input.mode {
 +            InputMode::CodeEditor { highlighter, .. } => highlighter.borrow().is_some(),
 +            _ => false,
 +        }
++    }
++
++    #[track_caller]
++    fn assert_incremental_markdown_matches_full_parse(input: &InputState) {
++        let InputMode::CodeEditor { highlighter, .. } = &input.mode else {
++            panic!("fixture must use code-editor mode");
++        };
++        let current = highlighter.borrow();
++        let current = current.as_ref().expect("active incremental highlighter");
++        let range = 0..input.text.len();
++        let actual = current.styles_with_monospace_ranges(&range, &HighlightTheme::default_dark());
++
++        let mut fresh = SyntaxHighlighter::new("markdown");
++        fresh.update(None, &Rope::from(input.text.to_string().as_str()));
++        let expected = fresh.styles_with_monospace_ranges(&range, &HighlightTheme::default_dark());
++        assert_eq!(
++            actual, expected,
++            "incremental parse diverged for {:?}",
++            input.text
++        );
 +    }
 +
 +    #[gpui::test]
@@ -3614,6 +4254,77 @@ diff -ruN a/src/input/state.rs b/src/input/state.rs
 +        input.update(&mut cx.cx, |input, _| {
 +            assert_eq!(input.highlighter_language(), Some("json"));
 +            assert!(has_active_highlighter(input));
++        });
++    }
++
++    #[gpui::test]
++    fn markdown_incremental_edits_match_a_fresh_parse_at_every_step(cx: &mut gpui::TestAppContext) {
++        cx.update(crate::init);
++        let (input, cx) = cx.add_window_view(|window, cx| {
++            InputState::new(window, cx)
++                .code_editor("markdown")
++                .default_value("Why isn't this middle part italicized and this end part bold?")
++        });
++        cx.run_until_parked();
++
++        cx.update(|window, cx| {
++            input.update(cx, |input, cx| {
++                assert_incremental_markdown_matches_full_parse(input);
++
++                let middle = input.text.to_string().find("middle").unwrap();
++                input.replace_text_in_range_silent(
++                    Some(middle + "middle".len()..middle + "middle".len()),
++                    "*",
++                    window,
++                    cx,
++                );
++                assert_incremental_markdown_matches_full_parse(input);
++                input.replace_text_in_range_silent(Some(middle..middle), "*", window, cx);
++                assert_incremental_markdown_matches_full_parse(input);
++
++                let bold = input.text.to_string().find("bold").unwrap();
++                input.replace_text_in_range_silent(
++                    Some(bold + "bold".len()..bold + "bold".len()),
++                    "**",
++                    window,
++                    cx,
++                );
++                assert_incremental_markdown_matches_full_parse(input);
++                input.replace_text_in_range_silent(Some(bold..bold), "**", window, cx);
++                assert_incremental_markdown_matches_full_parse(input);
++
++                let source = input.text.to_string();
++                let italic = source.find("*middle*").unwrap();
++                input.replace_text_in_range_silent(
++                    Some(italic + 1..italic + 1 + "middle".len()),
++                    "ITALIC",
++                    window,
++                    cx,
++                );
++                assert_incremental_markdown_matches_full_parse(input);
++
++                input.set_value("alpha\nbefore *middle* after\nomega", window, cx);
++            });
++        });
++        cx.run_until_parked();
++
++        cx.update(|window, cx| {
++            input.update(cx, |input, cx| {
++                assert_incremental_markdown_matches_full_parse(input);
++                let newline = input.text.to_string().find('\n').unwrap();
++                input.replace_text_in_range_silent(Some(newline..newline + 1), " ", window, cx);
++                assert_incremental_markdown_matches_full_parse(input);
++
++                let source = input.text.to_string();
++                let italic = source.find("*middle*").unwrap();
++                input.replace_text_in_range_silent(
++                    Some(italic..italic + "*middle*".len()),
++                    "middle",
++                    window,
++                    cx,
++                );
++                assert_incremental_markdown_matches_full_parse(input);
++            });
 +        });
 +    }
 +
@@ -3953,7 +4664,10 @@ diff -ruN a/src/input/state.rs b/src/input/state.rs
 +            let new_line_height = old_line_height * 1.5;
 +            input.apply_zoom_anchor(new_line_height);
 +
-+            let display_row = input.text_wrapper.offset_to_display_point(anchor_offset).row as f32;
++            let display_row = input
++                .text_wrapper
++                .offset_to_display_point(anchor_offset)
++                .row as f32;
 +            let expected = (anchor_viewport_y - display_row * new_line_height).min(px(0.));
 +            assert_eq!(input.scroll_handle.offset().y, expected);
 +            // The anchored row still sits at its captured viewport position.
@@ -4190,7 +4904,7 @@ diff -ruN a/src/root.rs b/src/root.rs
      }
  }
 diff -ruN a/src/tab/tab.rs b/src/tab/tab.rs
---- a/src/tab/tab.rs	2026-08-20 19:13:52
+--- a/src/tab/tab.rs	2026-08-29 11:11:22
 +++ b/src/tab/tab.rs	2026-08-09 13:16:58
 @@ -1,13 +1,20 @@
  use std::rc::Rc;
@@ -4309,3 +5023,32 @@ diff -ruN a/src/tab/tab.rs b/src/tab/tab.rs
              })
      }
  }
+diff -ruN a/src/theme/default-theme.json b/src/theme/default-theme.json
+--- a/src/theme/default-theme.json	2026-02-05 04:58:01
++++ b/src/theme/default-theme.json	2026-08-29 10:35:07
+@@ -151,6 +151,12 @@
+           "embedded": {
+             "color": "#333333"
+           },
++          "emphasis": {
++            "font_style": "italic"
++          },
++          "emphasis.strong": {
++            "font_weight": 700
++          },
+           "function": {
+             "color": "#0000A2"
+           },
+@@ -364,6 +370,12 @@
+           },
+           "embedded": {
+             "color": "#CACCCA"
++          },
++          "emphasis": {
++            "font_style": "italic"
++          },
++          "emphasis.strong": {
++            "font_weight": 700
+           },
+           "function": {
+             "color": "#fdd888"

@@ -22,6 +22,11 @@ Textify's changes are limited to its editor requirements:
 - `InputState::scroll_offset` is public so the host application can assert editor scroll
   behavior (modal occlusion, zoom) in its own tests.
 - selection sets provide contained multicursor editing, rectangular selection, and grouped undo.
+- Markdown inline injections retain overlapping captures so emphasis and strong emphasis can
+  combine with delimiter styling. Inline and fenced code also carry `text.literal` ranges into
+  editor text runs, where they use the platform monospace font. Font-only syntax transitions add
+  zero-width transparent decoration boundaries because GPUI 0.2.2 otherwise coalesces the next
+  font run before resolving its face, swallowing mid-line emphasis or leaking leading emphasis.
 
 ## Upgrading upstream
 

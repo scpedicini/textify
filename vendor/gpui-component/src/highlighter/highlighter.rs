@@ -459,7 +459,6 @@ impl SyntaxHighlighter {
         let mut query_cursor = QueryCursor::new();
         let mut matches = query_cursor.matches(query, tree.root_node(), source);
 
-        let mut last_end = start_offset;
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let cap_node = cap.node;
@@ -467,15 +466,13 @@ impl SyntaxHighlighter {
                 let node_range: Range<usize> =
                     start_offset + cap_node.start_byte()..start_offset + cap_node.end_byte();
 
-                if node_range.start < last_end {
-                    continue;
-                }
                 if node_range.end > end_offset {
-                    break;
+                    continue;
                 }
 
                 if let Some(highlight_name) = query.capture_names().get(cap.index as usize) {
-                    last_end = node_range.end;
+                    // Keep overlapping captures. Markdown emphasis nodes overlap their delimiter
+                    // children, and unique_styles combines their font and punctuation treatments.
                     cache.push((node_range, highlight_name.to_string()));
                 }
             }
@@ -585,10 +582,44 @@ impl SyntaxHighlighter {
         range: &Range<usize>,
         theme: &HighlightTheme,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
+        self.styles_with_monospace_ranges(range, theme).0
+    }
+
+    /// Returns syntax styles together with source ranges that should use a monospace font.
+    ///
+    /// Markdown captures inline and fenced code as `text.literal`. Color, weight, and italic
+    /// treatments fit in [`HighlightStyle`], but font families do not, so the code editor uses
+    /// this additional range metadata when it builds text runs.
+    pub fn styles_with_monospace_ranges(
+        &self,
+        range: &Range<usize>,
+        theme: &HighlightTheme,
+    ) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<Range<usize>>) {
         let mut styles = vec![];
         let start_offset = range.start;
 
         let highlights = self.match_styles(range.clone());
+        let mut monospace_ranges = highlights
+            .iter()
+            .filter(|item| item.name.as_ref() == "text.literal")
+            .filter_map(|item| {
+                let start = item.range.start.max(range.start);
+                let end = item.range.end.min(range.end);
+                (start < end).then_some(start..end)
+            })
+            .collect::<Vec<_>>();
+        monospace_ranges.sort_unstable_by_key(|range| (range.start, range.end));
+        let mut merged_monospace_ranges: Vec<Range<usize>> =
+            Vec::with_capacity(monospace_ranges.len());
+        for range in monospace_ranges {
+            if let Some(previous) = merged_monospace_ranges.last_mut()
+                && range.start <= previous.end
+            {
+                previous.end = previous.end.max(range.end);
+            } else {
+                merged_monospace_ranges.push(range);
+            }
+        }
 
         // let mut iter_count = 0;
         for item in highlights {
@@ -607,7 +638,10 @@ impl SyntaxHighlighter {
 
         // If the matched styles is empty, return a default range.
         if styles.len() == 0 {
-            return vec![(start_offset..range.end, HighlightStyle::default())];
+            return (
+                vec![(start_offset..range.end, HighlightStyle::default())],
+                merged_monospace_ranges,
+            );
         }
 
         let styles = unique_styles(&range, styles);
@@ -618,7 +652,7 @@ impl SyntaxHighlighter {
         // }
         // println!("--------------------------------");
 
-        styles
+        (styles, merged_monospace_ranges)
     }
 }
 
@@ -759,7 +793,7 @@ fn merge_highlight_style(style: &mut HighlightStyle, other: &HighlightStyle) {
 
 #[cfg(test)]
 mod tests {
-    use gpui::Hsla;
+    use gpui::{FontStyle, FontWeight, Hsla};
 
     use super::*;
     use crate::Colorize as _;
@@ -950,5 +984,198 @@ mod tests {
         assert!(!styles.is_empty());
         assert!(styles.len() < 5_000);
         assert!(maximum_overlap <= 8);
+    }
+
+    fn markdown_styles(source: &str) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<Range<usize>>) {
+        let rope = Rope::from(source);
+        let mut highlighter = SyntaxHighlighter::new("markdown");
+        highlighter.update(None, &rope);
+        highlighter
+            .styles_with_monospace_ranges(&(0..source.len()), &HighlightTheme::default_dark())
+    }
+
+    #[track_caller]
+    fn style_at(
+        source: &str,
+        styles: &[(Range<usize>, HighlightStyle)],
+        needle: &str,
+    ) -> HighlightStyle {
+        let offset = source.find(needle).expect("fixture text should exist");
+        styles
+            .iter()
+            .find_map(|(range, style)| range.contains(&offset).then_some(*style))
+            .expect("fixture text should have a highlight style")
+    }
+
+    #[test]
+    fn markdown_emphasis_is_scoped_to_its_delimiters() {
+        struct Case {
+            source: &'static str,
+            italic: &'static [&'static str],
+            bold: &'static [&'static str],
+            both: &'static [&'static str],
+            normal: &'static [&'static str],
+        }
+
+        let cases = [
+            Case {
+                source: "before *middle* after",
+                italic: &["middle"],
+                bold: &[],
+                both: &[],
+                normal: &["before", "after"],
+            },
+            Case {
+                source: "before _middle_ after",
+                italic: &["middle"],
+                bold: &[],
+                both: &[],
+                normal: &["before", "after"],
+            },
+            Case {
+                source: "before **middle** after",
+                italic: &[],
+                bold: &["middle"],
+                both: &[],
+                normal: &["before", "after"],
+            },
+            Case {
+                source: "*ITALIC* then plain",
+                italic: &["ITALIC"],
+                bold: &[],
+                both: &[],
+                normal: &["then plain"],
+            },
+            Case {
+                source: "**BOLD** then plain",
+                italic: &[],
+                bold: &["BOLD"],
+                both: &[],
+                normal: &["then plain"],
+            },
+            Case {
+                source: "before ***middle*** after",
+                italic: &[],
+                bold: &[],
+                both: &["middle"],
+                normal: &["before", "after"],
+            },
+            Case {
+                source: "one *first* between _second_ end",
+                italic: &["first", "second"],
+                bold: &[],
+                both: &[],
+                normal: &["one", "between", "end"],
+            },
+            Case {
+                source: "Why isn't this *middle* part italicized and this end part **bold**?",
+                italic: &["middle"],
+                bold: &["bold"],
+                both: &[],
+                normal: &["Why", "part italicized", "this end part"],
+            },
+            Case {
+                source: "Unicode α *βeta* γ stays scoped",
+                italic: &["βeta"],
+                bold: &[],
+                both: &[],
+                normal: &["Unicode", "γ stays scoped"],
+            },
+            Case {
+                source: r"escaped \*not italic\* and foo_bar_baz stay plain",
+                italic: &[],
+                bold: &[],
+                both: &[],
+                normal: &["not italic", "foo_bar_baz"],
+            },
+            Case {
+                source: "an unmatched * delimiter stays plain",
+                italic: &[],
+                bold: &[],
+                both: &[],
+                normal: &["unmatched", "delimiter"],
+            },
+        ];
+
+        for case in cases {
+            let (styles, _) = markdown_styles(case.source);
+            for needle in case.italic {
+                let style = style_at(case.source, &styles, needle);
+                assert_eq!(
+                    style.font_style,
+                    Some(FontStyle::Italic),
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+                assert_eq!(
+                    style.font_weight,
+                    None,
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+            }
+            for needle in case.bold {
+                let style = style_at(case.source, &styles, needle);
+                assert_eq!(
+                    style.font_style,
+                    None,
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+                assert_eq!(
+                    style.font_weight,
+                    Some(FontWeight::BOLD),
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+            }
+            for needle in case.both {
+                let style = style_at(case.source, &styles, needle);
+                assert_eq!(
+                    style.font_style,
+                    Some(FontStyle::Italic),
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+                assert_eq!(
+                    style.font_weight,
+                    Some(FontWeight::BOLD),
+                    "{case_source:?}: {needle:?}",
+                    case_source = case.source
+                );
+            }
+            for needle in case.normal {
+                let style = style_at(case.source, &styles, needle);
+                assert_eq!(
+                    style.font_style,
+                    None,
+                    "italic leaked in {case_source:?} at {needle:?}",
+                    case_source = case.source
+                );
+                assert_eq!(
+                    style.font_weight,
+                    None,
+                    "bold leaked in {case_source:?} at {needle:?}",
+                    case_source = case.source
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_code_is_monospace_without_enabling_emphasis_inside_it() {
+        let source = "plain `*inline* **code**` tail\n\n```\n*fenced* **code**\n```\n";
+        let (styles, monospace_ranges) = markdown_styles(source);
+        let is_monospace = |needle: &str| {
+            let offset = source.find(needle).expect("fixture text should exist");
+            monospace_ranges.iter().any(|range| range.contains(&offset))
+        };
+
+        assert!(is_monospace("inline"));
+        assert!(is_monospace("fenced"));
+        assert!(!is_monospace("plain"));
+        assert_eq!(style_at(source, &styles, "inline").font_style, None);
+        assert_eq!(style_at(source, &styles, "code**`").font_weight, None);
+        assert_eq!(style_at(source, &styles, "fenced").font_style, None);
     }
 }

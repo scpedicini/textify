@@ -25,6 +25,10 @@ pub(super) struct TextElement {
     placeholder: SharedString,
 }
 
+struct SyntaxHighlighting {
+    ranges: Vec<(Range<usize>, HighlightStyle, bool)>,
+}
+
 impl TextElement {
     pub(super) fn new(state: Entity<InputState>) -> Self {
         Self {
@@ -796,7 +800,7 @@ impl TextElement {
         _visible_top: Pixels,
         visible_byte_range: Range<usize>,
         cx: &mut App,
-    ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    ) -> Option<SyntaxHighlighting> {
         let state = self.state.read(cx);
         let text = &state.text;
         let is_multi_line = state.mode.is_multi_line();
@@ -813,6 +817,7 @@ impl TextElement {
 
         let mut offset = visible_byte_range.start;
         let mut styles = vec![];
+        let mut monospace_ranges = vec![];
 
         for line in text
             .iter_lines()
@@ -827,8 +832,10 @@ impl TextElement {
             };
 
             let range = offset..offset + line_len;
-            let line_styles = highlighter.styles(&range, &cx.theme().highlight_theme);
+            let (line_styles, line_monospace_ranges) =
+                highlighter.styles_with_monospace_ranges(&range, &cx.theme().highlight_theme);
             styles = gpui::combine_highlights(styles, line_styles).collect();
+            monospace_ranges.extend(line_monospace_ranges);
 
             offset = range.end;
         }
@@ -843,8 +850,99 @@ impl TextElement {
         // Combine marker styles
         styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
 
-        Some(styles)
+        Some(SyntaxHighlighting {
+            ranges: split_styles_for_monospace(styles, &monospace_ranges),
+        })
     }
+}
+
+fn split_styles_for_monospace(
+    styles: Vec<(Range<usize>, HighlightStyle)>,
+    monospace_ranges: &[Range<usize>],
+) -> Vec<(Range<usize>, HighlightStyle, bool)> {
+    let mut result = Vec::with_capacity(styles.len() + monospace_ranges.len() * 2);
+    let mut monospace_index = 0;
+
+    for (range, style) in styles {
+        while monospace_ranges
+            .get(monospace_index)
+            .is_some_and(|monospace| monospace.end <= range.start)
+        {
+            monospace_index += 1;
+        }
+
+        let mut offset = range.start;
+        let mut index = monospace_index;
+        while let Some(monospace) = monospace_ranges.get(index) {
+            if monospace.start >= range.end {
+                break;
+            }
+
+            let monospace_start = monospace.start.max(range.start);
+            let monospace_end = monospace.end.min(range.end);
+            if offset < monospace_start {
+                result.push((offset..monospace_start, style, false));
+            }
+            if monospace_start < monospace_end {
+                result.push((monospace_start..monospace_end, style, true));
+                offset = monospace_end;
+            }
+            index += 1;
+        }
+
+        if offset < range.end {
+            result.push((offset..range.end, style, false));
+        }
+    }
+
+    result
+}
+
+fn syntax_text_runs(
+    highlighting: &SyntaxHighlighting,
+    text_style: &TextStyle,
+    monospace_font_family: &SharedString,
+    ime_marked_range: Option<&Range<usize>>,
+    marked_run: &TextRun,
+) -> Vec<TextRun> {
+    highlighting
+        .ranges
+        .iter()
+        .map(|(range, style, monospace)| {
+            let mut run = text_style.clone().highlight(*style).to_run(range.len());
+            if *monospace {
+                run.font.family = monospace_font_family.clone();
+            }
+            // GPUI 0.2.2's line shaper merges adjacent runs before resolving the next run's
+            // font. A font-only transition is therefore swallowed unless a decoration also
+            // changes: regular text can consume mid-line emphasis, or leading emphasis can
+            // leak across the rest of a line. Zero-width transparent decorations create a
+            // layout boundary without painting a visible underline or strike.
+            if (*monospace || style.font_style.is_some()) && run.underline.is_none() {
+                run.underline = Some(UnderlineStyle {
+                    thickness: px(0.),
+                    color: Some(Hsla::transparent_black()),
+                    wavy: *monospace,
+                });
+            }
+            if style.font_weight.is_some() && run.strikethrough.is_none() {
+                run.strikethrough = Some(gpui::StrikethroughStyle {
+                    thickness: px(0.),
+                    color: Some(Hsla::transparent_black()),
+                });
+            }
+            if let Some(ime_marked_range) = ime_marked_range
+                && range.start >= ime_marked_range.start
+                && range.end <= ime_marked_range.end
+            {
+                run.color = marked_run.color;
+                run.strikethrough = marked_run.strikethrough;
+                run.underline = marked_run.underline;
+            }
+            run
+        })
+        .filter(|run| run.len > 0)
+        .collect()
 }
 
 pub(super) struct PrepaintState {
@@ -1001,7 +1099,7 @@ impl Element for TextElement {
             .text
             .line_end_offset(visible_range.end.saturating_sub(1));
 
-        let highlight_styles = self.highlight_lines(
+        let syntax_highlighting = self.highlight_lines(
             &visible_range,
             visible_top,
             visible_start_offset..visible_end_offset,
@@ -1075,25 +1173,19 @@ impl Element for TextElement {
         };
 
         let runs = if !is_empty {
-            if let Some(highlight_styles) = highlight_styles {
-                let mut runs = vec![];
-
-                runs.extend(highlight_styles.iter().map(|(range, style)| {
-                    let mut run = text_style.clone().highlight(*style).to_run(range.len());
-                    if let Some(ime_marked_range) = &state.ime_marked_range {
-                        if range.start >= ime_marked_range.start
-                            && range.end <= ime_marked_range.end
-                        {
-                            run.color = marked_run.color;
-                            run.strikethrough = marked_run.strikethrough;
-                            run.underline = marked_run.underline;
-                        }
-                    }
-
-                    run
-                }));
-
-                runs.into_iter().filter(|run| run.len > 0).collect()
+            if let Some(syntax_highlighting) = syntax_highlighting {
+                let monospace_font_family = cx.theme().mono_font_family.clone();
+                let ime_marked_range = state
+                    .ime_marked_range
+                    .as_ref()
+                    .map(|range| range.start..range.end);
+                syntax_text_runs(
+                    &syntax_highlighting,
+                    &text_style,
+                    &monospace_font_family,
+                    ime_marked_range.as_ref(),
+                    &marked_run,
+                )
             } else {
                 vec![run]
             }
@@ -1671,7 +1763,23 @@ fn split_runs_by_bg_segments(
 
 #[cfg(test)]
 mod tests {
+    use gpui::{AppContext as _, Render, Styled as _};
+
+    use crate::input::Input;
+
     use super::*;
+
+    struct MarkdownHarness {
+        input: Entity<InputState>,
+    }
+
+    impl Render for MarkdownHarness {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            Input::new(&self.input)
+                .font_family("Menlo")
+                .text_size(px(17.))
+        }
+    }
 
     #[test]
     fn test_runs_for_range() {
@@ -1729,6 +1837,97 @@ mod tests {
         assert_runs(runs_for_range(&runs, 3, &(0..3)), &[1, 2]);
         assert_runs(runs_for_range(&runs, 3, &(2..10)), &[4, 1, 3]);
         assert_runs(runs_for_range(&runs, 9, &(0..8)), &[1, 7]);
+    }
+
+    #[test]
+    fn syntax_styles_are_split_at_monospace_boundaries() {
+        let style = HighlightStyle::default();
+        let ranges = split_styles_for_monospace(vec![(0..20, style)], &[3..8, 12..17]);
+
+        assert_eq!(
+            ranges,
+            vec![
+                (0..3, style, false),
+                (3..8, style, true),
+                (8..12, style, false),
+                (12..17, style, true),
+                (17..20, style, false),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn markdown_styles_reach_exact_prepaint_text_runs(cx: &mut gpui::TestAppContext) {
+        const SOURCE: &str = "Why isn't this *middle* part italicized and this end part **bold**?\n\
+*ITALIC* italic tail\n\
+**BOLD** bold tail\n\
+plain `code` code tail";
+        cx.update(crate::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("markdown")
+                    .soft_wrap(false)
+                    .default_value(SOURCE)
+            });
+            MarkdownHarness { input }
+        });
+        cx.run_until_parked();
+
+        harness.update(&mut cx.cx, |harness, cx| {
+            let mut element = TextElement::new(harness.input.clone());
+            let highlighting = element
+                .highlight_lines(&(0..4), px(0.), 0..SOURCE.len(), cx)
+                .expect("active Markdown highlighter");
+            let mut text_style = TextStyle::default();
+            text_style.font_family = "Helvetica".into();
+            let marked_run = text_style.clone().to_run(0);
+            let runs = syntax_text_runs(
+                &highlighting,
+                &text_style,
+                &"Menlo".into(),
+                None,
+                &marked_run,
+            );
+            let run_at = |needle: &str| {
+                let offset = SOURCE.find(needle).expect("fixture text should exist");
+                highlighting
+                    .ranges
+                    .iter()
+                    .zip(&runs)
+                    .find_map(|((range, _, _), run)| range.contains(&offset).then_some(run))
+                    .expect("fixture text should have a prepaint text run")
+            };
+
+            assert_eq!(run_at("Why").font.style, gpui::FontStyle::Normal);
+            assert_eq!(run_at("middle").font.style, gpui::FontStyle::Italic);
+            assert_eq!(
+                run_at("part italicized").font.style,
+                gpui::FontStyle::Normal
+            );
+            assert_eq!(
+                run_at("this end part").font.weight,
+                gpui::FontWeight::NORMAL
+            );
+            assert_eq!(run_at("bold").font.weight, gpui::FontWeight::BOLD);
+            assert_eq!(run_at("ITALIC").font.style, gpui::FontStyle::Italic);
+            assert_eq!(run_at("italic tail").font.style, gpui::FontStyle::Normal);
+            assert_eq!(run_at("BOLD").font.weight, gpui::FontWeight::BOLD);
+            assert_eq!(run_at("bold tail").font.weight, gpui::FontWeight::NORMAL);
+            assert_eq!(run_at("code").font.family.as_ref(), "Menlo");
+            assert_eq!(run_at("code tail").font.family.as_ref(), "Helvetica");
+
+            for pair in runs.windows(2) {
+                if pair[0].font != pair[1].font {
+                    assert!(
+                        pair[0].color != pair[1].color
+                            || pair[0].underline != pair[1].underline
+                            || pair[0].strikethrough != pair[1].strikethrough,
+                        "font-only boundary would be swallowed by GPUI's line shaper: {pair:?}"
+                    );
+                }
+            }
+        });
     }
 
     #[test]
