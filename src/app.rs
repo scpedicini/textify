@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use gpui::{
     App, AppContext as _, Application, ClipboardItem, Context, Entity, ExternalPaths,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
-    OsAction, ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
+    OsAction, ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
     ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, Timer,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
@@ -24,8 +24,8 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{
-        Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
-        RopeExt as _, SelectAll, Undo,
+        Backspace, Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo,
+        Rope, RopeExt as _, SelectAll, Undo,
     },
     menu::{AppMenuBar, PopupMenuItem},
     scroll::ScrollableElement as _,
@@ -353,7 +353,10 @@ fn application_file_paths(urls: impl IntoIterator<Item = String>) -> Vec<PathBuf
         .collect()
 }
 
-fn application_argument_paths(arguments: impl IntoIterator<Item = OsString>) -> Vec<PathBuf> {
+fn application_argument_paths(
+    arguments: impl IntoIterator<Item = OsString>,
+    current_directory: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut literal_paths = false;
     arguments
         .into_iter()
@@ -369,7 +372,14 @@ fn application_argument_paths(arguments: impl IntoIterator<Item = OsString>) -> 
             {
                 return None;
             }
-            Some(PathBuf::from(argument))
+            let path = PathBuf::from(argument);
+            Some(if path.is_relative() {
+                current_directory
+                    .map(|directory| directory.join(&path))
+                    .unwrap_or(path)
+            } else {
+                path
+            })
         })
         .collect()
 }
@@ -726,6 +736,7 @@ pub struct Workspace {
     git_status: HashMap<PathBuf, String>,
     git_loading: bool,
     tab_scroll_handle: ScrollHandle,
+    last_window_width: Pixels,
     overlay_mode: Option<OverlayMode>,
     overlay_input: Entity<InputState>,
     overlay_items: Vec<OverlayItem>,
@@ -824,6 +835,13 @@ impl Workspace {
                         workspace.restore_focus_after_activation(window, cx);
                     }
                 }),
+                cx.observe_window_bounds(window, |workspace, window, cx| {
+                    let width = window.viewport_size().width;
+                    let width_delta = width - workspace.last_window_width;
+                    workspace.last_window_width = width;
+                    workspace.reveal_active_tab_after_resize(width_delta);
+                    cx.notify();
+                }),
             ];
         let watcher = FileWatcher::new()
             .map_err(|error| {
@@ -874,6 +892,7 @@ impl Workspace {
             git_status: HashMap::new(),
             git_loading: false,
             tab_scroll_handle: ScrollHandle::new(),
+            last_window_width: window.viewport_size().width,
             overlay_mode: None,
             overlay_input,
             overlay_items: Vec::new(),
@@ -1152,6 +1171,26 @@ impl Workspace {
         self.update_window_title(window, cx);
         self.persist_session(cx);
         cx.notify();
+    }
+
+    fn reveal_active_tab_after_resize(&self, width_delta: Pixels) {
+        let viewport = self.tab_scroll_handle.bounds();
+        let Some(tab) = self.tab_scroll_handle.bounds_for_item(self.active_index) else {
+            return;
+        };
+        let mut offset = self.tab_scroll_handle.offset();
+        let tab_left = tab.left() + offset.x;
+        let tab_right = tab.right() + offset.x;
+        let resized_right = viewport.right() + width_delta;
+
+        if tab_left < viewport.left() {
+            offset.x += viewport.left() - tab_left;
+        } else if tab_right > resized_right {
+            offset.x += resized_right - tab_right;
+        } else {
+            return;
+        }
+        self.tab_scroll_handle.set_offset(offset);
     }
 
     fn update_window_title(&self, window: &mut Window, cx: &App) {
@@ -6110,6 +6149,27 @@ fn bind_ide_keymap(cx: &mut App, keymap: &TextifyKeymap) {
     cx.bind_keys(bindings);
 }
 
+fn bind_application_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("secondary-n", NewDocument, None),
+        KeyBinding::new("secondary-t", NewDocument, None),
+        KeyBinding::new("secondary-o", OpenDocument, None),
+        KeyBinding::new("secondary-s", SaveDocument, None),
+        KeyBinding::new("secondary-shift-s", SaveDocumentAs, None),
+        KeyBinding::new("secondary-w", CloseDocument, None),
+        KeyBinding::new("secondary-,", ShowSettings, None),
+        KeyBinding::new("alt-z", ToggleWordWrap, None),
+        KeyBinding::new("ctrl-tab", NextDocument, None),
+        KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
+        KeyBinding::new("secondary-alt-p", ShowOpenTabs, None),
+        KeyBinding::new("escape", DismissOverlay, None),
+        KeyBinding::new("secondary-q", QuitTextify, None),
+        // Shift is commonly still held after typing a capital letter. Treat it as
+        // irrelevant for Backspace, matching native text editor behavior.
+        KeyBinding::new("shift-backspace", Backspace, Some("Input")),
+    ]);
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -6121,7 +6181,9 @@ pub fn run() {
         .init();
 
     let (open_path_sender, open_path_receiver) = mpsc::channel();
-    let argument_paths = application_argument_paths(std::env::args_os().skip(1));
+    let current_directory = std::env::current_dir().ok();
+    let argument_paths =
+        application_argument_paths(std::env::args_os().skip(1), current_directory.as_deref());
 
     // Only one Textify may run per user: a second launch (Raycast, Spotlight,
     // the command line) hands its paths to the running instance — which brings
@@ -6147,21 +6209,7 @@ pub fn run() {
     });
     application.run(move |cx| {
         gpui_component::init(cx);
-        cx.bind_keys([
-            KeyBinding::new("secondary-n", NewDocument, None),
-            KeyBinding::new("secondary-t", NewDocument, None),
-            KeyBinding::new("secondary-o", OpenDocument, None),
-            KeyBinding::new("secondary-s", SaveDocument, None),
-            KeyBinding::new("secondary-shift-s", SaveDocumentAs, None),
-            KeyBinding::new("secondary-w", CloseDocument, None),
-            KeyBinding::new("secondary-,", ShowSettings, None),
-            KeyBinding::new("alt-z", ToggleWordWrap, None),
-            KeyBinding::new("ctrl-tab", NextDocument, None),
-            KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
-            KeyBinding::new("secondary-alt-p", ShowOpenTabs, None),
-            KeyBinding::new("escape", DismissOverlay, None),
-            KeyBinding::new("secondary-q", QuitTextify, None),
-        ]);
+        bind_application_keys(cx);
         cx.set_menus(native_menus());
 
         let options = WindowOptions {
@@ -7032,6 +7080,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn shift_backspace_deletes_in_the_editor(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_application_keys(cx);
+        });
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.run_until_parked();
+
+        cx.simulate_input("ABC");
+        cx.simulate_keystrokes("shift-backspace");
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_document().editor.rope(cx).to_string(),
+                "AB"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn settings_window_uses_current_appearance_and_recovery_values(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -7449,18 +7526,34 @@ mod tests {
 
     #[test]
     fn command_line_file_arguments_ignore_options_and_honor_separator() {
+        let current_directory = Path::new("/invoking-shell");
         assert_eq!(
-            application_argument_paths([
-                OsString::from("--trace"),
-                OsString::from("notes.txt"),
-                OsString::from("--"),
-                OsString::from("-literal-name.txt"),
-            ]),
+            application_argument_paths(
+                [
+                    OsString::from("--trace"),
+                    OsString::from("notes.txt"),
+                    OsString::from("--"),
+                    OsString::from("-literal-name.txt"),
+                ],
+                Some(current_directory)
+            ),
             [
-                PathBuf::from("notes.txt"),
-                PathBuf::from("-literal-name.txt")
+                current_directory.join("notes.txt"),
+                current_directory.join("-literal-name.txt")
             ]
         );
+    }
+
+    #[test]
+    fn command_line_relative_paths_are_anchored_to_the_invoking_shell() {
+        let directory = tempfile::tempdir().expect("invoking directory");
+        let relative = PathBuf::from(".").join("package.json");
+        fs::write(directory.path().join("package.json"), "{}\n").expect("fixture");
+
+        let paths = application_argument_paths([relative.into_os_string()], Some(directory.path()));
+
+        assert_eq!(paths, [directory.path().join("./package.json")]);
+        assert!(paths[0].is_file());
     }
 
     #[gpui::test]
@@ -7618,7 +7711,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn activating_an_overflowed_tab_reveals_it(cx: &mut gpui::TestAppContext) {
+    fn activating_and_resizing_an_overflowed_tab_reveals_it(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
         cx.update(gpui_component::init);
@@ -7661,6 +7754,19 @@ mod tests {
                 .tab_scroll_handle
                 .bounds_for_item(17)
                 .expect("overflow tab bounds");
+            let offset = workspace.tab_scroll_handle.offset();
+            assert!(tab.left() + offset.x >= viewport.left());
+            assert!(tab.right() + offset.x <= viewport.right());
+        });
+
+        cx.simulate_resize(size(px(680.), px(600.)));
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            let viewport = workspace.tab_scroll_handle.bounds();
+            let tab = workspace
+                .tab_scroll_handle
+                .bounds_for_item(workspace.active_index)
+                .expect("active tab bounds after resize");
             let offset = workspace.tab_scroll_handle.offset();
             assert!(tab.left() + offset.x >= viewport.left());
             assert!(tab.right() + offset.x <= viewport.right());
