@@ -57,7 +57,7 @@ use crate::{
     session::{SessionState, SessionTab, load_session, save_session},
     settings::{
         AppearanceSettings, IndentationSettings, RecoverySettings, TextifyKeymap, TextifySettings,
-        available_editor_font, ensure_config_files, textify_data_dir,
+        available_editor_font, ensure_config_files, is_development_instance, textify_data_dir,
     },
     watcher::FileWatcher,
 };
@@ -94,7 +94,13 @@ actions!(
     ]
 );
 
-const WINDOW_TITLE: &str = "Textify IDE";
+fn application_name() -> &'static str {
+    if is_development_instance() {
+        "Textify Dev"
+    } else {
+        "Textify"
+    }
+}
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
 const UNTITLED_TITLE_CHARS: usize = 36;
 const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
@@ -1194,7 +1200,11 @@ impl Workspace {
     }
 
     fn update_window_title(&self, window: &mut Window, cx: &App) {
-        window.set_window_title(&format!("{} — Textify", self.active_document().title(cx)));
+        window.set_window_title(&format!(
+            "{} — {}",
+            self.active_document().title(cx),
+            application_name()
+        ));
     }
 
     fn persist_session(&mut self, cx: &mut Context<Self>) {
@@ -5572,7 +5582,11 @@ impl Render for Workspace {
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child("IDE"),
+                                            .child(if is_development_instance() {
+                                                "DEV"
+                                            } else {
+                                                "IDE"
+                                            }),
                                     ),
                             )
                             .when(self.settings.appearance.show_tagline, |title| {
@@ -6216,14 +6230,21 @@ pub fn run() {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
             window_min_size: Some(size(px(680.), px(420.))),
             titlebar: Some(TitleBar::title_bar_options()),
-            app_id: Some("com.shaun.textify".to_owned()),
+            app_id: Some(
+                if is_development_instance() {
+                    "com.shaun.textify.dev"
+                } else {
+                    "com.shaun.textify"
+                }
+                .to_owned(),
+            ),
             ..Default::default()
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(options, move |window, cx| {
                 window.activate_window();
-                window.set_window_title(WINDOW_TITLE);
+                window.set_window_title(application_name());
                 Theme::change(ThemeMode::Dark, Some(window), cx);
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
                 workspace.update(cx, |workspace, _| {

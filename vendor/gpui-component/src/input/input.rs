@@ -1,12 +1,8 @@
-use std::cell::Cell;
-use std::ops::Range;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, DefiniteLength, DragMoveEvent, Edges,
-    EdgesRefinement, Empty, Entity, EntityId, InteractiveElement as _, IntoElement, IsZero,
-    MouseButton, ParentElement as _, Pixels, Rems, Render, RenderOnce,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div, point, px, relative,
+    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, InteractiveElement as _,
+    IntoElement, IsZero, MouseButton, ParentElement as _, Rems, RenderOnce, StyleRefinement,
+    Styled, Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonVariants as _};
@@ -19,132 +15,7 @@ use crate::{IconName, Size};
 use crate::{Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
 
-use super::{InputState, RopeExt as _};
-
-const MINIMAP_WIDTH: f32 = 88.;
-const MINIMAP_MAX_SAMPLES: usize = 120;
-const MINIMAP_MAX_LINE_LENGTH: usize = 160;
-const MINIMAP_WINDOW_ROWS: usize = 1_000;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct MinimapSample {
-    width: f32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct MinimapWindow {
-    rows: Range<usize>,
-    line_count: usize,
-    viewport_top: f32,
-    viewport_height: f32,
-}
-
-#[derive(Clone)]
-struct MinimapViewportDrag {
-    input: EntityId,
-    grab_y: Cell<Pixels>,
-}
-
-impl Render for MinimapViewportDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-fn minimap_sample_rows(rows: Range<usize>) -> Vec<usize> {
-    let start = rows.start;
-    let line_count = rows.end.saturating_sub(start).max(1);
-    let sample_count = line_count.min(MINIMAP_MAX_SAMPLES);
-    (0..sample_count)
-        .map(|index| {
-            if sample_count == 1 {
-                start
-            } else {
-                start + index.saturating_mul(line_count - 1) / (sample_count - 1)
-            }
-        })
-        .collect()
-}
-
-fn minimap_samples(state: &InputState, rows: Range<usize>) -> Vec<MinimapSample> {
-    minimap_sample_rows(rows)
-        .into_iter()
-        .map(|row| {
-            let line_length = state.text.line_len(row).min(MINIMAP_MAX_LINE_LENGTH);
-            let width =
-                2. + line_length as f32 / MINIMAP_MAX_LINE_LENGTH as f32 * (MINIMAP_WIDTH - 10.);
-            MinimapSample { width }
-        })
-        .collect()
-}
-
-fn minimap_document_viewport(state: &InputState) -> (f32, f32) {
-    let content_height = state.scroll_size.height;
-    let viewport_height = state.input_bounds.size.height;
-    if content_height <= px(0.) || viewport_height >= content_height {
-        return (0., 1.);
-    }
-
-    let height = (viewport_height / content_height).clamp(0.03, 1.);
-    let scroll_top = (-state.scroll_handle.offset().y).max(px(0.));
-    let top = (scroll_top / content_height).clamp(0., 1. - height);
-    (top, height)
-}
-
-fn minimap_window_for(
-    line_count: usize,
-    document_viewport_top: f32,
-    document_viewport_height: f32,
-) -> MinimapWindow {
-    let line_count = line_count.max(1);
-    let window_len = line_count.min(MINIMAP_WINDOW_ROWS);
-    let visible_center =
-        ((document_viewport_top + document_viewport_height / 2.) * line_count as f32) as usize;
-    let start = visible_center
-        .saturating_sub(window_len / 2)
-        .min(line_count - window_len);
-    let end = start + window_len;
-    let viewport_height =
-        (document_viewport_height * line_count as f32 / window_len as f32).clamp(0.03, 1.);
-    let viewport_top = ((document_viewport_top * line_count as f32 - start as f32)
-        / window_len as f32)
-        .clamp(0., 1. - viewport_height);
-
-    MinimapWindow {
-        rows: start..end,
-        line_count,
-        viewport_top,
-        viewport_height,
-    }
-}
-
-fn minimap_window(state: &InputState) -> MinimapWindow {
-    let (top, height) = minimap_document_viewport(state);
-    minimap_window_for(state.text.lines_len(), top, height)
-}
-
-fn minimap_document_scroll_fraction(window: &MinimapWindow, local_fraction: f32) -> f32 {
-    if window.line_count <= 1 {
-        return 0.;
-    }
-    let row = window.rows.start as f32 + window.rows.len() as f32 * local_fraction.clamp(0., 1.);
-    (row / (window.line_count - 1) as f32).clamp(0., 1.)
-}
-
-fn minimap_drag_scroll_fraction(
-    pointer_y: Pixels,
-    minimap_top: Pixels,
-    minimap_height: Pixels,
-    viewport_height: f32,
-    grab_y: Pixels,
-) -> f32 {
-    let viewport_pixels = minimap_height * viewport_height;
-    let track = minimap_height - viewport_pixels;
-    if track <= px(0.) {
-        return 0.;
-    }
-    ((pointer_y - minimap_top - grab_y) / track).clamp(0., 1.)
-}
+use super::{InputState, minimap::Minimap};
 
 /// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
@@ -317,7 +188,6 @@ impl Input {
         state: &InputState,
         minimap: bool,
         window: &Window,
-        cx: &App,
     ) -> impl IntoElement {
         let base_size = window.text_style().font_size;
         let rem_size = window.rem_size();
@@ -380,111 +250,7 @@ impl Input {
                 }
             });
 
-        let minimap_element = minimap.then(|| {
-            let minimap_window = minimap_window(state);
-            let samples = minimap_samples(state, minimap_window.rows.clone());
-            let sample_count = samples.len();
-            let viewport_top = minimap_window.viewport_top;
-            let viewport_height = minimap_window.viewport_height;
-            let state_for_track = input_state.clone();
-            let input_id = input_state.entity_id();
-            let window_for_track = minimap_window.clone();
-            let window_for_drag = minimap_window;
-
-            div()
-                .id("editor-minimap")
-                .debug_selector(|| "editor-minimap".to_owned())
-                .relative()
-                .h_full()
-                .w(px(MINIMAP_WIDTH))
-                .flex_none()
-                .overflow_hidden()
-                .border_l_1()
-                .border_color(cx.theme().border.opacity(0.45))
-                .bg(cx.theme().editor_background())
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-                    state_for_track.update(cx, |state, cx| {
-                        let scrollable =
-                            (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
-                        let local_fraction = ((event.position.y - state.input_bounds.top())
-                            / state.input_bounds.size.height)
-                            .clamp(0., 1.);
-                        let fraction =
-                            minimap_document_scroll_fraction(&window_for_track, local_fraction);
-                        let mut offset = state.scroll_handle.offset();
-                        offset.y = -scrollable * fraction;
-                        state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
-                    });
-                    cx.stop_propagation();
-                })
-                .on_drag_move(window.listener_for(
-                    input_state,
-                    move |state, event: &DragMoveEvent<MinimapViewportDrag>, _, cx| {
-                        let drag = event.drag(cx);
-                        if drag.input != input_id {
-                            return;
-                        }
-                        let local_fraction = minimap_drag_scroll_fraction(
-                            event.event.position.y,
-                            event.bounds.top(),
-                            event.bounds.size.height,
-                            window_for_drag.viewport_height,
-                            drag.grab_y.get(),
-                        );
-                        let fraction =
-                            minimap_document_scroll_fraction(&window_for_drag, local_fraction);
-                        let scrollable =
-                            (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
-                        let mut offset = state.scroll_handle.offset();
-                        offset.y = -scrollable * fraction;
-                        state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
-                        cx.stop_propagation();
-                    },
-                ))
-                .children(samples.into_iter().enumerate().map(move |(index, sample)| {
-                    let top = index as f32 / sample_count as f32;
-                    let height = 1. / sample_count as f32;
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(relative(top))
-                        .h(relative(height))
-                        .pl(px(4.))
-                        .cursor_pointer()
-                        .child(
-                            div()
-                                .mt(px(1.))
-                                .h(px(2.))
-                                .w(px(sample.width))
-                                .bg(cx.theme().muted_foreground.opacity(0.58)),
-                        )
-                }))
-                .child(
-                    div()
-                        .id("editor-minimap-viewport")
-                        .debug_selector(|| "editor-minimap-viewport".to_owned())
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(relative(viewport_top))
-                        .h(relative(viewport_height))
-                        .cursor_ns_resize()
-                        .bg(cx.theme().muted_foreground.opacity(0.12))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_drag(
-                            MinimapViewportDrag {
-                                input: input_id,
-                                grab_y: Cell::new(px(0.)),
-                            },
-                            move |drag, cursor_offset, _, cx| {
-                                drag.grab_y.set(cursor_offset.y);
-                                cx.stop_propagation();
-                                cx.new(|_| drag.clone())
-                            },
-                        ),
-                )
-        });
+        let minimap_element = minimap.then(|| Minimap::new(input_state));
 
         v_flex()
             .size_full()
@@ -656,7 +422,6 @@ impl RenderOnce for Input {
                     &state,
                     self.minimap && state.mode.is_code_editor(),
                     window,
-                    cx,
                 ))
             })
             .when(!state.mode.is_multi_line(), |this| {
@@ -695,6 +460,7 @@ impl RenderOnce for Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{AppContext as _, point};
 
     struct MinimapHarness {
         state: Entity<InputState>,
@@ -706,70 +472,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn minimap_sampling_is_bounded_and_spans_its_window() {
-        assert_eq!(minimap_sample_rows(0..0), vec![0]);
-        assert_eq!(minimap_sample_rows(0..1), vec![0]);
-        assert_eq!(minimap_sample_rows(10..13), vec![10, 11, 12]);
-
-        let rows = minimap_sample_rows(4_500..5_500);
-        assert_eq!(rows.len(), MINIMAP_MAX_SAMPLES);
-        assert_eq!(rows.first(), Some(&4_500));
-        assert_eq!(rows.last(), Some(&5_499));
-        assert!(rows.windows(2).all(|rows| rows[0] < rows[1]));
-    }
-
-    #[test]
-    fn minimap_window_tracks_a_bounded_region_of_long_documents() {
-        let top = minimap_window_for(10_000, 0., 0.01);
-        assert_eq!(top.rows, 0..1_000);
-        assert_eq!(top.viewport_top, 0.);
-
-        let middle = minimap_window_for(10_000, 0.495, 0.01);
-        assert_eq!(middle.rows, 4_500..5_500);
-        assert!(middle.viewport_top > 0.4);
-        assert!(middle.viewport_top < 0.6);
-
-        let bottom = minimap_window_for(10_000, 0.99, 0.01);
-        assert_eq!(bottom.rows, 9_000..10_000);
-        assert!((bottom.viewport_top - 0.9).abs() < 0.0001);
-        assert_eq!(
-            minimap_document_scroll_fraction(&middle, 0.5),
-            5_000. / 9_999.
-        );
-    }
-
-    #[test]
-    fn minimap_drag_preserves_the_grab_point_and_clamps_to_the_track() {
-        let minimap_top = px(40.);
-        let minimap_height = px(400.);
-        let viewport_height = 0.2;
-        let grab_y = px(30.);
-
-        assert_eq!(
-            minimap_drag_scroll_fraction(
-                minimap_top + grab_y,
-                minimap_top,
-                minimap_height,
-                viewport_height,
-                grab_y,
-            ),
-            0.
-        );
-        assert_eq!(
-            minimap_drag_scroll_fraction(
-                minimap_top + minimap_height - minimap_height * viewport_height + grab_y,
-                minimap_top,
-                minimap_height,
-                viewport_height,
-                grab_y,
-            ),
-            1.
-        );
-    }
-
     #[gpui::test]
-    fn clicking_the_minimap_navigates_the_editor(cx: &mut gpui::TestAppContext) {
+    fn clicking_the_minimap_navigates_without_starting_a_drag(cx: &mut gpui::TestAppContext) {
         cx.update(crate::init);
         let text = (0..500)
             .map(|line| format!("line {line}: minimap navigation target\n"))
@@ -793,21 +497,36 @@ mod tests {
 
         let minimap = cx.debug_bounds("editor-minimap").expect("minimap");
         let before = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
-        cx.simulate_click(
-            point(minimap.center().x, minimap.bottom() - px(3.)),
-            gpui::Modifiers::none(),
-        );
+        let click = point(minimap.center().x, minimap.bottom() - px(3.));
+        cx.simulate_mouse_down(click, MouseButton::Left, gpui::Modifiers::none());
         cx.run_until_parked();
         let after = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
 
         assert_eq!(before, px(0.));
         assert!(after < before);
+
+        // Holding a track click and moving over the handle must never pick it up.
+        let viewport = cx.debug_bounds("editor-minimap-viewport").unwrap();
+        for destination in [viewport.center(), minimap.center(), click] {
+            cx.simulate_mouse_move(destination, MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
+                after
+            );
+        }
+        cx.simulate_mouse_up(minimap.center(), MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
+            after
+        );
     }
 
     #[gpui::test]
     fn dragging_the_minimap_viewport_scrolls_the_editor(cx: &mut gpui::TestAppContext) {
         cx.update(crate::init);
-        let text = (0..500)
+        let text = (0..10_000)
             .map(|line| format!("line {line}: draggable minimap viewport\n"))
             .collect::<String>();
         let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -827,30 +546,68 @@ mod tests {
         cx.simulate_resize(gpui::size(px(800.), px(420.)));
         cx.run_until_parked();
 
+        let max_scroll = cx.update(|_, cx| {
+            state.update(cx, |state, cx| {
+                let max_scroll = state.scroll_size.height - state.input_bounds.size.height;
+                state.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.25)), cx);
+                max_scroll
+            })
+        });
+        cx.run_until_parked();
         let minimap = cx.debug_bounds("editor-minimap").expect("minimap");
         let viewport = cx
             .debug_bounds("editor-minimap-viewport")
             .expect("minimap viewport");
-        let grab = viewport.center();
+        // Grab near the edge, not the center, and start partway through a long file.
+        let grab = point(viewport.center().x, viewport.top() + px(3.));
         cx.simulate_mouse_down(grab, MouseButton::Left, gpui::Modifiers::none());
-        cx.simulate_mouse_move(
-            point(grab.x, grab.y + px(8.)),
-            MouseButton::Left,
-            gpui::Modifiers::none(),
-        );
-        cx.simulate_mouse_move(
-            point(grab.x, minimap.bottom() - px(4.)),
-            MouseButton::Left,
-            gpui::Modifiers::none(),
-        );
-        cx.simulate_mouse_up(
-            point(grab.x, minimap.bottom() - px(4.)),
-            MouseButton::Left,
-            gpui::Modifiers::none(),
-        );
-        cx.run_until_parked();
+        let after_down = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
+        assert!((after_down + max_scroll * 0.25).abs() < px(0.1));
 
+        // Include the first pixel, repeated stationary events after redraws, reversal,
+        // and movement outside the minimap. The grabbed point must follow the pointer.
+        for delta in [1., 30., 90., 90., 90., 40., -20., 0.] {
+            cx.simulate_mouse_move(
+                point(minimap.left() - px(50.), grab.y + px(delta)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            cx.run_until_parked();
+            let moved = cx.debug_bounds("editor-minimap-viewport").unwrap();
+            assert!(
+                (moved.top() - viewport.top() - px(delta)).abs() < px(0.1),
+                "delta {delta}: {moved:?}"
+            );
+            let expected_scroll =
+                max_scroll * (0.25 + px(delta) / (minimap.size.height - viewport.size.height));
+            let actual = cx.update(|_, cx| -state.read(cx).scroll_handle.offset().y);
+            // Layout rounds the painted thumb to device pixels; compare scroll
+            // fractions to avoid magnifying that rounding over a 10,000-line file.
+            assert!(
+                ((actual - expected_scroll) / max_scroll).abs() < 0.001,
+                "delta {delta}: actual {actual:?}, expected {expected_scroll:?}"
+            );
+        }
+
+        for (y, expected) in [
+            (minimap.bottom() + px(100.), max_scroll),
+            (minimap.top() - px(100.), px(0.)),
+        ] {
+            cx.simulate_mouse_move(point(grab.x, y), MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+            let actual = cx.update(|_, cx| -state.read(cx).scroll_handle.offset().y);
+            assert!((actual - expected).abs() < px(0.1));
+        }
+
+        let release = point(minimap.left() - px(50.), grab.y + px(30.));
+        cx.simulate_mouse_up(release, MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
         let after = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
-        assert!(after < px(0.));
+        cx.simulate_mouse_move(grab, None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
+            after
+        );
     }
 }

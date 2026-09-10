@@ -49,10 +49,13 @@ usage() {
 fetch_normalized_upstream() {
     local sha=$1 destination=$2
     local archive="$WORKDIR/upstream-$sha.tar.gz"
+    local unpacked="$WORKDIR/archive-root"
     echo "Fetching $UPSTREAM_URL at $sha..."
     curl -sfL --max-time 300 -o "$archive" "$UPSTREAM_URL/archive/$sha.tar.gz"
-    tar -xzf "$archive" -C "$WORKDIR"
-    mv "$WORKDIR/gpui-component-$sha/crates/ui" "$destination"
+    # GitHub redirects renamed repositories, changing the archive's top-level name.
+    mkdir -p "$unpacked"
+    tar -xzf "$archive" --strip-components=1 -C "$unpacked"
+    mv "$unpacked/crates/ui" "$destination"
     echo "Normalizing formatting (rustfmt, edition 2024)..."
     find "$destination" -name '*.rs' -exec rustfmt --edition 2024 {} +
 }
@@ -107,7 +110,8 @@ regenerate-patch)
     mkdir -p "$(dirname "$PATCH_FILE")"
     echo "Writing $PATCH_FILE..."
     # diff exits 1 when the trees differ, which is the expected outcome.
-    (cd "$WORKDIR" && diff -ruN a b >"$PATCH_FILE") && {
+    # Apply packaging exclusions to both trees (including nested README files).
+    (cd "$WORKDIR" && diff -ruN "${DIFF_EXCLUDES[@]/#/-x}" a b >"$PATCH_FILE") && {
         echo "error: no difference between upstream $sha and the vendored crate" >&2
         exit 1
     } || [ $? -eq 1 ]

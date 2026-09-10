@@ -22,6 +22,10 @@ Textify's changes are limited to its editor requirements:
 - `InputState::scroll_offset` is public so the host application can assert editor scroll
   behavior (modal occlusion, zoom) in its own tests.
 - selection sets provide contained multicursor editing, rectangular selection, and grouped undo.
+- the minimap uses VS Code's full-range slider mapping and a mouse-down drag snapshot, with
+  window-level movement and release handling. Its fixed-scale miniature text retains syntax
+  colors, indentation, blank lines, and wrapped rows. Shaping and highlighting are bounded to
+  visible minimap rows and 160 characters per row (`input/minimap.rs`).
 - Markdown inline injections retain overlapping captures so emphasis and strong emphasis can
   combine with delimiter styling. Inline and fenced code also carry `text.literal` ranges into
   editor text runs, where they use the platform monospace font. Font-only syntax transitions add

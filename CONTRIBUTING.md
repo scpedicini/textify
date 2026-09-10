@@ -20,11 +20,17 @@ dependencies first:
 Windows development needs the MSVC build tools and Windows SDK. macOS uses the installed Xcode
 command-line tools.
 
-Run the editor from the repository root:
+Launch an isolated test instance from the repository root (macOS/Linux):
 
 ```sh
-cargo run --locked
+./scripts/run-isolated.sh
 ```
+
+Use `--minimap-demo` for sample tabs. On Windows, `cargo run --locked` defaults to separate
+development storage. Keep all iteration isolated from the installed app and its unsaved buffers;
+do not run the local installer unless explicitly updating the installed version. The launcher,
+optimized-build procedure, and storage boundaries are documented in
+[docs/development.md](docs/development.md).
 
 ## Before opening a pull request
 

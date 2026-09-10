@@ -7,6 +7,7 @@ mod indent;
 mod input;
 mod lsp;
 mod mask_pattern;
+mod minimap;
 mod mode;
 mod movement;
 mod multicursor;

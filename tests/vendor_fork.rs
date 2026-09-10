@@ -47,6 +47,7 @@ fn fork_document_exists_and_lists_the_local_changes() {
         "scroll_offset",
         "multicursor",
         "Markdown inline",
+        "minimap",
     ] {
         assert!(
             document.contains(topic),
@@ -195,6 +196,26 @@ fn multicursor_editing_support_exists() {
         "rectangular_selections",
         "selection sets provide multicursor and rectangular selection",
     );
+}
+
+#[test]
+fn minimap_rendering_and_drag_mapping_survive_revendoring() {
+    let minimap = vendor_source("src/input/minimap.rs");
+    for marker in [
+        "struct MinimapDrag",
+        "fn preview_lines",
+        "fn scroll_top_for_click",
+    ] {
+        assert_marker(
+            &minimap,
+            "src/input/minimap.rs",
+            marker,
+            "minimap text preview and stable dragging",
+        );
+    }
+    let patch =
+        fs::read_to_string(vendor_root().join("../patches/gpui-component-textify.patch")).unwrap();
+    assert!(patch.contains("a/src/input/minimap.rs b/src/input/minimap.rs"));
 }
 
 #[test]

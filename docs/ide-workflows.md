@@ -126,10 +126,14 @@ View → Toggle Line Numbers and the matching Settings switch control the gutter
 future editor tab. The choice is persisted in `appearance.show_line_numbers` and defaults to true.
 Settings also exposes Minimap On By Default. Tabs inherit changes to that default until View →
 Toggle Minimap or the matching command-palette entry overrides that choice for only the active tab;
-the per-tab choice is restored with the session. The right-hand minimap follows a bounded window of
-up to 1,000 document rows, samples at most 120 marks, and advances with editor or wheel scrolling. It
-marks the visible viewport, accepts clicks to jump within the displayed region, and lets you drag
-the viewport like a vertical scrollbar without scanning every line on repaint.
+the per-tab choice is restored with the session. The right-hand minimap renders miniature text with
+the editor's syntax colors, indentation, blank lines, and word wrapping. Short documents fit at the
+top; long documents scroll beneath a viewport handle whose position tracks the full scroll range.
+Clicking outside the handle centers that location in the editor but does not start a drag. Dragging
+starts only on the handle, preserves the original grab point even outside the minimap, and reaches
+both ends of the document. The handle becomes progressively brighter when hovering over the map,
+hovering over the handle itself, and gripping it, while remaining translucent. Text shaping
+and syntax queries are limited to the minimap's visible rows and the first 160 characters per row.
 
 ## Native menus and editor gestures
 

@@ -1,4 +1,4 @@
-diff -ruN a/Cargo.toml b/Cargo.toml
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2026-02-05 04:58:01
 +++ b/Cargo.toml	2026-08-10 15:08:37
 @@ -1,43 +1,63 @@
@@ -416,7 +416,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
 +[lints.clippy.style]
 +level = "allow"
 +priority = -1
-diff -ruN a/src/dialog.rs b/src/dialog.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/dialog.rs b/src/dialog.rs
 --- a/src/dialog.rs	2026-02-05 04:58:01
 +++ b/src/dialog.rs	2026-08-09 01:25:32
 @@ -393,6 +393,7 @@
@@ -427,8 +427,8 @@ diff -ruN a/src/dialog.rs b/src/dialog.rs
                      .occlude()
                      .w(view_size.width)
                      .h(view_size.height)
-diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
---- a/src/highlighter/highlighter.rs	2026-08-29 11:11:22
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
+--- a/src/highlighter/highlighter.rs	2026-09-10 17:21:13
 +++ b/src/highlighter/highlighter.rs	2026-08-29 11:10:03
 @@ -6,7 +6,7 @@
  
@@ -988,7 +988,7 @@ diff -ruN a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
 +        assert_eq!(style_at(source, &styles, "fenced").font_style, None);
      }
  }
-diff -ruN a/src/highlighter/languages/markdown_inline/highlights.scm b/src/highlighter/languages/markdown_inline/highlights.scm
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/highlighter/languages/markdown_inline/highlights.scm b/src/highlighter/languages/markdown_inline/highlights.scm
 --- a/src/highlighter/languages/markdown_inline/highlights.scm	2026-02-05 04:58:01
 +++ b/src/highlighter/languages/markdown_inline/highlights.scm	2026-08-29 10:35:07
 @@ -1,3 +1,5 @@
@@ -997,13 +997,7 @@ diff -ruN a/src/highlighter/languages/markdown_inline/highlights.scm b/src/highl
  [
    (emphasis_delimiter)
    (code_span_delimiter)
-diff -ruN a/src/highlighter/languages/rust/README.md b/src/highlighter/languages/rust/README.md
---- a/src/highlighter/languages/rust/README.md	2026-02-05 04:58:01
-+++ b/src/highlighter/languages/rust/README.md	1969-12-31 18:00:00
-@@ -1 +0,0 @@
--https://github.com/tree-sitter/tree-sitter-rust/tree/master/queries
-\ No newline at end of file
-diff -ruN a/src/highlighter/languages.rs b/src/highlighter/languages.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/highlighter/languages.rs b/src/highlighter/languages.rs
 --- a/src/highlighter/languages.rs	2026-02-05 04:58:01
 +++ b/src/highlighter/languages.rs	2026-08-10 15:08:10
 @@ -2,13 +2,19 @@
@@ -1185,7 +1179,7 @@ diff -ruN a/src/highlighter/languages.rs b/src/highlighter/languages.rs
      fn test_language_name() {
          use super::*;
  
-diff -ruN a/src/history.rs b/src/history.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/history.rs b/src/history.rs
 --- a/src/history.rs	2026-02-05 04:58:01
 +++ b/src/history.rs	2026-08-08 20:58:29
 @@ -8,6 +8,11 @@
@@ -1341,7 +1335,7 @@ diff -ruN a/src/history.rs b/src/history.rs
 +        assert_eq!(history.undo().expect("previous action").len(), 1);
      }
  }
-diff -ruN a/src/input/change.rs b/src/input/change.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/change.rs b/src/input/change.rs
 --- a/src/input/change.rs	2026-02-05 04:58:01
 +++ b/src/input/change.rs	2026-08-08 19:49:54
 @@ -36,4 +36,8 @@
@@ -1353,7 +1347,7 @@ diff -ruN a/src/input/change.rs b/src/input/change.rs
 +        std::mem::size_of::<Self>() + self.old_text.capacity() + self.new_text.capacity()
 +    }
  }
-diff -ruN a/src/input/element.rs b/src/input/element.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/element.rs b/src/input/element.rs
 --- a/src/input/element.rs	2026-02-05 04:58:01
 +++ b/src/input/element.rs	2026-08-29 11:10:03
 @@ -25,6 +25,10 @@
@@ -1919,7 +1913,7 @@ diff -ruN a/src/input/element.rs b/src/input/element.rs
      }
  
      #[test]
-diff -ruN a/src/input/indent.rs b/src/input/indent.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/indent.rs b/src/input/indent.rs
 --- a/src/input/indent.rs	2026-02-05 04:58:01
 +++ b/src/input/indent.rs	2026-08-10 20:48:52
 @@ -12,7 +12,7 @@
@@ -2094,161 +2088,19 @@ diff -ruN a/src/input/indent.rs b/src/input/indent.rs
  
      #[test]
      fn test_tab_size() {
-diff -ruN a/src/input/input.rs b/src/input/input.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/input.rs b/src/input/input.rs
 --- a/src/input/input.rs	2026-02-05 04:58:01
-+++ b/src/input/input.rs	2026-08-10 20:44:45
-@@ -1,8 +1,12 @@
-+use std::cell::Cell;
-+use std::ops::Range;
-+
- use gpui::prelude::FluentBuilder as _;
- use gpui::{
--    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, InteractiveElement as _,
--    IntoElement, IsZero, MouseButton, ParentElement as _, Rems, RenderOnce, StyleRefinement,
--    Styled, Window, div, px, relative,
-+    AnyElement, App, AppContext as _, Context, DefiniteLength, DragMoveEvent, Edges,
-+    EdgesRefinement, Empty, Entity, EntityId, InteractiveElement as _, IntoElement, IsZero,
-+    MouseButton, ParentElement as _, Pixels, Rems, Render, RenderOnce,
-+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div, point, px, relative,
- };
- 
- use crate::button::{Button, ButtonVariants as _};
-@@ -15,8 +19,133 @@
++++ b/src/input/input.rs	2026-09-10 17:16:56
+@@ -15,7 +15,7 @@
  use crate::{Selectable, StyledExt, h_flex};
  use crate::{Sizable, StyleSized};
  
 -use super::InputState;
-+use super::{InputState, RopeExt as _};
++use super::{InputState, minimap::Minimap};
  
-+const MINIMAP_WIDTH: f32 = 88.;
-+const MINIMAP_MAX_SAMPLES: usize = 120;
-+const MINIMAP_MAX_LINE_LENGTH: usize = 160;
-+const MINIMAP_WINDOW_ROWS: usize = 1_000;
-+
-+#[derive(Debug, Clone, Copy, PartialEq)]
-+struct MinimapSample {
-+    width: f32,
-+}
-+
-+#[derive(Debug, Clone, PartialEq)]
-+struct MinimapWindow {
-+    rows: Range<usize>,
-+    line_count: usize,
-+    viewport_top: f32,
-+    viewport_height: f32,
-+}
-+
-+#[derive(Clone)]
-+struct MinimapViewportDrag {
-+    input: EntityId,
-+    grab_y: Cell<Pixels>,
-+}
-+
-+impl Render for MinimapViewportDrag {
-+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-+        Empty
-+    }
-+}
-+
-+fn minimap_sample_rows(rows: Range<usize>) -> Vec<usize> {
-+    let start = rows.start;
-+    let line_count = rows.end.saturating_sub(start).max(1);
-+    let sample_count = line_count.min(MINIMAP_MAX_SAMPLES);
-+    (0..sample_count)
-+        .map(|index| {
-+            if sample_count == 1 {
-+                start
-+            } else {
-+                start + index.saturating_mul(line_count - 1) / (sample_count - 1)
-+            }
-+        })
-+        .collect()
-+}
-+
-+fn minimap_samples(state: &InputState, rows: Range<usize>) -> Vec<MinimapSample> {
-+    minimap_sample_rows(rows)
-+        .into_iter()
-+        .map(|row| {
-+            let line_length = state.text.line_len(row).min(MINIMAP_MAX_LINE_LENGTH);
-+            let width =
-+                2. + line_length as f32 / MINIMAP_MAX_LINE_LENGTH as f32 * (MINIMAP_WIDTH - 10.);
-+            MinimapSample { width }
-+        })
-+        .collect()
-+}
-+
-+fn minimap_document_viewport(state: &InputState) -> (f32, f32) {
-+    let content_height = state.scroll_size.height;
-+    let viewport_height = state.input_bounds.size.height;
-+    if content_height <= px(0.) || viewport_height >= content_height {
-+        return (0., 1.);
-+    }
-+
-+    let height = (viewport_height / content_height).clamp(0.03, 1.);
-+    let scroll_top = (-state.scroll_handle.offset().y).max(px(0.));
-+    let top = (scroll_top / content_height).clamp(0., 1. - height);
-+    (top, height)
-+}
-+
-+fn minimap_window_for(
-+    line_count: usize,
-+    document_viewport_top: f32,
-+    document_viewport_height: f32,
-+) -> MinimapWindow {
-+    let line_count = line_count.max(1);
-+    let window_len = line_count.min(MINIMAP_WINDOW_ROWS);
-+    let visible_center =
-+        ((document_viewport_top + document_viewport_height / 2.) * line_count as f32) as usize;
-+    let start = visible_center
-+        .saturating_sub(window_len / 2)
-+        .min(line_count - window_len);
-+    let end = start + window_len;
-+    let viewport_height =
-+        (document_viewport_height * line_count as f32 / window_len as f32).clamp(0.03, 1.);
-+    let viewport_top = ((document_viewport_top * line_count as f32 - start as f32)
-+        / window_len as f32)
-+        .clamp(0., 1. - viewport_height);
-+
-+    MinimapWindow {
-+        rows: start..end,
-+        line_count,
-+        viewport_top,
-+        viewport_height,
-+    }
-+}
-+
-+fn minimap_window(state: &InputState) -> MinimapWindow {
-+    let (top, height) = minimap_document_viewport(state);
-+    minimap_window_for(state.text.lines_len(), top, height)
-+}
-+
-+fn minimap_document_scroll_fraction(window: &MinimapWindow, local_fraction: f32) -> f32 {
-+    if window.line_count <= 1 {
-+        return 0.;
-+    }
-+    let row = window.rows.start as f32 + window.rows.len() as f32 * local_fraction.clamp(0., 1.);
-+    (row / (window.line_count - 1) as f32).clamp(0., 1.)
-+}
-+
-+fn minimap_drag_scroll_fraction(
-+    pointer_y: Pixels,
-+    minimap_top: Pixels,
-+    minimap_height: Pixels,
-+    viewport_height: f32,
-+    grab_y: Pixels,
-+) -> f32 {
-+    let viewport_pixels = minimap_height * viewport_height;
-+    let track = minimap_height - viewport_pixels;
-+    if track <= px(0.) {
-+        return 0.;
-+    }
-+    ((pointer_y - minimap_top - grab_y) / track).clamp(0., 1.)
-+}
-+
  /// A text input element bind to an [`InputState`].
  #[derive(IntoElement)]
- pub struct Input {
-@@ -32,6 +161,7 @@
+@@ -32,6 +32,7 @@
      disabled: bool,
      bordered: bool,
      focus_bordered: bool,
@@ -2256,7 +2108,7 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
      tab_index: isize,
      selected: bool,
  }
-@@ -70,6 +200,7 @@
+@@ -70,6 +71,7 @@
              disabled: false,
              bordered: true,
              focus_bordered: true,
@@ -2264,7 +2116,7 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
              tab_index: 0,
              selected: false,
          }
-@@ -109,12 +240,28 @@
+@@ -109,12 +111,28 @@
          self
      }
  
@@ -2293,18 +2145,17 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
      /// Set whether to show the clear button when the input field is not empty, default is false.
      pub fn cleanable(mut self, cleanable: bool) -> Self {
          self.cleanable = cleanable;
-@@ -168,8 +315,9 @@
+@@ -168,8 +186,8 @@
          paddings: EdgesRefinement<DefiniteLength>,
          input_state: &Entity<InputState>,
          state: &InputState,
 +        minimap: bool,
          window: &Window,
 -        _cx: &App,
-+        cx: &App,
      ) -> impl IntoElement {
          let base_size = window.text_style().font_size;
          let rem_size = window.rem_size();
-@@ -193,10 +341,12 @@
+@@ -193,10 +211,12 @@
                  .unwrap_or(px(0.)),
          };
  
@@ -2321,118 +2172,14 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
                  if let Some(last_layout) = state.last_layout.as_ref() {
                      let left = if last_layout.line_number_width.is_zero() {
                          px(0.)
-@@ -228,7 +378,125 @@
+@@ -228,7 +248,21 @@
                  } else {
                      this
                  }
 -            }))
 +            });
 +
-+        let minimap_element = minimap.then(|| {
-+            let minimap_window = minimap_window(state);
-+            let samples = minimap_samples(state, minimap_window.rows.clone());
-+            let sample_count = samples.len();
-+            let viewport_top = minimap_window.viewport_top;
-+            let viewport_height = minimap_window.viewport_height;
-+            let state_for_track = input_state.clone();
-+            let input_id = input_state.entity_id();
-+            let window_for_track = minimap_window.clone();
-+            let window_for_drag = minimap_window;
-+
-+            div()
-+                .id("editor-minimap")
-+                .debug_selector(|| "editor-minimap".to_owned())
-+                .relative()
-+                .h_full()
-+                .w(px(MINIMAP_WIDTH))
-+                .flex_none()
-+                .overflow_hidden()
-+                .border_l_1()
-+                .border_color(cx.theme().border.opacity(0.45))
-+                .bg(cx.theme().editor_background())
-+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-+                    state_for_track.update(cx, |state, cx| {
-+                        let scrollable =
-+                            (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
-+                        let local_fraction = ((event.position.y - state.input_bounds.top())
-+                            / state.input_bounds.size.height)
-+                            .clamp(0., 1.);
-+                        let fraction =
-+                            minimap_document_scroll_fraction(&window_for_track, local_fraction);
-+                        let mut offset = state.scroll_handle.offset();
-+                        offset.y = -scrollable * fraction;
-+                        state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
-+                    });
-+                    cx.stop_propagation();
-+                })
-+                .on_drag_move(window.listener_for(
-+                    input_state,
-+                    move |state, event: &DragMoveEvent<MinimapViewportDrag>, _, cx| {
-+                        let drag = event.drag(cx);
-+                        if drag.input != input_id {
-+                            return;
-+                        }
-+                        let local_fraction = minimap_drag_scroll_fraction(
-+                            event.event.position.y,
-+                            event.bounds.top(),
-+                            event.bounds.size.height,
-+                            window_for_drag.viewport_height,
-+                            drag.grab_y.get(),
-+                        );
-+                        let fraction =
-+                            minimap_document_scroll_fraction(&window_for_drag, local_fraction);
-+                        let scrollable =
-+                            (state.scroll_size.height - state.input_bounds.size.height).max(px(0.));
-+                        let mut offset = state.scroll_handle.offset();
-+                        offset.y = -scrollable * fraction;
-+                        state.update_scroll_offset(Some(point(offset.x, offset.y)), cx);
-+                        cx.stop_propagation();
-+                    },
-+                ))
-+                .children(samples.into_iter().enumerate().map(move |(index, sample)| {
-+                    let top = index as f32 / sample_count as f32;
-+                    let height = 1. / sample_count as f32;
-+                    div()
-+                        .absolute()
-+                        .left_0()
-+                        .right_0()
-+                        .top(relative(top))
-+                        .h(relative(height))
-+                        .pl(px(4.))
-+                        .cursor_pointer()
-+                        .child(
-+                            div()
-+                                .mt(px(1.))
-+                                .h(px(2.))
-+                                .w(px(sample.width))
-+                                .bg(cx.theme().muted_foreground.opacity(0.58)),
-+                        )
-+                }))
-+                .child(
-+                    div()
-+                        .id("editor-minimap-viewport")
-+                        .debug_selector(|| "editor-minimap-viewport".to_owned())
-+                        .absolute()
-+                        .left_0()
-+                        .right_0()
-+                        .top(relative(viewport_top))
-+                        .h(relative(viewport_height))
-+                        .cursor_ns_resize()
-+                        .bg(cx.theme().muted_foreground.opacity(0.12))
-+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-+                        .on_drag(
-+                            MinimapViewportDrag {
-+                                input: input_id,
-+                                grab_y: Cell::new(px(0.)),
-+                            },
-+                            move |drag, cursor_offset, _, cx| {
-+                                drag.grab_y.set(cursor_offset.y);
-+                                cx.stop_propagation();
-+                                cx.new(|_| drag.clone())
-+                            },
-+                        ),
-+                )
-+        });
++        let minimap_element = minimap.then(|| Minimap::new(input_state));
 +
 +        v_flex()
 +            .size_full()
@@ -2448,15 +2195,17 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
      }
  }
  
-@@ -386,6 +654,7 @@
+@@ -386,8 +420,8 @@
                      paddings,
                      &self.state,
                      &state,
 +                    self.minimap && state.mode.is_code_editor(),
                      window,
-                     cx,
+-                    cx,
                  ))
-@@ -420,5 +689,168 @@
+             })
+             .when(!state.mode.is_multi_line(), |this| {
+@@ -420,5 +454,160 @@
                          .children(suffix),
                  )
              })
@@ -2466,6 +2215,7 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    use gpui::{AppContext as _, point};
 +
 +    struct MinimapHarness {
 +        state: Entity<InputState>,
@@ -2477,70 +2227,8 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
 +        }
 +    }
 +
-+    #[test]
-+    fn minimap_sampling_is_bounded_and_spans_its_window() {
-+        assert_eq!(minimap_sample_rows(0..0), vec![0]);
-+        assert_eq!(minimap_sample_rows(0..1), vec![0]);
-+        assert_eq!(minimap_sample_rows(10..13), vec![10, 11, 12]);
-+
-+        let rows = minimap_sample_rows(4_500..5_500);
-+        assert_eq!(rows.len(), MINIMAP_MAX_SAMPLES);
-+        assert_eq!(rows.first(), Some(&4_500));
-+        assert_eq!(rows.last(), Some(&5_499));
-+        assert!(rows.windows(2).all(|rows| rows[0] < rows[1]));
-+    }
-+
-+    #[test]
-+    fn minimap_window_tracks_a_bounded_region_of_long_documents() {
-+        let top = minimap_window_for(10_000, 0., 0.01);
-+        assert_eq!(top.rows, 0..1_000);
-+        assert_eq!(top.viewport_top, 0.);
-+
-+        let middle = minimap_window_for(10_000, 0.495, 0.01);
-+        assert_eq!(middle.rows, 4_500..5_500);
-+        assert!(middle.viewport_top > 0.4);
-+        assert!(middle.viewport_top < 0.6);
-+
-+        let bottom = minimap_window_for(10_000, 0.99, 0.01);
-+        assert_eq!(bottom.rows, 9_000..10_000);
-+        assert!((bottom.viewport_top - 0.9).abs() < 0.0001);
-+        assert_eq!(
-+            minimap_document_scroll_fraction(&middle, 0.5),
-+            5_000. / 9_999.
-+        );
-+    }
-+
-+    #[test]
-+    fn minimap_drag_preserves_the_grab_point_and_clamps_to_the_track() {
-+        let minimap_top = px(40.);
-+        let minimap_height = px(400.);
-+        let viewport_height = 0.2;
-+        let grab_y = px(30.);
-+
-+        assert_eq!(
-+            minimap_drag_scroll_fraction(
-+                minimap_top + grab_y,
-+                minimap_top,
-+                minimap_height,
-+                viewport_height,
-+                grab_y,
-+            ),
-+            0.
-+        );
-+        assert_eq!(
-+            minimap_drag_scroll_fraction(
-+                minimap_top + minimap_height - minimap_height * viewport_height + grab_y,
-+                minimap_top,
-+                minimap_height,
-+                viewport_height,
-+                grab_y,
-+            ),
-+            1.
-+        );
-+    }
-+
 +    #[gpui::test]
-+    fn clicking_the_minimap_navigates_the_editor(cx: &mut gpui::TestAppContext) {
++    fn clicking_the_minimap_navigates_without_starting_a_drag(cx: &mut gpui::TestAppContext) {
 +        cx.update(crate::init);
 +        let text = (0..500)
 +            .map(|line| format!("line {line}: minimap navigation target\n"))
@@ -2564,21 +2252,36 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
 +
 +        let minimap = cx.debug_bounds("editor-minimap").expect("minimap");
 +        let before = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
-+        cx.simulate_click(
-+            point(minimap.center().x, minimap.bottom() - px(3.)),
-+            gpui::Modifiers::none(),
-+        );
++        let click = point(minimap.center().x, minimap.bottom() - px(3.));
++        cx.simulate_mouse_down(click, MouseButton::Left, gpui::Modifiers::none());
 +        cx.run_until_parked();
 +        let after = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
 +
 +        assert_eq!(before, px(0.));
 +        assert!(after < before);
++
++        // Holding a track click and moving over the handle must never pick it up.
++        let viewport = cx.debug_bounds("editor-minimap-viewport").unwrap();
++        for destination in [viewport.center(), minimap.center(), click] {
++            cx.simulate_mouse_move(destination, MouseButton::Left, gpui::Modifiers::none());
++            cx.run_until_parked();
++            assert_eq!(
++                cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
++                after
++            );
++        }
++        cx.simulate_mouse_up(minimap.center(), MouseButton::Left, gpui::Modifiers::none());
++        cx.run_until_parked();
++        assert_eq!(
++            cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
++            after
++        );
 +    }
 +
 +    #[gpui::test]
 +    fn dragging_the_minimap_viewport_scrolls_the_editor(cx: &mut gpui::TestAppContext) {
 +        cx.update(crate::init);
-+        let text = (0..500)
++        let text = (0..10_000)
 +            .map(|line| format!("line {line}: draggable minimap viewport\n"))
 +            .collect::<String>();
 +        let state_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -2598,45 +2301,698 @@ diff -ruN a/src/input/input.rs b/src/input/input.rs
 +        cx.simulate_resize(gpui::size(px(800.), px(420.)));
 +        cx.run_until_parked();
 +
++        let max_scroll = cx.update(|_, cx| {
++            state.update(cx, |state, cx| {
++                let max_scroll = state.scroll_size.height - state.input_bounds.size.height;
++                state.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.25)), cx);
++                max_scroll
++            })
++        });
++        cx.run_until_parked();
 +        let minimap = cx.debug_bounds("editor-minimap").expect("minimap");
 +        let viewport = cx
 +            .debug_bounds("editor-minimap-viewport")
 +            .expect("minimap viewport");
-+        let grab = viewport.center();
++        // Grab near the edge, not the center, and start partway through a long file.
++        let grab = point(viewport.center().x, viewport.top() + px(3.));
 +        cx.simulate_mouse_down(grab, MouseButton::Left, gpui::Modifiers::none());
-+        cx.simulate_mouse_move(
-+            point(grab.x, grab.y + px(8.)),
-+            MouseButton::Left,
-+            gpui::Modifiers::none(),
-+        );
-+        cx.simulate_mouse_move(
-+            point(grab.x, minimap.bottom() - px(4.)),
-+            MouseButton::Left,
-+            gpui::Modifiers::none(),
-+        );
-+        cx.simulate_mouse_up(
-+            point(grab.x, minimap.bottom() - px(4.)),
-+            MouseButton::Left,
-+            gpui::Modifiers::none(),
-+        );
-+        cx.run_until_parked();
++        let after_down = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
++        assert!((after_down + max_scroll * 0.25).abs() < px(0.1));
 +
++        // Include the first pixel, repeated stationary events after redraws, reversal,
++        // and movement outside the minimap. The grabbed point must follow the pointer.
++        for delta in [1., 30., 90., 90., 90., 40., -20., 0.] {
++            cx.simulate_mouse_move(
++                point(minimap.left() - px(50.), grab.y + px(delta)),
++                MouseButton::Left,
++                gpui::Modifiers::none(),
++            );
++            cx.run_until_parked();
++            let moved = cx.debug_bounds("editor-minimap-viewport").unwrap();
++            assert!(
++                (moved.top() - viewport.top() - px(delta)).abs() < px(0.1),
++                "delta {delta}: {moved:?}"
++            );
++            let expected_scroll =
++                max_scroll * (0.25 + px(delta) / (minimap.size.height - viewport.size.height));
++            let actual = cx.update(|_, cx| -state.read(cx).scroll_handle.offset().y);
++            // Layout rounds the painted thumb to device pixels; compare scroll
++            // fractions to avoid magnifying that rounding over a 10,000-line file.
++            assert!(
++                ((actual - expected_scroll) / max_scroll).abs() < 0.001,
++                "delta {delta}: actual {actual:?}, expected {expected_scroll:?}"
++            );
++        }
++
++        for (y, expected) in [
++            (minimap.bottom() + px(100.), max_scroll),
++            (minimap.top() - px(100.), px(0.)),
++        ] {
++            cx.simulate_mouse_move(point(grab.x, y), MouseButton::Left, gpui::Modifiers::none());
++            cx.run_until_parked();
++            let actual = cx.update(|_, cx| -state.read(cx).scroll_handle.offset().y);
++            assert!((actual - expected).abs() < px(0.1));
++        }
++
++        let release = point(minimap.left() - px(50.), grab.y + px(30.));
++        cx.simulate_mouse_up(release, MouseButton::Left, gpui::Modifiers::none());
++        cx.run_until_parked();
 +        let after = cx.update(|_, cx| state.read(cx).scroll_handle.offset().y);
-+        assert!(after < px(0.));
++        cx.simulate_mouse_move(grab, None, gpui::Modifiers::none());
++        cx.run_until_parked();
++        assert_eq!(
++            cx.update(|_, cx| state.read(cx).scroll_handle.offset().y),
++            after
++        );
      }
  }
-diff -ruN a/src/input/mod.rs b/src/input/mod.rs
---- a/src/input/mod.rs	2026-08-29 11:11:21
-+++ b/src/input/mod.rs	2026-08-08 20:32:47
-@@ -9,6 +9,7 @@
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/minimap.rs b/src/input/minimap.rs
+--- a/src/input/minimap.rs	1969-12-31 18:00:00
++++ b/src/input/minimap.rs	2026-09-10 17:16:56
+@@ -0,0 +1,608 @@
++use std::{cell::Cell, ops::Range, rc::Rc};
++
++use gpui::{
++    App, AvailableSpace, Bounds, ContentMask, Entity, HighlightStyle, HitboxBehavior,
++    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
++    MouseUpEvent, ParentElement as _, Pixels, RenderOnce, ShapedLine, Styled, TextRun, Window,
++    canvas, div, fill, point, px, size,
++};
++
++use crate::{ActiveTheme, input::mode::InputMode};
++
++use super::{InputState, RopeExt as _};
++
++const WIDTH: Pixels = px(88.);
++const LINE_HEIGHT: Pixels = px(3.);
++const FONT_SIZE: Pixels = px(2.5);
++const LEFT_PADDING: Pixels = px(4.);
++const MAX_LINE_CHARS: usize = 160;
++
++/// Like VS Code's MinimapLayout, the slider spans the editor's full scroll range.
++/// The miniature text scrolls underneath it when the document doesn't fit.
++/// Reference: src/vs/editor/browser/viewParts/minimap/minimap.ts in VS Code.
++#[derive(Clone, Copy, Debug)]
++struct MinimapLayout {
++    scroll_top: Pixels,
++    max_scroll_top: Pixels,
++    viewport_height: Pixels,
++    scale: f32,
++    slider_top: Pixels,
++    slider_height: Pixels,
++    slider_ratio: f32,
++    content_top: Pixels,
++}
++
++impl MinimapLayout {
++    fn new(
++        height: Pixels,
++        line_height: Pixels,
++        viewport_height: Pixels,
++        content_height: Pixels,
++        scroll_top: Pixels,
++    ) -> Self {
++        let height = height.max(px(0.));
++        let viewport_height = viewport_height.max(px(0.));
++        let content_height = content_height.max(viewport_height);
++        let scale = LINE_HEIGHT / line_height.max(LINE_HEIGHT);
++        let max_scroll_top = (content_height - viewport_height).max(px(0.));
++        let scroll_top = scroll_top.clamp(px(0.), max_scroll_top);
++        let slider_height = (viewport_height * scale).min(height);
++        let track = (content_height * scale - slider_height)
++            .min(height - slider_height)
++            .max(px(0.));
++        let slider_ratio = if max_scroll_top > px(0.) {
++            track / max_scroll_top
++        } else {
++            0.
++        };
++        let slider_top = scroll_top * slider_ratio;
++
++        Self {
++            scroll_top,
++            max_scroll_top,
++            viewport_height,
++            scale,
++            slider_top,
++            slider_height,
++            slider_ratio,
++            content_top: (scroll_top * scale - slider_top).max(px(0.)),
++        }
++    }
++
++    fn for_input(state: &InputState, height: Pixels, window: &Window) -> Self {
++        // A newly opened tab may not have painted its editor bounds yet.
++        let viewport_height = if state.input_bounds.size.height > px(0.) {
++            state.input_bounds.size.height
++        } else {
++            height
++        };
++        Self::new(
++            height,
++            state
++                .last_layout
++                .as_ref()
++                .map_or(window.line_height(), |l| l.line_height),
++            viewport_height,
++            state.scroll_size.height,
++            -state.scroll_handle.offset().y,
++        )
++    }
++
++    fn visible_rows(&self, height: Pixels, row_count: usize) -> Range<usize> {
++        let start = (self.content_top / LINE_HEIGHT).floor() as usize;
++        let end = ((self.content_top + height) / LINE_HEIGHT).ceil() as usize;
++        start.min(row_count)..end.min(row_count)
++    }
++
++    fn scroll_top_for_click(&self, local_y: Pixels) -> Pixels {
++        ((self.content_top + local_y) / self.scale - self.viewport_height / 2.)
++            .clamp(px(0.), self.max_scroll_top)
++    }
++}
++
++/// Snapshot on mouse-down, before any movement or redraw. Recomputing this from
++/// the moving preview (or GPUI's drag threshold position) makes the thumb jump.
++#[derive(Clone, Copy)]
++struct MinimapDrag {
++    pointer_y: Pixels,
++    scroll_top: Pixels,
++    max_scroll_top: Pixels,
++    slider_ratio: f32,
++}
++
++#[derive(Clone, Copy, Default, PartialEq, Eq)]
++enum MinimapVisualState {
++    #[default]
++    Idle,
++    MapHovered,
++    SliderHovered,
++    Dragging,
++}
++
++impl MinimapVisualState {
++    fn for_pointer(map_hovered: bool, slider_hovered: bool, dragging: bool) -> Self {
++        if dragging {
++            Self::Dragging
++        } else if map_hovered && slider_hovered {
++            Self::SliderHovered
++        } else if map_hovered {
++            Self::MapHovered
++        } else {
++            Self::Idle
++        }
++    }
++
++    fn opacity(self) -> f32 {
++        match self {
++            Self::Idle => 0.10,
++            Self::MapHovered => 0.17,
++            Self::SliderHovered => 0.24,
++            Self::Dragging => 0.32,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Default)]
++struct MinimapState {
++    drag: Option<MinimapDrag>,
++    visual: MinimapVisualState,
++}
++
++impl MinimapDrag {
++    fn scroll_top(&self, pointer_y: Pixels) -> Pixels {
++        if self.slider_ratio <= 0. {
++            return self.scroll_top;
++        }
++        (self.scroll_top + (pointer_y - self.pointer_y) / self.slider_ratio)
++            .clamp(px(0.), self.max_scroll_top)
++    }
++}
++
++fn set_scroll_top(input: &Entity<InputState>, scroll_top: Pixels, cx: &mut App) {
++    input.update(cx, |state, cx| {
++        let offset = state.scroll_handle.offset();
++        state.update_scroll_offset(Some(point(offset.x, -scroll_top)), cx);
++    });
++}
++
++/// Expand tabs without losing UTF-8 byte alignment with syntax colors. Runs use
++/// only syntax foreground colors: editor decorations don't belong in the map.
++fn preview_text(
++    source: &str,
++    offset: usize,
++    styles: &[(Range<usize>, HighlightStyle)],
++    base: &TextRun,
++    tab_size: usize,
++) -> (String, Vec<TextRun>) {
++    let mut text = String::new();
++    let mut runs: Vec<TextRun> = Vec::new();
++    let mut column = 0;
++    let mut style_index = 0;
++    for (index, ch) in source.char_indices() {
++        if column >= MAX_LINE_CHARS {
++            break;
++        }
++        let index = offset + index;
++        while styles
++            .get(style_index)
++            .is_some_and(|(range, _)| range.end <= index)
++        {
++            style_index += 1;
++        }
++        let color = styles
++            .get(style_index)
++            .filter(|(range, _)| range.contains(&index))
++            .and_then(|(_, style)| style.color)
++            .unwrap_or(base.color);
++        let start = text.len();
++        if ch == '\t' {
++            let count = (tab_size.max(1) - column % tab_size.max(1)).min(MAX_LINE_CHARS - column);
++            text.extend(std::iter::repeat_n(' ', count));
++            column += count;
++        } else {
++            text.push(if ch.is_control() { ' ' } else { ch });
++            column += 1;
++        }
++        let len = text.len() - start;
++        if let Some(run) = runs.last_mut().filter(|run| run.color == color) {
++            run.len += len;
++        } else {
++            runs.push(TextRun {
++                len,
++                color,
++                ..base.clone()
++            });
++        }
++    }
++    (text, runs)
++}
++
++fn preview_lines(
++    state: &InputState,
++    layout: MinimapLayout,
++    height: Pixels,
++    window: &Window,
++    cx: &App,
++) -> Vec<(Pixels, ShapedLine)> {
++    let rows = layout.visible_rows(height, state.text_wrapper.len());
++    let mut result = Vec::with_capacity(rows.len());
++    let base = TextRun {
++        len: 0,
++        font: window.text_style().font(),
++        color: cx.theme().foreground,
++        background_color: None,
++        underline: None,
++        strikethrough: None,
++    };
++    let (highlighter, tab_size) = match &state.mode {
++        InputMode::CodeEditor {
++            highlighter, tab, ..
++        } => (Some(highlighter.borrow()), tab.tab_size),
++        _ => (None, 2),
++    };
++    let highlighter = highlighter.as_deref().and_then(|value| value.as_ref());
++    let mut display_row = 0;
++    for (row, line) in state.text_wrapper.lines.iter().enumerate() {
++        let line_end = display_row + line.wrapped_lines.len();
++        if display_row >= rows.end {
++            break;
++        }
++        if line_end > rows.start {
++            let line_offset = state.text.line_start_offset(row);
++            for local_row in rows.start.saturating_sub(display_row)..line.wrapped_lines.len() {
++                let row = display_row + local_row;
++                if row >= rows.end {
++                    break;
++                }
++                let range = &line.wrapped_lines[local_row];
++                let start = line_offset + range.start;
++                // Never materialize a whole pathological line or query its entire syntax tree.
++                let source: String = state
++                    .text
++                    .slice(start..line_offset + range.end)
++                    .chars()
++                    .take(MAX_LINE_CHARS)
++                    .collect();
++                if source.is_empty() {
++                    continue;
++                }
++                let styles = highlighter.map_or_else(Vec::new, |highlighter| {
++                    highlighter.styles(&(start..start + source.len()), &cx.theme().highlight_theme)
++                });
++                let (text, runs) = preview_text(&source, start, &styles, &base, tab_size);
++                let shaped = window
++                    .text_system()
++                    .shape_line(text.into(), FONT_SIZE, &runs, None);
++                result.push((row as f32 * LINE_HEIGHT - layout.content_top, shaped));
++            }
++        }
++        display_row = line_end;
++    }
++    result
++}
++
++#[derive(IntoElement)]
++pub(super) struct Minimap {
++    input: Entity<InputState>,
++}
++
++impl Minimap {
++    pub(super) fn new(input: &Entity<InputState>) -> Self {
++        Self {
++            input: input.clone(),
++        }
++    }
++}
++
++impl RenderOnce for Minimap {
++    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
++        let interaction = window
++            .use_keyed_state(("minimap-state", self.input.entity_id()), cx, |_, _| {
++                Rc::new(Cell::new(MinimapState::default()))
++            })
++            .read(cx)
++            .clone();
++        let input = self.input;
++        let input_for_layout = input.clone();
++        div()
++            .id("editor-minimap")
++            .debug_selector(|| "editor-minimap".to_owned())
++            .h_full()
++            .w(WIDTH)
++            .flex_none()
++            .overflow_hidden()
++            .border_l_1()
++            .border_color(cx.theme().border.opacity(0.45))
++            .bg(cx.theme().editor_background())
++            .cursor_pointer()
++            .child(
++                canvas(
++                    move |bounds, window, cx| {
++                        let state = input_for_layout.read(cx);
++                        let layout = MinimapLayout::for_input(state, bounds.size.height, window);
++                        let lines = preview_lines(state, layout, bounds.size.height, window, cx);
++                        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
++                        let slider_bounds = Bounds::new(
++                            bounds.origin + point(px(0.), layout.slider_top),
++                            size(bounds.size.width, layout.slider_height),
++                        );
++                        let mut slider = div()
++                            .id("editor-minimap-viewport")
++                            .debug_selector(|| "editor-minimap-viewport".to_owned())
++                            .w(slider_bounds.size.width)
++                            .h(slider_bounds.size.height)
++                            .cursor_ns_resize()
++                            .into_any_element();
++                        slider.prepaint_as_root(
++                            slider_bounds.origin,
++                            slider_bounds.size.map(AvailableSpace::Definite),
++                            window,
++                            cx,
++                        );
++                        (layout, lines, hitbox, slider_bounds, slider)
++                    },
++                    move |bounds,
++                          (layout, lines, hitbox, slider_bounds, mut slider),
++                          window,
++                          cx| {
++                        let visual = MinimapVisualState::for_pointer(
++                            hitbox.is_hovered(window),
++                            slider_bounds.contains(&window.mouse_position()),
++                            interaction.get().drag.is_some(),
++                        );
++                        interaction.set(MinimapState {
++                            visual,
++                            ..interaction.get()
++                        });
++                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
++                            for (y, line) in lines {
++                                let _ = line.paint(
++                                    bounds.origin + point(LEFT_PADDING, y),
++                                    LINE_HEIGHT,
++                                    window,
++                                    cx,
++                                );
++                            }
++                            window.paint_quad(fill(
++                                slider_bounds,
++                                cx.theme().muted_foreground.opacity(visual.opacity()),
++                            ));
++                            slider.paint(window, cx);
++                        });
++                        window.on_mouse_event({
++                            let input = input.clone();
++                            let interaction = interaction.clone();
++                            let hitbox = hitbox.clone();
++                            move |event: &MouseDownEvent, phase, window, cx| {
++                                if !phase.bubble()
++                                    || event.button != MouseButton::Left
++                                    || !hitbox.is_hovered(window)
++                                {
++                                    return;
++                                }
++                                let on_slider = slider_bounds.contains(&event.position);
++                                let scroll_top = if on_slider {
++                                    layout.scroll_top
++                                } else {
++                                    layout.scroll_top_for_click(event.position.y - bounds.top())
++                                };
++                                let drag = (on_slider && layout.slider_ratio > 0.).then_some(
++                                    MinimapDrag {
++                                        pointer_y: event.position.y,
++                                        scroll_top,
++                                        max_scroll_top: layout.max_scroll_top,
++                                        slider_ratio: layout.slider_ratio,
++                                    },
++                                );
++                                interaction.set(MinimapState {
++                                    drag,
++                                    ..interaction.get()
++                                });
++                                set_scroll_top(&input, scroll_top, cx);
++                                cx.stop_propagation();
++                            }
++                        });
++                        // Capture at window level, including movement/release outside the map.
++                        window.on_mouse_event({
++                            let input = input.clone();
++                            let interaction = interaction.clone();
++                            move |event: &MouseMoveEvent, phase, window, cx| {
++                                if !phase.capture() {
++                                    return;
++                                }
++                                let visual = MinimapVisualState::for_pointer(
++                                    hitbox.is_hovered(window),
++                                    slider_bounds.contains(&event.position),
++                                    interaction.get().drag.is_some(),
++                                );
++                                if visual != interaction.get().visual {
++                                    interaction.set(MinimapState {
++                                        visual,
++                                        ..interaction.get()
++                                    });
++                                    cx.notify(input.entity_id());
++                                }
++                                let Some(initial) = interaction.get().drag else {
++                                    return;
++                                };
++                                if event.pressed_button != Some(MouseButton::Left) {
++                                    interaction.set(MinimapState {
++                                        drag: None,
++                                        ..interaction.get()
++                                    });
++                                    cx.notify(input.entity_id());
++                                    return;
++                                }
++                                set_scroll_top(&input, initial.scroll_top(event.position.y), cx);
++                                cx.stop_propagation();
++                            }
++                        });
++                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
++                            if phase.capture() && event.button == MouseButton::Left {
++                                if let Some(initial) = interaction.get().drag {
++                                    interaction.set(MinimapState {
++                                        drag: None,
++                                        ..interaction.get()
++                                    });
++                                    set_scroll_top(
++                                        &input,
++                                        initial.scroll_top(event.position.y),
++                                        cx,
++                                    );
++                                    cx.stop_propagation();
++                                }
++                            }
++                        });
++                    },
++                )
++                .size_full(),
++            )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::highlighter::{HighlightTheme, SyntaxHighlighter};
++    use gpui::AppContext as _;
++
++    #[test]
++    fn minimap_slider_and_preview_stay_aligned_across_the_full_document() {
++        for content_height in [0., 200., 1_000., 200_000., 20_000_000.] {
++            let max_scroll = (content_height - 400_f32).max(0.);
++            for progress in [0., 0.01, 0.25, 0.5, 0.75, 0.99, 1.] {
++                let layout = MinimapLayout::new(
++                    px(400.),
++                    px(20.),
++                    px(400.),
++                    px(content_height),
++                    px(max_scroll * progress),
++                );
++                assert!(layout.slider_top >= px(0.));
++                assert!(layout.slider_top + layout.slider_height <= px(400.));
++                assert!(
++                    (layout.scroll_top * layout.scale - layout.content_top - layout.slider_top)
++                        .abs()
++                        < px(0.5)
++                );
++                let rows = layout.visible_rows(px(400.), (content_height / 20.) as usize);
++                assert!(rows.len() <= 135);
++                if content_height > 400. {
++                    assert!((layout.slider_height - px(60.)).abs() < px(0.001));
++                    let initial = MinimapDrag {
++                        pointer_y: px(75.),
++                        scroll_top: layout.scroll_top,
++                        max_scroll_top: layout.max_scroll_top,
++                        slider_ratio: layout.slider_ratio,
++                    };
++                    assert_eq!(initial.scroll_top(px(75.)), layout.scroll_top);
++                    assert!(
++                        (initial.scroll_top(px(75.) - layout.slider_top) - px(0.)).abs() < px(1.)
++                    );
++                    let bottom =
++                        px(75.) + (layout.max_scroll_top - layout.scroll_top) * layout.slider_ratio;
++                    assert!((initial.scroll_top(bottom) - layout.max_scroll_top).abs() < px(2.));
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn minimap_click_centers_the_previewed_location_including_bottom_padding() {
++        let layout = MinimapLayout::new(px(400.), px(20.), px(400.), px(200_200.), px(100_000.));
++        let click_y = px(300.);
++        let clicked_document_y = (layout.content_top + click_y) / layout.scale;
++        assert_eq!(
++            layout.scroll_top_for_click(click_y) + px(200.),
++            clicked_document_y
++        );
++        assert_eq!(layout.scroll_top_for_click(px(-1_000_000.)), px(0.));
++        assert_eq!(
++            layout.scroll_top_for_click(px(1_000_000.)),
++            layout.max_scroll_top
++        );
++    }
++
++    #[test]
++    fn minimap_preview_preserves_indentation_unicode_and_syntax_colors() {
++        const SOURCE: &str = "{\n\t\"café\": true,\n\t\"count\": 42\n}";
++        let rope = ropey::Rope::from_str(SOURCE);
++        let mut highlighter = SyntaxHighlighter::new("json");
++        highlighter.update(None, &rope);
++        let theme = HighlightTheme::default_dark();
++        let start = 2;
++        let line = "\t\"café\": true,";
++        let styles = highlighter.styles(&(start..start + line.len()), &theme);
++        let base = gpui::TextStyle::default().to_run(0);
++        let (text, runs) = preview_text(line, start, &styles, &base, 4);
++        assert_eq!(text, "    \"café\": true,");
++        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
++        let color_at = |needle: &str| {
++            let target = text.find(needle).unwrap();
++            let mut offset = 0;
++            runs.iter()
++                .find_map(|run| {
++                    let contains = (offset..offset + run.len).contains(&target);
++                    offset += run.len;
++                    contains.then_some(run.color)
++                })
++                .unwrap()
++        };
++        assert_ne!(color_at("café"), color_at("true"));
++        for needle in ["café", "true"] {
++            let source_offset = SOURCE.find(needle).unwrap();
++            let expected = styles
++                .iter()
++                .find(|(range, _)| range.contains(&source_offset))
++                .unwrap()
++                .1
++                .color
++                .unwrap_or(base.color);
++            assert_eq!(color_at(needle), expected);
++        }
++        let (long, _) = preview_text(&"界".repeat(10_000), 0, &[], &base, 4);
++        assert_eq!(long.chars().count(), MAX_LINE_CHARS);
++        assert_eq!(preview_text("", 0, &[], &base, 4).0, "");
++    }
++
++    #[gpui::test]
++    fn minimap_shapes_actual_wrapped_rows_and_keeps_blank_lines(cx: &mut gpui::TestAppContext) {
++        struct Harness {
++            input: Entity<InputState>,
++        }
++        impl gpui::Render for Harness {
++            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
++                super::super::Input::new(&self.input)
++                    .minimap(true)
++                    .size_full()
++            }
++        }
++        cx.update(crate::init);
++        let source = format!("    {}\n\n尾行", "word ".repeat(70));
++        let initial = source.clone();
++        let (harness, cx) = cx.add_window_view(|window, cx| Harness {
++            input: cx.new(|cx| {
++                InputState::new(window, cx)
++                    .code_editor("text")
++                    .soft_wrap(true)
++                    .default_value(initial)
++            }),
++        });
++        cx.simulate_resize(size(px(400.), px(420.)));
++        cx.run_until_parked();
++        cx.update(|window, cx| {
++            let state = harness.read(cx).input.read(cx);
++            assert!(state.text_wrapper.len() > state.text.lines_len());
++            let layout = MinimapLayout::for_input(state, px(400.), window);
++            let lines = preview_lines(state, layout, px(400.), window, cx);
++            let actual: String = lines.iter().map(|(_, line)| line.text.as_ref()).collect();
++            assert_eq!(actual, source.replace('\n', ""));
++            assert!(
++                lines
++                    .windows(2)
++                    .any(|pair| pair[1].0 - pair[0].0 == LINE_HEIGHT * 2.)
++            );
++            assert!(lines.iter().all(|(_, line)| line.font_size == FONT_SIZE));
++        });
++    }
++}
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/mod.rs b/src/input/mod.rs
+--- a/src/input/mod.rs	2026-09-10 17:21:12
++++ b/src/input/mod.rs	2026-09-10 16:48:11
+@@ -7,8 +7,10 @@
+ mod input;
+ mod lsp;
  mod mask_pattern;
++mod minimap;
  mod mode;
  mod movement;
 +mod multicursor;
  mod number_input;
  mod otp_input;
  pub(crate) mod popovers;
-diff -ruN a/src/input/mode.rs b/src/input/mode.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/mode.rs b/src/input/mode.rs
 --- a/src/input/mode.rs	2026-02-05 04:58:01
 +++ b/src/input/mode.rs	2026-08-08 19:49:54
 @@ -202,6 +202,11 @@
@@ -2651,7 +3007,7 @@ diff -ruN a/src/input/mode.rs b/src/input/mode.rs
                  if !force && highlighter.borrow().is_some() {
                      return;
                  }
-diff -ruN a/src/input/movement.rs b/src/input/movement.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/movement.rs b/src/input/movement.rs
 --- a/src/input/movement.rs	2026-02-05 04:58:01
 +++ b/src/input/movement.rs	2026-08-14 00:16:03
 @@ -47,6 +47,8 @@
@@ -2750,7 +3106,7 @@ diff -ruN a/src/input/movement.rs b/src/input/movement.rs
          self.preferred_column = was_preferred_column;
          cx.notify();
      }
-diff -ruN a/src/input/multicursor.rs b/src/input/multicursor.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/multicursor.rs b/src/input/multicursor.rs
 --- a/src/input/multicursor.rs	1969-12-31 18:00:00
 +++ b/src/input/multicursor.rs	2026-08-08 20:40:48
 @@ -0,0 +1,188 @@
@@ -2942,7 +3298,7 @@ diff -ruN a/src/input/multicursor.rs b/src/input/multicursor.rs
 +        assert_eq!(text.slice(ranges[2]).to_string(), "cde");
 +    }
 +}
-diff -ruN a/src/input/search.rs b/src/input/search.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/search.rs b/src/input/search.rs
 --- a/src/input/search.rs	2026-02-05 04:58:01
 +++ b/src/input/search.rs	2026-08-10 15:37:51
 @@ -23,6 +23,12 @@
@@ -3442,8 +3798,8 @@ diff -ruN a/src/input/search.rs b/src/input/search.rs
 +        assert!(match_viewport_y + line_height <= viewport_height);
      }
  }
-diff -ruN a/src/input/selection.rs b/src/input/selection.rs
---- a/src/input/selection.rs	2026-08-29 11:11:21
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/selection.rs b/src/input/selection.rs
+--- a/src/input/selection.rs	2026-09-10 17:21:12
 +++ b/src/input/selection.rs	2026-08-14 00:16:04
 @@ -52,13 +52,37 @@
          };
@@ -3498,7 +3854,7 @@ diff -ruN a/src/input/selection.rs b/src/input/selection.rs
 +        assert_eq!(TextSelector::line_range(&rope, rope.len()), 14..19);
      }
  }
-diff -ruN a/src/input/state.rs b/src/input/state.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/state.rs b/src/input/state.rs
 --- a/src/input/state.rs	2026-02-05 04:58:01
 +++ b/src/input/state.rs	2026-08-29 11:06:14
 @@ -18,8 +18,16 @@
@@ -4676,7 +5032,7 @@ diff -ruN a/src/input/state.rs b/src/input/state.rs
 +        });
      }
  }
-diff -ruN a/src/input/text_wrapper.rs b/src/input/text_wrapper.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/text_wrapper.rs b/src/input/text_wrapper.rs
 --- a/src/input/text_wrapper.rs	2026-02-05 04:58:01
 +++ b/src/input/text_wrapper.rs	2026-08-10 15:23:28
 @@ -1,4 +1,4 @@
@@ -4770,7 +5126,7 @@ diff -ruN a/src/input/text_wrapper.rs b/src/input/text_wrapper.rs
          assert_eq!(
              text.to_string(),
              "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"
-diff -ruN a/src/menu/context_menu.rs b/src/menu/context_menu.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/menu/context_menu.rs b/src/menu/context_menu.rs
 --- a/src/menu/context_menu.rs	2026-02-05 04:58:01
 +++ b/src/menu/context_menu.rs	2026-08-09 13:16:57
 @@ -19,7 +19,16 @@
@@ -4791,7 +5147,7 @@ diff -ruN a/src/menu/context_menu.rs b/src/menu/context_menu.rs
      }
  }
  
-diff -ruN a/src/root.rs b/src/root.rs
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/root.rs b/src/root.rs
 --- a/src/root.rs	2026-02-05 04:58:01
 +++ b/src/root.rs	2026-08-09 01:26:43
 @@ -337,46 +337,9 @@
@@ -4903,8 +5259,8 @@ diff -ruN a/src/root.rs b/src/root.rs
          )
      }
  }
-diff -ruN a/src/tab/tab.rs b/src/tab/tab.rs
---- a/src/tab/tab.rs	2026-08-29 11:11:22
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/tab/tab.rs b/src/tab/tab.rs
+--- a/src/tab/tab.rs	2026-09-10 17:21:13
 +++ b/src/tab/tab.rs	2026-08-09 13:16:58
 @@ -1,13 +1,20 @@
  use std::rc::Rc;
@@ -5023,7 +5379,7 @@ diff -ruN a/src/tab/tab.rs b/src/tab/tab.rs
              })
      }
  }
-diff -ruN a/src/theme/default-theme.json b/src/theme/default-theme.json
+diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/theme/default-theme.json b/src/theme/default-theme.json
 --- a/src/theme/default-theme.json	2026-02-05 04:58:01
 +++ b/src/theme/default-theme.json	2026-08-29 10:35:07
 @@ -151,6 +151,12 @@
