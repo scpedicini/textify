@@ -134,6 +134,10 @@ starts only on the handle, preserves the original grab point even outside the mi
 both ends of the document. The handle becomes progressively brighter when hovering over the map,
 hovering over the handle itself, and gripping it, while remaining translucent. Text shaping
 and syntax queries are limited to the minimap's visible rows and the first 160 characters per row.
+The handle and preview use the current frame's editor measurements when changing text zoom or
+switching tabs with different zoom levels. The miniature text stays at a fixed tiny size; the handle
+shrinks as fewer editor rows fit on screen. Zooming or resizing while gripping the handle refreshes
+the drag mapping without introducing a scroll jump or changing the one-to-one pointer movement.
 
 ## Native menus and editor gestures
 

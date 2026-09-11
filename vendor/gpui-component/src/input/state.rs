@@ -22,6 +22,7 @@ use super::{
     change::Change,
     element::TextElement,
     mask_pattern::MaskPattern,
+    minimap::MinimapMetrics,
     mode::InputMode,
     multicursor::{
         TaggedSelection, normalized_selections, rectangular_selections, replacement_plan,
@@ -297,6 +298,7 @@ pub struct InputState {
     /// The marked range is the temporary insert text on IME typing.
     pub(super) ime_marked_range: Option<Selection>,
     pub(super) last_layout: Option<LastLayout>,
+    pub(super) minimap_metrics: Option<MinimapMetrics>,
     pub(super) last_cursor: Option<usize>,
     /// The input container bounds
     pub(super) input_bounds: Bounds<Pixels>,
@@ -415,6 +417,7 @@ impl InputState {
             validate: None,
             mode: InputMode::default(),
             last_layout: None,
+            minimap_metrics: None,
             last_bounds: None,
             last_selected_range: None,
             last_cursor: None,

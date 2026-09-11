@@ -774,13 +774,13 @@ impl Workspace {
         #[cfg(test)]
         {
             let data_dir = tempfile::tempdir().expect("isolated Textify test data");
-            return Self::new_at_data_dir(
+            Self::new_at_data_dir(
                 data_dir.path().to_path_buf(),
                 false,
                 Some(data_dir),
                 window,
                 cx,
-            );
+            )
         }
 
         #[cfg(not(test))]
@@ -8866,6 +8866,103 @@ mod tests {
                 Some("This document will be saved as CP437")
             );
         });
+    }
+
+    #[gpui::test]
+    fn minimap_tracks_command_scroll_zoom_on_the_first_frame(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("zoom session directory");
+        let slot = Rc::new(RefCell::new(None));
+        let capture = slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = slot.borrow().clone().unwrap();
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.settings.appearance.font_size = 16;
+                workspace.settings.appearance.minimap_on_by_default = true;
+                for index in 0..3 {
+                    if index > 0 {
+                        workspace.add_untitled(window, cx);
+                    }
+                    workspace.active_document().editor.set_text(
+                        "zoom test line\n".repeat(5_000),
+                        window,
+                        cx,
+                    );
+                }
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        // Exercise the application's actual zoom handler in both directions,
+        // across tab switches and all the way to both font-size limits.
+        for (tab, target) in [(0, 24), (1, 8), (2, 40), (0, 16), (1, 24), (2, 8)] {
+            loop {
+                let font_size = cx.update(|window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.set_active_index(tab, window, cx);
+                        let current = workspace.active_document().font_size_override.unwrap_or(16);
+                        if current != target {
+                            workspace.on_editor_scroll(
+                                &ScrollWheelEvent {
+                                    position: gpui::point(px(400.), px(300.)),
+                                    delta: ScrollDelta::Lines(gpui::point(
+                                        0.,
+                                        if current < target { 1. } else { -1. },
+                                    )),
+                                    modifiers: gpui::Modifiers::secondary_key(),
+                                    ..ScrollWheelEvent::default()
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                        workspace.active_document().font_size_override.unwrap_or(16)
+                    })
+                });
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
+                let actual = cx
+                    .debug_bounds("editor-minimap-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                // A second frame with no intervening input must not be needed to
+                // catch up. The component tests independently check exact editor
+                // geometry; this also covers the host's chrome and event handler.
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
+                let expected = cx
+                    .debug_bounds("editor-minimap-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert!(
+                    (actual - expected).abs() <= px(1.),
+                    "tab {tab}, zoom {font_size}: first-frame handle {actual:?}, expected {expected:?}"
+                );
+                if font_size == target {
+                    break;
+                }
+            }
+        }
     }
 
     #[gpui::test]

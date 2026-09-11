@@ -14,7 +14,7 @@ use crate::{
     input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, text_wrapper::LineLayout},
 };
 
-use super::{InputState, LastLayout, mode::InputMode};
+use super::{InputState, LastLayout, minimap::MinimapMetrics, mode::InputMode};
 
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
@@ -1382,6 +1382,18 @@ impl Element for TextElement {
         let hover_definition_hitbox = self.layout_hover_definition_hitbox(state, window, cx);
         let indent_guides_path =
             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
+
+        // The minimap is the next sibling to prepaint. Publish this frame's
+        // coherent geometry now, including zoom anchoring and cursor scrolling;
+        // waiting until paint leaves the map one frame behind the editor.
+        self.state.update(cx, |state, _| {
+            state.minimap_metrics = Some(MinimapMetrics {
+                line_height,
+                viewport_height: bounds.size.height,
+                content_height: scroll_size.height,
+                scroll_top: -cursor_scroll_offset.y,
+            });
+        });
 
         PrepaintState {
             bounds,

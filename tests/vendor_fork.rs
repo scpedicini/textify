@@ -205,6 +205,8 @@ fn minimap_rendering_and_drag_mapping_survive_revendoring() {
         "struct MinimapDrag",
         "fn preview_lines",
         "fn scroll_top_for_click",
+        "state.minimap_metrics",
+        "fn rebase_for_layout",
     ] {
         assert_marker(
             &minimap,
@@ -213,6 +215,15 @@ fn minimap_rendering_and_drag_mapping_survive_revendoring() {
             "minimap text preview and stable dragging",
         );
     }
+    let element = vendor_source("src/input/element.rs");
+    let metrics = element
+        .find("state.minimap_metrics = Some(")
+        .expect("editor must publish current-frame minimap metrics; see TEXTIFY_FORK.md");
+    let paint = element.find("    fn paint(").expect("editor paint method");
+    assert!(
+        metrics < paint,
+        "minimap metrics must be published during prepaint, not after the minimap has laid out"
+    );
     let patch =
         fs::read_to_string(vendor_root().join("../patches/gpui-component-textify.patch")).unwrap();
     assert!(patch.contains("a/src/input/minimap.rs b/src/input/minimap.rs"));

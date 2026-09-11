@@ -428,7 +428,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
                      .w(view_size.width)
                      .h(view_size.height)
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/highlighter/highlighter.rs b/src/highlighter/highlighter.rs
---- a/src/highlighter/highlighter.rs	2026-09-10 17:21:13
+--- a/src/highlighter/highlighter.rs	2026-09-10 21:26:54
 +++ b/src/highlighter/highlighter.rs	2026-08-29 11:10:03
 @@ -6,7 +6,7 @@
  
@@ -1349,7 +1349,16 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  }
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/element.rs b/src/input/element.rs
 --- a/src/input/element.rs	2026-02-05 04:58:01
-+++ b/src/input/element.rs	2026-08-29 11:10:03
++++ b/src/input/element.rs	2026-09-10 21:24:15
+@@ -14,7 +14,7 @@
+     input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, text_wrapper::LineLayout},
+ };
+
+-use super::{InputState, LastLayout, mode::InputMode};
++use super::{InputState, LastLayout, minimap::MinimapMetrics, mode::InputMode};
+
+ const BOTTOM_MARGIN_ROWS: usize = 3;
+ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 @@ -25,6 +25,10 @@
      placeholder: SharedString,
  }
@@ -1753,7 +1762,26 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
          let document_color_paths =
              self.layout_document_colors(&document_colors, &last_layout, &bounds);
-@@ -1227,7 +1391,8 @@
+@@ -1219,6 +1383,18 @@
+         let indent_guides_path =
+             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
+
++        // The minimap is the next sibling to prepaint. Publish this frame's
++        // coherent geometry now, including zoom anchoring and cursor scrolling;
++        // waiting until paint leaves the map one frame behind the editor.
++        self.state.update(cx, |state, _| {
++            state.minimap_metrics = Some(MinimapMetrics {
++                line_height,
++                viewport_height: bounds.size.height,
++                content_height: scroll_size.height,
++                scroll_top: -cursor_scroll_offset.y,
++            });
++        });
++
+         PrepaintState {
+             bounds,
+             last_layout,
+@@ -1227,7 +1403,8 @@
              cursor_bounds,
              cursor_scroll_offset,
              current_row,
@@ -1763,7 +1791,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
              search_match_paths,
              hover_highlight_path,
              hover_definition_hitbox,
-@@ -1345,7 +1510,7 @@
+@@ -1345,7 +1522,7 @@
                  }
              }
  
@@ -1772,7 +1800,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
                  window.paint_path(path, cx.theme().selection);
              }
  
-@@ -1405,6 +1570,9 @@
+@@ -1405,6 +1582,9 @@
              if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
                  window.paint_quad(fill(cursor_bounds, cx.theme().caret));
              }
@@ -1782,7 +1810,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          }
  
          // Paint line numbers
-@@ -1462,6 +1630,7 @@
+@@ -1462,6 +1642,7 @@
              state.scroll_size = prepaint.scroll_size;
              state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
              state.deferred_scroll_offset = None;
@@ -1790,7 +1818,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  
              cx.notify();
          });
-@@ -1594,8 +1763,24 @@
+@@ -1594,8 +1775,24 @@
  
  #[cfg(test)]
  mod tests {
@@ -1815,7 +1843,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      #[test]
      fn test_runs_for_range() {
          let run = TextRun {
-@@ -1652,6 +1837,97 @@
+@@ -1652,6 +1849,97 @@
          assert_runs(runs_for_range(&runs, 3, &(0..3)), &[1, 2]);
          assert_runs(runs_for_range(&runs, 3, &(2..10)), &[4, 1, 3]);
          assert_runs(runs_for_range(&runs, 9, &(0..8)), &[1, 7]);
@@ -2368,8 +2396,8 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  }
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/minimap.rs b/src/input/minimap.rs
 --- a/src/input/minimap.rs	1969-12-31 18:00:00
-+++ b/src/input/minimap.rs	2026-09-10 17:16:56
-@@ -0,0 +1,608 @@
++++ b/src/input/minimap.rs	2026-09-10 21:24:43
+@@ -0,0 +1,802 @@
 +use std::{cell::Cell, ops::Range, rc::Rc};
 +
 +use gpui::{
@@ -2388,6 +2416,17 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +const FONT_SIZE: Pixels = px(2.5);
 +const LEFT_PADDING: Pixels = px(4.);
 +const MAX_LINE_CHARS: usize = 160;
++
++/// Published by the editor's prepaint before its sibling minimap is laid out.
++/// Keep these measurements together: `last_layout` and `scroll_size` still refer
++/// to the previous frame at that point, especially during zoom and rewrapping.
++#[derive(Clone, Copy)]
++pub(super) struct MinimapMetrics {
++    pub line_height: Pixels,
++    pub viewport_height: Pixels,
++    pub content_height: Pixels,
++    pub scroll_top: Pixels,
++}
 +
 +/// Like VS Code's MinimapLayout, the slider spans the editor's full scroll range.
 +/// The miniature text scrolls underneath it when the document doesn't fit.
@@ -2442,21 +2481,18 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +    }
 +
 +    fn for_input(state: &InputState, height: Pixels, window: &Window) -> Self {
-+        // A newly opened tab may not have painted its editor bounds yet.
-+        let viewport_height = if state.input_bounds.size.height > px(0.) {
-+            state.input_bounds.size.height
-+        } else {
-+            height
-+        };
++        let metrics = state.minimap_metrics.unwrap_or(MinimapMetrics {
++            line_height: window.line_height(),
++            viewport_height: height,
++            content_height: height,
++            scroll_top: px(0.),
++        });
 +        Self::new(
 +            height,
-+            state
-+                .last_layout
-+                .as_ref()
-+                .map_or(window.line_height(), |l| l.line_height),
-+            viewport_height,
-+            state.scroll_size.height,
-+            -state.scroll_handle.offset().y,
++            metrics.line_height,
++            metrics.viewport_height,
++            metrics.content_height,
++            metrics.scroll_top,
 +        )
 +    }
 +
@@ -2521,6 +2557,19 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +}
 +
 +impl MinimapDrag {
++    fn rebase_for_layout(&mut self, layout: MinimapLayout, pointer_y: Pixels) {
++        // Ordinary scroll redraws must retain the mouse-down anchor. Only a
++        // changed mapping (zoom, wrapping, resize, document length) starts a new
++        // segment at the current pointer and viewport, with no synthetic scroll.
++        if self.max_scroll_top != layout.max_scroll_top || self.slider_ratio != layout.slider_ratio
++        {
++            self.pointer_y = pointer_y;
++            self.scroll_top = layout.scroll_top;
++            self.max_scroll_top = layout.max_scroll_top;
++            self.slider_ratio = layout.slider_ratio;
++        }
++    }
++
 +    fn scroll_top(&self, pointer_y: Pixels) -> Pixels {
 +        if self.slider_ratio <= 0. {
 +            return self.scroll_top;
@@ -2717,15 +2766,16 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +                          (layout, lines, hitbox, slider_bounds, mut slider),
 +                          window,
 +                          cx| {
++                        let drag = interaction.get().drag.map(|mut drag| {
++                            drag.rebase_for_layout(layout, window.mouse_position().y);
++                            drag
++                        });
 +                        let visual = MinimapVisualState::for_pointer(
 +                            hitbox.is_hovered(window),
 +                            slider_bounds.contains(&window.mouse_position()),
-+                            interaction.get().drag.is_some(),
++                            drag.is_some(),
 +                        );
-+                        interaction.set(MinimapState {
-+                            visual,
-+                            ..interaction.get()
-+                        });
++                        interaction.set(MinimapState { drag, visual });
 +                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
 +                            for (y, line) in lines {
 +                                let _ = line.paint(
@@ -2837,6 +2887,178 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +    use super::*;
 +    use crate::highlighter::{HighlightTheme, SyntaxHighlighter};
 +    use gpui::AppContext as _;
++
++    struct ZoomHarness {
++        tabs: Vec<(Entity<InputState>, Pixels)>,
++        active: usize,
++    }
++
++    impl gpui::Render for ZoomHarness {
++        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
++            let (input, font_size) = &self.tabs[self.active];
++            super::super::Input::new(input)
++                .minimap(true)
++                .text_size(*font_size)
++                .size_full()
++        }
++    }
++
++    fn draw_frame(cx: &mut gpui::VisualTestContext) {
++        cx.update(|window, cx| {
++            window.refresh();
++            let _ = window.draw(cx);
++        });
++    }
++
++    fn assert_current_frame(input: &Entity<InputState>, cx: &mut gpui::VisualTestContext) {
++        let map = cx.debug_bounds("editor-minimap").unwrap();
++        let slider = cx.debug_bounds("editor-minimap-viewport").unwrap();
++        let expected = cx.update(|_, cx| {
++            let state = input.read(cx);
++            MinimapLayout::new(
++                map.size.height,
++                state.last_layout.as_ref().unwrap().line_height,
++                state.input_bounds.size.height,
++                state.scroll_size.height,
++                -state.scroll_handle.offset().y,
++            )
++        });
++        assert!(
++            (slider.size.height - expected.slider_height).abs() <= px(1.),
++            "painted height {:?}, current editor requires {:?}",
++            slider.size.height,
++            expected.slider_height
++        );
++        assert!(
++            (slider.top() - map.top() - expected.slider_top).abs() <= px(1.),
++            "painted top {:?}, current editor requires {:?}",
++            slider.top() - map.top(),
++            expected.slider_top
++        );
++    }
++
++    #[gpui::test]
++    fn minimap_uses_current_frame_metrics_through_zoom_and_tab_switches(
++        cx: &mut gpui::TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let (harness, cx) = cx.add_window_view(|window, cx| {
++            let tabs = [24., 8., 16.]
++                .into_iter()
++                .map(|font_size| {
++                    let input = cx.new(|cx| {
++                        InputState::new(window, cx)
++                            .code_editor("text")
++                            .soft_wrap(false)
++                            .default_value(format!("{}\n", "word ".repeat(30)).repeat(50_000))
++                    });
++                    (input, px(font_size))
++                })
++                .collect();
++            ZoomHarness { tabs, active: 0 }
++        });
++        cx.simulate_resize(size(px(800.), px(420.)));
++        cx.run_until_parked();
++        // Each tab keeps its own zoom, wrap layout, and scroll position. Include first
++        // activation and revisits, and never allow a catch-up frame before checking.
++        for active in [0, 1, 2, 0, 1, 2] {
++            harness.update(&mut cx.cx, |harness, cx| {
++                harness.active = active;
++                cx.notify();
++            });
++            draw_frame(cx);
++            let input = cx.update(|_, cx| harness.read(cx).tabs[active].0.clone());
++            assert_current_frame(&input, cx);
++            for wrap in [false, true] {
++                cx.update(|window, cx| {
++                    input.update(cx, |input, cx| input.set_soft_wrap(wrap, window, cx));
++                });
++                draw_frame(cx);
++                input.update(&mut cx.cx, |input, cx| {
++                    let max_scroll = input.scroll_size.height - input.input_bounds.size.height;
++                    input.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.65)), cx);
++                });
++                draw_frame(cx);
++                for font_size in [24., 8., 16., 17., 18., 19., 18., 17., 40., 8.] {
++                    cx.update(|_, cx| {
++                        input.update(cx, |input, _| {
++                            assert!(input.preserve_zoom_anchor_at(input.input_bounds.center()));
++                        });
++                        harness.update(cx, |harness, cx| {
++                            harness.tabs[active].1 = px(font_size);
++                            cx.notify();
++                        });
++                    });
++                    draw_frame(cx);
++                    assert_current_frame(&input, cx);
++                }
++            }
++        }
++    }
++
++    #[gpui::test]
++    fn minimap_drag_rebases_when_zoom_changes_while_gripping(cx: &mut gpui::TestAppContext) {
++        cx.update(crate::init);
++        let (harness, cx) = cx.add_window_view(|window, cx| ZoomHarness {
++            tabs: vec![(
++                cx.new(|cx| {
++                    InputState::new(window, cx)
++                        .code_editor("text")
++                        .soft_wrap(false)
++                        .default_value("long document line\n".repeat(50_000))
++                }),
++                px(8.),
++            )],
++            active: 0,
++        });
++        cx.simulate_resize(size(px(800.), px(420.)));
++        cx.run_until_parked();
++        let input = cx.update(|_, cx| harness.read(cx).tabs[0].0.clone());
++        input.update(&mut cx.cx, |input, cx| {
++            let max_scroll = input.scroll_size.height - input.input_bounds.size.height;
++            input.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.25)), cx);
++        });
++        draw_frame(cx);
++        let slider = cx.debug_bounds("editor-minimap-viewport").unwrap();
++        let grab = point(slider.center().x, slider.top() + px(3.));
++        cx.simulate_mouse_down(grab, MouseButton::Left, gpui::Modifiers::none());
++        let mut pointer = grab;
++        for font_size in [40., 8., 24., 16.] {
++            harness.update(&mut cx.cx, |harness, cx| {
++                harness.tabs[0].1 = px(font_size);
++                cx.notify();
++            });
++            draw_frame(cx);
++            // This test isolates drag rebasing from the separate first-frame metric check.
++            draw_frame(cx);
++            let before = cx.debug_bounds("editor-minimap-viewport").unwrap();
++            let scroll_before = cx.update(|_, cx| input.read(cx).scroll_offset());
++            cx.simulate_mouse_move(pointer, MouseButton::Left, gpui::Modifiers::none());
++            assert_eq!(
++                cx.update(|_, cx| input.read(cx).scroll_offset()),
++                scroll_before
++            );
++            for delta in [40., 40., -20., 0.] {
++                let destination = point(pointer.x, pointer.y + px(delta));
++                cx.simulate_mouse_move(destination, MouseButton::Left, gpui::Modifiers::none());
++                draw_frame(cx);
++                let moved = cx.debug_bounds("editor-minimap-viewport").unwrap();
++                assert!(
++                    (moved.top() - before.top() - px(delta)).abs() <= px(1.),
++                    "font {font_size}, pointer moved {delta}, handle moved {:?}",
++                    moved.top() - before.top()
++                );
++            }
++            pointer.y += px(10.);
++            cx.simulate_mouse_move(pointer, MouseButton::Left, gpui::Modifiers::none());
++        }
++        let before_release = cx.update(|_, cx| input.read(cx).scroll_offset());
++        cx.simulate_mouse_up(pointer, MouseButton::Left, gpui::Modifiers::none());
++        assert_eq!(
++            cx.update(|_, cx| input.read(cx).scroll_offset()),
++            before_release
++        );
++    }
 +
 +    #[test]
 +    fn minimap_slider_and_preview_stay_aligned_across_the_full_document() {
@@ -2979,7 +3201,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +    }
 +}
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/mod.rs b/src/input/mod.rs
---- a/src/input/mod.rs	2026-09-10 17:21:12
+--- a/src/input/mod.rs	2026-09-10 21:26:53
 +++ b/src/input/mod.rs	2026-09-10 16:48:11
 @@ -7,8 +7,10 @@
  mod input;
@@ -3799,7 +4021,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      }
  }
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/selection.rs b/src/input/selection.rs
---- a/src/input/selection.rs	2026-09-10 17:21:12
+--- a/src/input/selection.rs	2026-09-10 21:26:53
 +++ b/src/input/selection.rs	2026-08-14 00:16:04
 @@ -52,13 +52,37 @@
          };
@@ -3856,8 +4078,8 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  }
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/input/state.rs b/src/input/state.rs
 --- a/src/input/state.rs	2026-02-05 04:58:01
-+++ b/src/input/state.rs	2026-08-29 11:06:14
-@@ -18,8 +18,16 @@
++++ b/src/input/state.rs	2026-09-10 21:24:15
+@@ -18,8 +18,17 @@
  use unicode_segmentation::*;
  
  use super::{
@@ -3867,6 +4089,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
 +    change::Change,
 +    element::TextElement,
 +    mask_pattern::MaskPattern,
++    minimap::MinimapMetrics,
 +    mode::InputMode,
 +    multicursor::{
 +        TaggedSelection, normalized_selections, rectangular_selections, replacement_plan,
@@ -3876,7 +4099,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  };
  use crate::Size;
  use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
-@@ -242,6 +250,12 @@
+@@ -242,6 +251,12 @@
      pub(super) cursor_bounds: Option<Bounds<Pixels>>,
  }
  
@@ -3889,7 +4112,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  impl LastLayout {
      /// Get the line layout for the given row (0-based).
      ///
-@@ -271,8 +285,12 @@
+@@ -271,14 +286,19 @@
      /// - "Hello 世界💝" = 16
      /// - "💝" = 4
      pub(super) selected_range: Selection,
@@ -3902,7 +4125,14 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// Range for save the selected word, use to keep word range when drag move.
      pub(super) selected_word_range: Option<Selection>,
      pub(super) selection_reversed: bool,
-@@ -286,6 +304,8 @@
+     /// The marked range is the temporary insert text on IME typing.
+     pub(super) ime_marked_range: Option<Selection>,
+     pub(super) last_layout: Option<LastLayout>,
++    pub(super) minimap_metrics: Option<MinimapMetrics>,
+     pub(super) last_cursor: Option<usize>,
+     /// The input container bounds
+     pub(super) input_bounds: Bounds<Pixels>,
+@@ -286,6 +306,8 @@
      pub(super) last_bounds: Option<Bounds<Pixels>>,
      pub(super) last_selected_range: Option<Selection>,
      pub(super) selecting: bool,
@@ -3911,7 +4141,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      pub(super) size: Size,
      pub(super) disabled: bool,
      pub(super) masked: bool,
-@@ -296,6 +316,8 @@
+@@ -296,6 +318,8 @@
      pub(crate) scroll_handle: ScrollHandle,
      /// The deferred scroll offset to apply on next layout.
      pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
@@ -3920,7 +4150,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// The size of the scrollable content.
      pub(crate) scroll_size: gpui::Size<Pixels>,
  
-@@ -373,13 +395,17 @@
+@@ -373,13 +397,17 @@
              blink_cursor,
              history,
              selected_range: Selection::default(),
@@ -3938,7 +4168,14 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
              disabled: false,
              masked: false,
              clean_on_escape: false,
-@@ -395,6 +421,7 @@
+@@ -389,12 +417,14 @@
+             validate: None,
+             mode: InputMode::default(),
+             last_layout: None,
++            minimap_metrics: None,
+             last_bounds: None,
+             last_selected_range: None,
+             last_cursor: None,
              scroll_handle: ScrollHandle::new(),
              scroll_size: gpui::size(px(0.), px(0.)),
              deferred_scroll_offset: None,
@@ -3946,7 +4183,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
              preferred_column: None,
              placeholder: SharedString::default(),
              mask_pattern: MaskPattern::default(),
-@@ -463,6 +490,31 @@
+@@ -463,6 +493,31 @@
          self
      }
  
@@ -3978,7 +4215,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// Set placeholder
      pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
          self.placeholder = placeholder.into();
-@@ -487,6 +539,11 @@
+@@ -487,6 +542,11 @@
          cx.notify();
      }
  
@@ -3990,7 +4227,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// Set the number of rows for the multi-line Textarea.
      ///
      /// This is only used when `multi_line` is set to true.
-@@ -523,12 +580,21 @@
+@@ -523,12 +583,21 @@
              } => {
                  *language = new_language.into();
                  *highlighter.borrow_mut() = None;
@@ -4012,7 +4249,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      fn reset_highlighter(&mut self, cx: &mut Context<Self>) {
          match &mut self.mode {
              InputMode::CodeEditor { highlighter, .. } => {
-@@ -615,6 +681,7 @@
+@@ -615,6 +684,7 @@
          } else {
              self.selected_range.clear();
          }
@@ -4020,7 +4257,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  
          if self.mode.is_code_editor() {
              self._pending_update = true;
-@@ -642,6 +709,96 @@
+@@ -642,6 +712,96 @@
          self.selected_range = (self.selected_range.end..self.selected_range.end).into();
      }
  
@@ -4117,7 +4354,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// Replace text at the current cursor position.
      ///
      /// And the cursor will be moved to the end of replaced text.
-@@ -716,8 +873,11 @@
+@@ -716,8 +876,11 @@
              let wrap_width = self
                  .last_layout
                  .as_ref()
@@ -4131,7 +4368,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
  
              self.text_wrapper.set_wrap_width(Some(wrap_width), cx);
  
-@@ -838,23 +998,16 @@
+@@ -838,23 +1001,16 @@
      }
  
      pub(super) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -4158,7 +4395,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          cx.notify();
      }
  
-@@ -1029,6 +1182,17 @@
+@@ -1029,6 +1185,17 @@
      }
  
      pub(super) fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -4176,7 +4413,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          if self.selected_range.is_empty() {
              self.select_to(self.previous_boundary(self.cursor()), cx)
          }
-@@ -1037,6 +1201,17 @@
+@@ -1037,6 +1204,17 @@
      }
  
      pub(super) fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
@@ -4194,7 +4431,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          if self.selected_range.is_empty() {
              self.select_to(self.next_boundary(self.cursor()), cx)
          }
-@@ -1173,6 +1348,7 @@
+@@ -1173,6 +1351,7 @@
      pub(super) fn clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
          self.replace_text("", window, cx);
          self.selected_range = (0..0).into();
@@ -4202,7 +4439,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.scroll_to(0, None, cx);
      }
  
-@@ -1222,10 +1398,18 @@
+@@ -1222,10 +1401,18 @@
              return;
          }
  
@@ -4225,7 +4462,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          }
  
          // Show Mouse context menu
-@@ -1234,6 +1418,23 @@
+@@ -1234,6 +1421,23 @@
              return;
          }
  
@@ -4249,7 +4486,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          if event.modifiers.shift {
              self.select_to(offset, cx);
          } else {
-@@ -1251,6 +1452,7 @@
+@@ -1251,6 +1455,7 @@
              self.selection_reversed = false;
          }
          self.selecting = false;
@@ -4257,7 +4494,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.selected_word_range = None;
      }
  
-@@ -1298,6 +1500,11 @@
+@@ -1298,6 +1503,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -4269,7 +4506,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          let line_height = self
              .last_layout
              .as_ref()
-@@ -1338,6 +1545,67 @@
+@@ -1338,6 +1548,67 @@
          cx.notify();
      }
  
@@ -4337,7 +4574,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      /// Scroll to make the given offset visible.
      ///
      /// If `direction` is Some, will keep edges at the same side.
-@@ -1361,16 +1629,9 @@
+@@ -1361,16 +1632,9 @@
          let point = self.text.offset_to_point(offset);
  
          let row = point.row;
@@ -4356,7 +4593,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          if let Some(line) = last_layout
              .lines
              .get(row.saturating_sub(last_layout.visible_range.start))
-@@ -1379,7 +1640,6 @@
+@@ -1379,7 +1643,6 @@
              if let Some(pos) = line.position_for_index(point.column, line_height) {
                  let bounds_width = bounds.size.width - last_layout.line_number_width;
                  let col_offset_x = pos.x;
@@ -4364,7 +4601,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
                  if col_offset_x - RIGHT_MARGIN < -scroll_offset.x {
                      // If the position is out of the visible area, scroll to make it visible
                      scroll_offset.x = -col_offset_x + RIGHT_MARGIN;
-@@ -1427,23 +1687,57 @@
+@@ -1427,23 +1690,57 @@
      }
  
      pub(super) fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -4430,7 +4667,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      }
  
      pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-@@ -1453,7 +1747,16 @@
+@@ -1453,7 +1750,16 @@
                  new_text = new_text.replace('\n', "");
              }
  
@@ -4448,7 +4685,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
              self.scroll_to(self.cursor(), None, cx);
          }
      }
-@@ -1471,6 +1774,7 @@
+@@ -1471,6 +1777,7 @@
      }
  
      pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
@@ -4456,7 +4693,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.history.ignore = true;
          if let Some(changes) = self.history.undo() {
              for change in changes {
-@@ -1482,6 +1786,7 @@
+@@ -1482,6 +1789,7 @@
      }
  
      pub(super) fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
@@ -4464,7 +4701,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.history.ignore = true;
          if let Some(changes) = self.history.redo() {
              for change in changes {
-@@ -1644,6 +1949,7 @@
+@@ -1644,6 +1952,7 @@
      pub fn unselect(&mut self, _: &mut Window, cx: &mut Context<Self>) {
          let offset = self.cursor();
          self.selected_range = (offset..offset).into();
@@ -4472,7 +4709,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          cx.notify()
      }
  
-@@ -1758,6 +2064,23 @@
+@@ -1758,6 +2067,23 @@
          }
  
          let offset = self.index_for_mouse_position(event.position);
@@ -4496,7 +4733,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.select_to(offset, cx);
      }
  
-@@ -1955,6 +2278,15 @@
+@@ -1955,6 +2281,15 @@
              return;
          }
  
@@ -4512,7 +4749,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.pause_blink_cursor(cx);
  
          let range = range_utf16
-@@ -1989,7 +2321,9 @@
+@@ -1989,7 +2324,9 @@
          }
  
          self.push_history(&old_text, &range, &new_text);
@@ -4523,7 +4760,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          if let Some(diagnostics) = self.mode.diagnostics_mut() {
              diagnostics.reset(&self.text)
          }
-@@ -2023,6 +2357,13 @@
+@@ -2023,6 +2360,13 @@
              return;
          }
  
@@ -4537,7 +4774,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
          self.lsp.reset();
  
          let range = range_utf16
-@@ -2174,5 +2515,494 @@
+@@ -2174,5 +2518,494 @@
              .children(self.diagnostic_popover.clone())
              .children(self.context_menu.as_ref().map(|menu| menu.render()))
              .children(self.hover_popover.clone())
@@ -5260,7 +5497,7 @@ diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xRE
      }
  }
 diff -ruN -x.cargo-ok -x.cargo_vcs_info.json -xCargo.lock -xCargo.toml.orig -xREADME.md -xTEXTIFY_FORK.md a/src/tab/tab.rs b/src/tab/tab.rs
---- a/src/tab/tab.rs	2026-09-10 17:21:13
+--- a/src/tab/tab.rs	2026-09-10 21:26:54
 +++ b/src/tab/tab.rs	2026-08-09 13:16:58
 @@ -1,13 +1,20 @@
  use std::rc::Rc;

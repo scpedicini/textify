@@ -25,7 +25,12 @@ Textify's changes are limited to its editor requirements:
 - the minimap uses VS Code's full-range slider mapping and a mouse-down drag snapshot, with
   window-level movement and release handling. Its fixed-scale miniature text retains syntax
   colors, indentation, blank lines, and wrapped rows. Shaping and highlighting are bounded to
-  visible minimap rows and 160 characters per row (`input/minimap.rs`).
+  visible minimap rows and 160 characters per row (`input/minimap.rs`). The editor publishes
+  coherent `MinimapMetrics` during prepaint so zoom, wrapping, and tab switches use the current
+  frame's line height, viewport, scroll extent, and anchored position. An active drag rebases
+  only when its scroll mapping changes, keeping pointer movement one-to-one after zoom or resize
+  without resetting the grab anchor on ordinary scroll redraws. First-frame and mid-drag zoom
+  regressions are covered with 50,000-line documents and the host's Command-scroll handler.
 - Markdown inline injections retain overlapping captures so emphasis and strong emphasis can
   combine with delimiter styling. Inline and fenced code also carry `text.literal` ranges into
   editor text runs, where they use the platform monospace font. Font-only syntax transitions add

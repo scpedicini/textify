@@ -17,6 +17,17 @@ const FONT_SIZE: Pixels = px(2.5);
 const LEFT_PADDING: Pixels = px(4.);
 const MAX_LINE_CHARS: usize = 160;
 
+/// Published by the editor's prepaint before its sibling minimap is laid out.
+/// Keep these measurements together: `last_layout` and `scroll_size` still refer
+/// to the previous frame at that point, especially during zoom and rewrapping.
+#[derive(Clone, Copy)]
+pub(super) struct MinimapMetrics {
+    pub line_height: Pixels,
+    pub viewport_height: Pixels,
+    pub content_height: Pixels,
+    pub scroll_top: Pixels,
+}
+
 /// Like VS Code's MinimapLayout, the slider spans the editor's full scroll range.
 /// The miniature text scrolls underneath it when the document doesn't fit.
 /// Reference: src/vs/editor/browser/viewParts/minimap/minimap.ts in VS Code.
@@ -70,21 +81,18 @@ impl MinimapLayout {
     }
 
     fn for_input(state: &InputState, height: Pixels, window: &Window) -> Self {
-        // A newly opened tab may not have painted its editor bounds yet.
-        let viewport_height = if state.input_bounds.size.height > px(0.) {
-            state.input_bounds.size.height
-        } else {
-            height
-        };
+        let metrics = state.minimap_metrics.unwrap_or(MinimapMetrics {
+            line_height: window.line_height(),
+            viewport_height: height,
+            content_height: height,
+            scroll_top: px(0.),
+        });
         Self::new(
             height,
-            state
-                .last_layout
-                .as_ref()
-                .map_or(window.line_height(), |l| l.line_height),
-            viewport_height,
-            state.scroll_size.height,
-            -state.scroll_handle.offset().y,
+            metrics.line_height,
+            metrics.viewport_height,
+            metrics.content_height,
+            metrics.scroll_top,
         )
     }
 
@@ -149,6 +157,19 @@ struct MinimapState {
 }
 
 impl MinimapDrag {
+    fn rebase_for_layout(&mut self, layout: MinimapLayout, pointer_y: Pixels) {
+        // Ordinary scroll redraws must retain the mouse-down anchor. Only a
+        // changed mapping (zoom, wrapping, resize, document length) starts a new
+        // segment at the current pointer and viewport, with no synthetic scroll.
+        if self.max_scroll_top != layout.max_scroll_top || self.slider_ratio != layout.slider_ratio
+        {
+            self.pointer_y = pointer_y;
+            self.scroll_top = layout.scroll_top;
+            self.max_scroll_top = layout.max_scroll_top;
+            self.slider_ratio = layout.slider_ratio;
+        }
+    }
+
     fn scroll_top(&self, pointer_y: Pixels) -> Pixels {
         if self.slider_ratio <= 0. {
             return self.scroll_top;
@@ -345,15 +366,16 @@ impl RenderOnce for Minimap {
                           (layout, lines, hitbox, slider_bounds, mut slider),
                           window,
                           cx| {
+                        let drag = interaction.get().drag.map(|mut drag| {
+                            drag.rebase_for_layout(layout, window.mouse_position().y);
+                            drag
+                        });
                         let visual = MinimapVisualState::for_pointer(
                             hitbox.is_hovered(window),
                             slider_bounds.contains(&window.mouse_position()),
-                            interaction.get().drag.is_some(),
+                            drag.is_some(),
                         );
-                        interaction.set(MinimapState {
-                            visual,
-                            ..interaction.get()
-                        });
+                        interaction.set(MinimapState { drag, visual });
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
                             for (y, line) in lines {
                                 let _ = line.paint(
@@ -465,6 +487,178 @@ mod tests {
     use super::*;
     use crate::highlighter::{HighlightTheme, SyntaxHighlighter};
     use gpui::AppContext as _;
+
+    struct ZoomHarness {
+        tabs: Vec<(Entity<InputState>, Pixels)>,
+        active: usize,
+    }
+
+    impl gpui::Render for ZoomHarness {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let (input, font_size) = &self.tabs[self.active];
+            super::super::Input::new(input)
+                .minimap(true)
+                .text_size(*font_size)
+                .size_full()
+        }
+    }
+
+    fn draw_frame(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+    }
+
+    fn assert_current_frame(input: &Entity<InputState>, cx: &mut gpui::VisualTestContext) {
+        let map = cx.debug_bounds("editor-minimap").unwrap();
+        let slider = cx.debug_bounds("editor-minimap-viewport").unwrap();
+        let expected = cx.update(|_, cx| {
+            let state = input.read(cx);
+            MinimapLayout::new(
+                map.size.height,
+                state.last_layout.as_ref().unwrap().line_height,
+                state.input_bounds.size.height,
+                state.scroll_size.height,
+                -state.scroll_handle.offset().y,
+            )
+        });
+        assert!(
+            (slider.size.height - expected.slider_height).abs() <= px(1.),
+            "painted height {:?}, current editor requires {:?}",
+            slider.size.height,
+            expected.slider_height
+        );
+        assert!(
+            (slider.top() - map.top() - expected.slider_top).abs() <= px(1.),
+            "painted top {:?}, current editor requires {:?}",
+            slider.top() - map.top(),
+            expected.slider_top
+        );
+    }
+
+    #[gpui::test]
+    fn minimap_uses_current_frame_metrics_through_zoom_and_tab_switches(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let tabs = [24., 8., 16.]
+                .into_iter()
+                .map(|font_size| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .code_editor("text")
+                            .soft_wrap(false)
+                            .default_value(format!("{}\n", "word ".repeat(30)).repeat(50_000))
+                    });
+                    (input, px(font_size))
+                })
+                .collect();
+            ZoomHarness { tabs, active: 0 }
+        });
+        cx.simulate_resize(size(px(800.), px(420.)));
+        cx.run_until_parked();
+        // Each tab keeps its own zoom, wrap layout, and scroll position. Include first
+        // activation and revisits, and never allow a catch-up frame before checking.
+        for active in [0, 1, 2, 0, 1, 2] {
+            harness.update(&mut cx.cx, |harness, cx| {
+                harness.active = active;
+                cx.notify();
+            });
+            draw_frame(cx);
+            let input = cx.update(|_, cx| harness.read(cx).tabs[active].0.clone());
+            assert_current_frame(&input, cx);
+            for wrap in [false, true] {
+                cx.update(|window, cx| {
+                    input.update(cx, |input, cx| input.set_soft_wrap(wrap, window, cx));
+                });
+                draw_frame(cx);
+                input.update(&mut cx.cx, |input, cx| {
+                    let max_scroll = input.scroll_size.height - input.input_bounds.size.height;
+                    input.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.65)), cx);
+                });
+                draw_frame(cx);
+                for font_size in [24., 8., 16., 17., 18., 19., 18., 17., 40., 8.] {
+                    cx.update(|_, cx| {
+                        input.update(cx, |input, _| {
+                            assert!(input.preserve_zoom_anchor_at(input.input_bounds.center()));
+                        });
+                        harness.update(cx, |harness, cx| {
+                            harness.tabs[active].1 = px(font_size);
+                            cx.notify();
+                        });
+                    });
+                    draw_frame(cx);
+                    assert_current_frame(&input, cx);
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn minimap_drag_rebases_when_zoom_changes_while_gripping(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| ZoomHarness {
+            tabs: vec![(
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .code_editor("text")
+                        .soft_wrap(false)
+                        .default_value("long document line\n".repeat(50_000))
+                }),
+                px(8.),
+            )],
+            active: 0,
+        });
+        cx.simulate_resize(size(px(800.), px(420.)));
+        cx.run_until_parked();
+        let input = cx.update(|_, cx| harness.read(cx).tabs[0].0.clone());
+        input.update(&mut cx.cx, |input, cx| {
+            let max_scroll = input.scroll_size.height - input.input_bounds.size.height;
+            input.update_scroll_offset(Some(point(px(0.), -max_scroll * 0.25)), cx);
+        });
+        draw_frame(cx);
+        let slider = cx.debug_bounds("editor-minimap-viewport").unwrap();
+        let grab = point(slider.center().x, slider.top() + px(3.));
+        cx.simulate_mouse_down(grab, MouseButton::Left, gpui::Modifiers::none());
+        let mut pointer = grab;
+        for font_size in [40., 8., 24., 16.] {
+            harness.update(&mut cx.cx, |harness, cx| {
+                harness.tabs[0].1 = px(font_size);
+                cx.notify();
+            });
+            draw_frame(cx);
+            // This test isolates drag rebasing from the separate first-frame metric check.
+            draw_frame(cx);
+            let before = cx.debug_bounds("editor-minimap-viewport").unwrap();
+            let scroll_before = cx.update(|_, cx| input.read(cx).scroll_offset());
+            cx.simulate_mouse_move(pointer, MouseButton::Left, gpui::Modifiers::none());
+            assert_eq!(
+                cx.update(|_, cx| input.read(cx).scroll_offset()),
+                scroll_before
+            );
+            for delta in [40., 40., -20., 0.] {
+                let destination = point(pointer.x, pointer.y + px(delta));
+                cx.simulate_mouse_move(destination, MouseButton::Left, gpui::Modifiers::none());
+                draw_frame(cx);
+                let moved = cx.debug_bounds("editor-minimap-viewport").unwrap();
+                assert!(
+                    (moved.top() - before.top() - px(delta)).abs() <= px(1.),
+                    "font {font_size}, pointer moved {delta}, handle moved {:?}",
+                    moved.top() - before.top()
+                );
+            }
+            pointer.y += px(10.);
+            cx.simulate_mouse_move(pointer, MouseButton::Left, gpui::Modifiers::none());
+        }
+        let before_release = cx.update(|_, cx| input.read(cx).scroll_offset());
+        cx.simulate_mouse_up(pointer, MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(
+            cx.update(|_, cx| input.read(cx).scroll_offset()),
+            before_release
+        );
+    }
 
     #[test]
     fn minimap_slider_and_preview_stay_aligned_across_the_full_document() {
