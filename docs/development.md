@@ -2,6 +2,8 @@
 
 Development runs must not use the installed Textify's settings, session, unsaved buffers, recovery
 files, or instance lock. Updating the installed/Raycast app is a separate, explicit operation.
+That isolation requirement concerns test instances, not the safety of installing a finished update
+while the real app has open tabs or unsaved changes.
 
 ## Launch a development instance
 
@@ -77,5 +79,19 @@ The installer makes a self-contained copy under `~/Applications/.textify-local-b
 cannot replace its executable. Previous snapshots are retained. Existing legacy links migrate on
 the next explicit install; introducing this workflow does not change those links or restart the app.
 
-After an explicit install, quit and relaunch the installed Textify to use the new version. Its
-settings, session, and unsaved-buffer recovery remain in its normal data directory.
+### Updates preserve tabs and unsaved changes
+
+The local installer updates the application and launch links, not the user's data. It does not
+quit the running Textify or modify its settings, session, or recovery files. An update can be
+installed while the app remains open, including with unsaved changes and untitled buffers. There
+is no need to save or close those tabs before installing.
+
+The running instance continues using its current code. When ready to use the new version, quit
+Textify normally and relaunch through Raycast. Normal quit writes the latest unsaved contents to
+recovery copies before persisting the final tab/session state; startup restores that state,
+including untitled buffers and unsaved edits to existing files. Both recovery options are enabled
+by default; deliberately disabling one changes what is restored, not what the installer touches.
+Restarting loads the new code—it is not a prerequisite for safely installing the update.
+
+Keep experimental builds and test documents isolated, but do not use development isolation or the
+mere presence of unsaved buffers as a reason to postpone a requested installed-app update.
