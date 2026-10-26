@@ -51,6 +51,21 @@ fn local_installer_refreshes_launch_services_registration() {
 }
 
 #[test]
+fn development_and_installation_bundles_are_independent() {
+    let development = include_str!("../packaging/Info-dev.plist");
+    assert!(development.contains("com.shaun.textify.dev"));
+    assert!(development.contains("<string>Textify Dev</string>"));
+    assert!(!development.contains("CFBundleDocumentTypes"));
+    assert!(LOCAL_INSTALLER.contains(".textify-local-builds"));
+    assert!(LOCAL_INSTALLER.contains("cp \"${binary_target}\" \"${installed_binary}\""));
+    assert!(LOCAL_INSTALLER.contains("ln -sfn \"${installed_bundle}\" \"${bundle_link}\""));
+    let launcher = include_str!("../scripts/run-isolated.sh");
+    assert!(launcher.contains("--profile dev --bin textify"));
+    assert!(!launcher.contains("--release"));
+    assert!(!launcher.contains("lsregister"));
+}
+
+#[test]
 fn icon_source_stays_editable_and_vector_native() {
     assert!(ICON_SVG.contains("viewBox=\"0 0 1024 1024\""));
     assert!(ICON_SVG.contains("Textify application icon"));

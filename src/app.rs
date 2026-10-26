@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use gpui::{
     App, AppContext as _, Application, ClipboardItem, Context, Entity, ExternalPaths,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
-    OsAction, ParentElement as _, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
+    OsAction, ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollStrategy,
     ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Subscription, Timer,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions, actions, div,
     prelude::FluentBuilder as _, px, size, uniform_list,
@@ -24,8 +24,8 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{
-        Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo, Rope,
-        RopeExt as _, SelectAll, Undo,
+        Backspace, Copy, Cut, Escape as InputEscape, Input, InputEvent, InputState, Paste, Redo,
+        Rope, RopeExt as _, SelectAll, Undo,
     },
     menu::{AppMenuBar, PopupMenuItem},
     scroll::ScrollableElement as _,
@@ -57,7 +57,7 @@ use crate::{
     session::{SessionState, SessionTab, load_session, save_session},
     settings::{
         AppearanceSettings, IndentationSettings, RecoverySettings, TextifyKeymap, TextifySettings,
-        available_editor_font, ensure_config_files, textify_data_dir,
+        available_editor_font, ensure_config_files, is_development_instance, textify_data_dir,
     },
     watcher::FileWatcher,
 };
@@ -94,7 +94,13 @@ actions!(
     ]
 );
 
-const WINDOW_TITLE: &str = "Textify IDE";
+fn application_name() -> &'static str {
+    if is_development_instance() {
+        "Textify Dev"
+    } else {
+        "Textify"
+    }
+}
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(250);
 const UNTITLED_TITLE_CHARS: usize = 36;
 const UNTITLED_TITLE_SCAN_CHARS: usize = 256;
@@ -353,7 +359,10 @@ fn application_file_paths(urls: impl IntoIterator<Item = String>) -> Vec<PathBuf
         .collect()
 }
 
-fn application_argument_paths(arguments: impl IntoIterator<Item = OsString>) -> Vec<PathBuf> {
+fn application_argument_paths(
+    arguments: impl IntoIterator<Item = OsString>,
+    current_directory: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut literal_paths = false;
     arguments
         .into_iter()
@@ -369,7 +378,14 @@ fn application_argument_paths(arguments: impl IntoIterator<Item = OsString>) -> 
             {
                 return None;
             }
-            Some(PathBuf::from(argument))
+            let path = PathBuf::from(argument);
+            Some(if path.is_relative() {
+                current_directory
+                    .map(|directory| directory.join(&path))
+                    .unwrap_or(path)
+            } else {
+                path
+            })
         })
         .collect()
 }
@@ -726,6 +742,7 @@ pub struct Workspace {
     git_status: HashMap<PathBuf, String>,
     git_loading: bool,
     tab_scroll_handle: ScrollHandle,
+    last_window_width: Pixels,
     overlay_mode: Option<OverlayMode>,
     overlay_input: Entity<InputState>,
     overlay_items: Vec<OverlayItem>,
@@ -757,13 +774,13 @@ impl Workspace {
         #[cfg(test)]
         {
             let data_dir = tempfile::tempdir().expect("isolated Textify test data");
-            return Self::new_at_data_dir(
+            Self::new_at_data_dir(
                 data_dir.path().to_path_buf(),
                 false,
                 Some(data_dir),
                 window,
                 cx,
-            );
+            )
         }
 
         #[cfg(not(test))]
@@ -824,6 +841,13 @@ impl Workspace {
                         workspace.restore_focus_after_activation(window, cx);
                     }
                 }),
+                cx.observe_window_bounds(window, |workspace, window, cx| {
+                    let width = window.viewport_size().width;
+                    let width_delta = width - workspace.last_window_width;
+                    workspace.last_window_width = width;
+                    workspace.reveal_active_tab_after_resize(width_delta);
+                    cx.notify();
+                }),
             ];
         let watcher = FileWatcher::new()
             .map_err(|error| {
@@ -874,6 +898,7 @@ impl Workspace {
             git_status: HashMap::new(),
             git_loading: false,
             tab_scroll_handle: ScrollHandle::new(),
+            last_window_width: window.viewport_size().width,
             overlay_mode: None,
             overlay_input,
             overlay_items: Vec::new(),
@@ -1154,8 +1179,32 @@ impl Workspace {
         cx.notify();
     }
 
+    fn reveal_active_tab_after_resize(&self, width_delta: Pixels) {
+        let viewport = self.tab_scroll_handle.bounds();
+        let Some(tab) = self.tab_scroll_handle.bounds_for_item(self.active_index) else {
+            return;
+        };
+        let mut offset = self.tab_scroll_handle.offset();
+        let tab_left = tab.left() + offset.x;
+        let tab_right = tab.right() + offset.x;
+        let resized_right = viewport.right() + width_delta;
+
+        if tab_left < viewport.left() {
+            offset.x += viewport.left() - tab_left;
+        } else if tab_right > resized_right {
+            offset.x += resized_right - tab_right;
+        } else {
+            return;
+        }
+        self.tab_scroll_handle.set_offset(offset);
+    }
+
     fn update_window_title(&self, window: &mut Window, cx: &App) {
-        window.set_window_title(&format!("{} — Textify", self.active_document().title(cx)));
+        window.set_window_title(&format!(
+            "{} — {}",
+            self.active_document().title(cx),
+            application_name()
+        ));
     }
 
     fn persist_session(&mut self, cx: &mut Context<Self>) {
@@ -5533,7 +5582,11 @@ impl Render for Workspace {
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child("IDE"),
+                                            .child(if is_development_instance() {
+                                                "DEV"
+                                            } else {
+                                                "IDE"
+                                            }),
                                     ),
                             )
                             .when(self.settings.appearance.show_tagline, |title| {
@@ -6110,6 +6163,27 @@ fn bind_ide_keymap(cx: &mut App, keymap: &TextifyKeymap) {
     cx.bind_keys(bindings);
 }
 
+fn bind_application_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("secondary-n", NewDocument, None),
+        KeyBinding::new("secondary-t", NewDocument, None),
+        KeyBinding::new("secondary-o", OpenDocument, None),
+        KeyBinding::new("secondary-s", SaveDocument, None),
+        KeyBinding::new("secondary-shift-s", SaveDocumentAs, None),
+        KeyBinding::new("secondary-w", CloseDocument, None),
+        KeyBinding::new("secondary-,", ShowSettings, None),
+        KeyBinding::new("alt-z", ToggleWordWrap, None),
+        KeyBinding::new("ctrl-tab", NextDocument, None),
+        KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
+        KeyBinding::new("secondary-alt-p", ShowOpenTabs, None),
+        KeyBinding::new("escape", DismissOverlay, None),
+        KeyBinding::new("secondary-q", QuitTextify, None),
+        // Shift is commonly still held after typing a capital letter. Treat it as
+        // irrelevant for Backspace, matching native text editor behavior.
+        KeyBinding::new("shift-backspace", Backspace, Some("Input")),
+    ]);
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -6121,7 +6195,9 @@ pub fn run() {
         .init();
 
     let (open_path_sender, open_path_receiver) = mpsc::channel();
-    let argument_paths = application_argument_paths(std::env::args_os().skip(1));
+    let current_directory = std::env::current_dir().ok();
+    let argument_paths =
+        application_argument_paths(std::env::args_os().skip(1), current_directory.as_deref());
 
     // Only one Textify may run per user: a second launch (Raycast, Spotlight,
     // the command line) hands its paths to the running instance — which brings
@@ -6147,35 +6223,28 @@ pub fn run() {
     });
     application.run(move |cx| {
         gpui_component::init(cx);
-        cx.bind_keys([
-            KeyBinding::new("secondary-n", NewDocument, None),
-            KeyBinding::new("secondary-t", NewDocument, None),
-            KeyBinding::new("secondary-o", OpenDocument, None),
-            KeyBinding::new("secondary-s", SaveDocument, None),
-            KeyBinding::new("secondary-shift-s", SaveDocumentAs, None),
-            KeyBinding::new("secondary-w", CloseDocument, None),
-            KeyBinding::new("secondary-,", ShowSettings, None),
-            KeyBinding::new("alt-z", ToggleWordWrap, None),
-            KeyBinding::new("ctrl-tab", NextDocument, None),
-            KeyBinding::new("ctrl-shift-tab", PreviousDocument, None),
-            KeyBinding::new("secondary-alt-p", ShowOpenTabs, None),
-            KeyBinding::new("escape", DismissOverlay, None),
-            KeyBinding::new("secondary-q", QuitTextify, None),
-        ]);
+        bind_application_keys(cx);
         cx.set_menus(native_menus());
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
             window_min_size: Some(size(px(680.), px(420.))),
             titlebar: Some(TitleBar::title_bar_options()),
-            app_id: Some("com.shaun.textify".to_owned()),
+            app_id: Some(
+                if is_development_instance() {
+                    "com.shaun.textify.dev"
+                } else {
+                    "com.shaun.textify"
+                }
+                .to_owned(),
+            ),
             ..Default::default()
         };
 
         cx.spawn(async move |cx| {
             cx.open_window(options, move |window, cx| {
                 window.activate_window();
-                window.set_window_title(WINDOW_TITLE);
+                window.set_window_title(application_name());
                 Theme::change(ThemeMode::Dark, Some(window), cx);
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
                 workspace.update(cx, |workspace, _| {
@@ -6901,6 +6970,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn recovered_unsaved_markdown_restores_its_live_parser(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        const SOURCE: &str = "Why isn't this *middle* part italicized and this end part **bold**?";
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("session directory");
+        let recovery_path = write_snapshot(&directory.path().join("Backups"), 105, 1, [SOURCE])
+            .expect("recovery snapshot");
+        let expected = SessionState::from_tabs(
+            0,
+            vec![SessionTab {
+                path: None,
+                recovery_path: Some(recovery_path),
+                untitled_number: 3,
+                label_override: None,
+                dirty: true,
+                encoding: TextEncoding::Utf8,
+                language_override: Some(Language::Markdown),
+                font_size_override: Some(17),
+                word_wrap: true,
+                minimap_override: None,
+            }],
+        );
+        let session_path = directory.path().join("session.json");
+        save_session(&session_path, &expected).expect("session fixture");
+
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let data_dir = directory.path().to_path_buf();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace =
+                cx.new(|cx| Workspace::new_at_data_dir(data_dir.clone(), true, None, window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.restore_session(window, cx));
+        });
+        cx.run_until_parked();
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            let document = workspace.active_document();
+            assert_eq!(document.editor.rope(cx).to_string(), SOURCE);
+            assert_eq!(document.metadata.language, Language::Markdown);
+            assert_eq!(document.language_override, Some(Language::Markdown));
+            assert!(document.syntax_highlighting);
+            assert_eq!(
+                document.editor.state().read(cx).highlighter_language(),
+                Some("markdown")
+            );
+            assert_eq!(document.font_size_override, Some(17));
+            assert!(document.word_wrap);
+        });
+    }
+
+    #[gpui::test]
     fn failed_startup_restore_does_not_replace_session_metadata(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
@@ -6970,6 +7097,35 @@ mod tests {
         workspace.update(&mut cx.cx, |workspace, _| {
             assert_ne!(workspace.data_dir, textify_data_dir());
             assert!(workspace._ephemeral_data_dir.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn shift_backspace_deletes_in_the_editor(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_application_keys(cx);
+        });
+        let workspace_slot = Rc::new(RefCell::new(None));
+        let capture = workspace_slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = workspace_slot.borrow().clone().expect("workspace");
+        cx.run_until_parked();
+
+        cx.simulate_input("ABC");
+        cx.simulate_keystrokes("shift-backspace");
+
+        workspace.update(&mut cx.cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_document().editor.rope(cx).to_string(),
+                "AB"
+            );
         });
     }
 
@@ -7391,18 +7547,34 @@ mod tests {
 
     #[test]
     fn command_line_file_arguments_ignore_options_and_honor_separator() {
+        let current_directory = Path::new("/invoking-shell");
         assert_eq!(
-            application_argument_paths([
-                OsString::from("--trace"),
-                OsString::from("notes.txt"),
-                OsString::from("--"),
-                OsString::from("-literal-name.txt"),
-            ]),
+            application_argument_paths(
+                [
+                    OsString::from("--trace"),
+                    OsString::from("notes.txt"),
+                    OsString::from("--"),
+                    OsString::from("-literal-name.txt"),
+                ],
+                Some(current_directory)
+            ),
             [
-                PathBuf::from("notes.txt"),
-                PathBuf::from("-literal-name.txt")
+                current_directory.join("notes.txt"),
+                current_directory.join("-literal-name.txt")
             ]
         );
+    }
+
+    #[test]
+    fn command_line_relative_paths_are_anchored_to_the_invoking_shell() {
+        let directory = tempfile::tempdir().expect("invoking directory");
+        let relative = PathBuf::from(".").join("package.json");
+        fs::write(directory.path().join("package.json"), "{}\n").expect("fixture");
+
+        let paths = application_argument_paths([relative.into_os_string()], Some(directory.path()));
+
+        assert_eq!(paths, [directory.path().join("./package.json")]);
+        assert!(paths[0].is_file());
     }
 
     #[gpui::test]
@@ -7560,7 +7732,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn activating_an_overflowed_tab_reveals_it(cx: &mut gpui::TestAppContext) {
+    fn activating_and_resizing_an_overflowed_tab_reveals_it(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
 
         cx.update(gpui_component::init);
@@ -7603,6 +7775,19 @@ mod tests {
                 .tab_scroll_handle
                 .bounds_for_item(17)
                 .expect("overflow tab bounds");
+            let offset = workspace.tab_scroll_handle.offset();
+            assert!(tab.left() + offset.x >= viewport.left());
+            assert!(tab.right() + offset.x <= viewport.right());
+        });
+
+        cx.simulate_resize(size(px(680.), px(600.)));
+        cx.run_until_parked();
+        workspace.update(&mut cx.cx, |workspace, _| {
+            let viewport = workspace.tab_scroll_handle.bounds();
+            let tab = workspace
+                .tab_scroll_handle
+                .bounds_for_item(workspace.active_index)
+                .expect("active tab bounds after resize");
             let offset = workspace.tab_scroll_handle.offset();
             assert!(tab.left() + offset.x >= viewport.left());
             assert!(tab.right() + offset.x <= viewport.right());
@@ -8681,6 +8866,103 @@ mod tests {
                 Some("This document will be saved as CP437")
             );
         });
+    }
+
+    #[gpui::test]
+    fn minimap_tracks_command_scroll_zoom_on_the_first_frame(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().expect("zoom session directory");
+        let slot = Rc::new(RefCell::new(None));
+        let capture = slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let workspace = cx.new(|cx| Workspace::new(window, cx));
+            *capture.borrow_mut() = Some(workspace.clone());
+            Root::new(workspace, window, cx)
+        });
+        let workspace = slot.borrow().clone().unwrap();
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.data_dir = directory.path().to_path_buf();
+                workspace.session_path = directory.path().join("session.json");
+                workspace.settings.appearance.font_size = 16;
+                workspace.settings.appearance.minimap_on_by_default = true;
+                for index in 0..3 {
+                    if index > 0 {
+                        workspace.add_untitled(window, cx);
+                    }
+                    workspace.active_document().editor.set_text(
+                        "zoom test line\n".repeat(5_000),
+                        window,
+                        cx,
+                    );
+                }
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        // Exercise the application's actual zoom handler in both directions,
+        // across tab switches and all the way to both font-size limits.
+        for (tab, target) in [(0, 24), (1, 8), (2, 40), (0, 16), (1, 24), (2, 8)] {
+            loop {
+                let font_size = cx.update(|window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.set_active_index(tab, window, cx);
+                        let current = workspace.active_document().font_size_override.unwrap_or(16);
+                        if current != target {
+                            workspace.on_editor_scroll(
+                                &ScrollWheelEvent {
+                                    position: gpui::point(px(400.), px(300.)),
+                                    delta: ScrollDelta::Lines(gpui::point(
+                                        0.,
+                                        if current < target { 1. } else { -1. },
+                                    )),
+                                    modifiers: gpui::Modifiers::secondary_key(),
+                                    ..ScrollWheelEvent::default()
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                        workspace.active_document().font_size_override.unwrap_or(16)
+                    })
+                });
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
+                let actual = cx
+                    .debug_bounds("editor-minimap-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                // A second frame with no intervening input must not be needed to
+                // catch up. The component tests independently check exact editor
+                // geometry; this also covers the host's chrome and event handler.
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
+                let expected = cx
+                    .debug_bounds("editor-minimap-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert!(
+                    (actual - expected).abs() <= px(1.),
+                    "tab {tab}, zoom {font_size}: first-frame handle {actual:?}, expected {expected:?}"
+                );
+                if font_size == target {
+                    break;
+                }
+            }
+        }
     }
 
     #[gpui::test]

@@ -22,6 +22,7 @@ use super::{
     change::Change,
     element::TextElement,
     mask_pattern::MaskPattern,
+    minimap::MinimapMetrics,
     mode::InputMode,
     multicursor::{
         TaggedSelection, normalized_selections, rectangular_selections, replacement_plan,
@@ -297,6 +298,7 @@ pub struct InputState {
     /// The marked range is the temporary insert text on IME typing.
     pub(super) ime_marked_range: Option<Selection>,
     pub(super) last_layout: Option<LastLayout>,
+    pub(super) minimap_metrics: Option<MinimapMetrics>,
     pub(super) last_cursor: Option<usize>,
     /// The input container bounds
     pub(super) input_bounds: Bounds<Pixels>,
@@ -415,6 +417,7 @@ impl InputState {
             validate: None,
             mode: InputMode::default(),
             last_layout: None,
+            minimap_metrics: None,
             last_bounds: None,
             last_selected_range: None,
             last_cursor: None,
@@ -2523,14 +2526,36 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use gpui::{ClipboardItem, IntoElement, Render, Styled as _, div};
+    use ropey::Rope;
 
     use super::*;
+    use crate::highlighter::{HighlightTheme, SyntaxHighlighter};
 
     fn has_active_highlighter(input: &InputState) -> bool {
         match &input.mode {
             InputMode::CodeEditor { highlighter, .. } => highlighter.borrow().is_some(),
             _ => false,
         }
+    }
+
+    #[track_caller]
+    fn assert_incremental_markdown_matches_full_parse(input: &InputState) {
+        let InputMode::CodeEditor { highlighter, .. } = &input.mode else {
+            panic!("fixture must use code-editor mode");
+        };
+        let current = highlighter.borrow();
+        let current = current.as_ref().expect("active incremental highlighter");
+        let range = 0..input.text.len();
+        let actual = current.styles_with_monospace_ranges(&range, &HighlightTheme::default_dark());
+
+        let mut fresh = SyntaxHighlighter::new("markdown");
+        fresh.update(None, &Rope::from(input.text.to_string().as_str()));
+        let expected = fresh.styles_with_monospace_ranges(&range, &HighlightTheme::default_dark());
+        assert_eq!(
+            actual, expected,
+            "incremental parse diverged for {:?}",
+            input.text
+        );
     }
 
     #[gpui::test]
@@ -2562,6 +2587,77 @@ mod tests {
         input.update(&mut cx.cx, |input, _| {
             assert_eq!(input.highlighter_language(), Some("json"));
             assert!(has_active_highlighter(input));
+        });
+    }
+
+    #[gpui::test]
+    fn markdown_incremental_edits_match_a_fresh_parse_at_every_step(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            InputState::new(window, cx)
+                .code_editor("markdown")
+                .default_value("Why isn't this middle part italicized and this end part bold?")
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                assert_incremental_markdown_matches_full_parse(input);
+
+                let middle = input.text.to_string().find("middle").unwrap();
+                input.replace_text_in_range_silent(
+                    Some(middle + "middle".len()..middle + "middle".len()),
+                    "*",
+                    window,
+                    cx,
+                );
+                assert_incremental_markdown_matches_full_parse(input);
+                input.replace_text_in_range_silent(Some(middle..middle), "*", window, cx);
+                assert_incremental_markdown_matches_full_parse(input);
+
+                let bold = input.text.to_string().find("bold").unwrap();
+                input.replace_text_in_range_silent(
+                    Some(bold + "bold".len()..bold + "bold".len()),
+                    "**",
+                    window,
+                    cx,
+                );
+                assert_incremental_markdown_matches_full_parse(input);
+                input.replace_text_in_range_silent(Some(bold..bold), "**", window, cx);
+                assert_incremental_markdown_matches_full_parse(input);
+
+                let source = input.text.to_string();
+                let italic = source.find("*middle*").unwrap();
+                input.replace_text_in_range_silent(
+                    Some(italic + 1..italic + 1 + "middle".len()),
+                    "ITALIC",
+                    window,
+                    cx,
+                );
+                assert_incremental_markdown_matches_full_parse(input);
+
+                input.set_value("alpha\nbefore *middle* after\nomega", window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                assert_incremental_markdown_matches_full_parse(input);
+                let newline = input.text.to_string().find('\n').unwrap();
+                input.replace_text_in_range_silent(Some(newline..newline + 1), " ", window, cx);
+                assert_incremental_markdown_matches_full_parse(input);
+
+                let source = input.text.to_string();
+                let italic = source.find("*middle*").unwrap();
+                input.replace_text_in_range_silent(
+                    Some(italic..italic + "*middle*".len()),
+                    "middle",
+                    window,
+                    cx,
+                );
+                assert_incremental_markdown_matches_full_parse(input);
+            });
         });
     }
 

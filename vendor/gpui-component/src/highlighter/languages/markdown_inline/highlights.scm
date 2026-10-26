@@ -1,3 +1,5 @@
+(code_span) @text.literal
+
 [
   (emphasis_delimiter)
   (code_span_delimiter)

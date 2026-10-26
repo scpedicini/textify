@@ -91,15 +91,19 @@ file Textify writes and explains the boundary around optional language servers.
 The repository pins Rust 1.93.1. Clone it with its vendored GPUI Component fork, then run:
 
 ```sh
-cargo run --locked
+./scripts/run-isolated.sh
 ```
+
+On macOS and Linux this opens **Textify Dev** with private settings, session, recovery files, and
+copied test documents. Use `--minimap-demo` for preloaded sample tabs. On Windows, `cargo run --locked`
+uses a separate development data directory. See [docs/development.md](docs/development.md).
 
 GPUI renders through Metal on macOS, Vulkan on Linux, and Direct3D on Windows. Linux needs the
 Wayland/X11, Fontconfig, and Vulkan development libraries installed by
 [`scripts/install-linux-build-deps.sh`](scripts/install-linux-build-deps.sh). Windows builds need
 the MSVC build tools and Windows SDK.
 
-For an optimized local macOS app and terminal symlink:
+Only when deliberately updating the installed macOS/Raycast app and terminal command:
 
 ```sh
 ./scripts/install-local.sh

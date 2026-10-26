@@ -21,8 +21,8 @@ version="$(awk -F\" '/^version = / { print $2; exit }' "${repository_root}/Cargo
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${version}" "${bundle_contents}/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${version}" "${bundle_contents}/Info.plist"
 
-# This development-only bundle follows future `cargo build --release` outputs without copying
-# the Mach-O. A signed distribution bundle should copy the executable before signing instead.
+# This staging bundle follows release build output. Do not use it for iteration:
+# install-local.sh copies a separate installation snapshot; run-isolated.sh handles testing.
 ln -sfn ../../../textify "${bundle_executable}"
 
 plutil -lint "${bundle_contents}/Info.plist"

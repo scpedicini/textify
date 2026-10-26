@@ -142,26 +142,31 @@ Setup, so the hosted Windows job is the authoritative Windows build and runtime 
 
 ### macOS
 
+For development and manual testing, use `./scripts/run-isolated.sh`, optionally with
+`--minimap-demo`. See [Isolated development](development.md). Packaging and installed-app updates
+are separate from this default workflow.
+
 Create the distributable universal bundle and ZIP with:
 
 ```sh
 ./scripts/package-macos-release.sh
 ```
 
-Unlike the development bundle, the distribution app contains a copied universal Mach-O and is
-self-contained. Set `TEXTIFY_MACOS_ARCHES=aarch64-apple-darwin` for a faster ARM64-only local check.
+The distribution app contains a copied universal Mach-O and is self-contained.
+Set `TEXTIFY_MACOS_ARCHES=aarch64-apple-darwin` for a faster ARM64-only local check.
 The default builds both `aarch64-apple-darwin` and `x86_64-apple-darwin` and combines them with
 `lipo`.
 
-The existing local/Raycast workflow remains available:
+To explicitly update the installed local/Raycast app:
 
 ```sh
 ./scripts/install-local.sh
 ```
 
-It installs development symlinks at `~/Applications/Textify.app` and `~/bin/textify`. Those links
-are convenient for this checkout but are not used in GitHub Releases. Finder can deliver registered
-text documents to either the local or distribution app through Open With.
+It creates a copied installation snapshot under `~/Applications/.textify-local-builds/` and points
+`~/Applications/Textify.app` and `~/bin/textify` to it. Builds and `cargo clean` do not modify that
+snapshot. Legacy links into `target/release` migrate on the next explicit install. Finder can
+deliver registered text documents to either the installed local or distribution app through Open With.
 
 ## Manual verification
 

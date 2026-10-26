@@ -28,17 +28,25 @@ fn host_platform() -> HostPlatform {
 
 fn textify_data_dir_from(
     platform: HostPlatform,
+    development: bool,
     environment: impl Fn(&str) -> Option<OsString>,
 ) -> PathBuf {
     if let Some(path) = environment("TEXTIFY_DATA_DIR") {
         return path.into();
     }
 
+    let directory = match (platform, development) {
+        (HostPlatform::Unix, true) => "textify-dev",
+        (HostPlatform::Unix, false) => "textify",
+        (_, true) => "Textify Dev",
+        (_, false) => "Textify",
+    };
     match platform {
         HostPlatform::Macos => environment("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Application Support/Textify"),
+            .join("Library/Application Support")
+            .join(directory),
         HostPlatform::Windows => environment("APPDATA")
             .or_else(|| environment("LOCALAPPDATA"))
             .map(PathBuf::from)
@@ -48,7 +56,7 @@ fn textify_data_dir_from(
                     .map(|path| path.join("AppData/Roaming"))
             })
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("Textify"),
+            .join(directory),
         HostPlatform::Unix => environment("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| {
@@ -57,12 +65,18 @@ fn textify_data_dir_from(
                     .map(|path| path.join(".config"))
             })
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("textify"),
+            .join(directory),
     }
 }
 
+pub fn is_development_instance() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("TEXTIFY_DEV_INSTANCE").is_some()
+}
+
 pub fn textify_data_dir() -> PathBuf {
-    textify_data_dir_from(host_platform(), |name| std::env::var_os(name))
+    textify_data_dir_from(host_platform(), is_development_instance(), |name| {
+        std::env::var_os(name)
+    })
 }
 
 fn default_editor_font(platform: HostPlatform) -> &'static str {
@@ -486,15 +500,15 @@ mod tests {
         };
 
         assert_eq!(
-            textify_data_dir_from(HostPlatform::Macos, environment),
+            textify_data_dir_from(HostPlatform::Macos, false, environment),
             PathBuf::from("/home/textify/Library/Application Support/Textify")
         );
         assert_eq!(
-            textify_data_dir_from(HostPlatform::Windows, environment),
+            textify_data_dir_from(HostPlatform::Windows, false, environment),
             PathBuf::from(r"C:\Users\Textify\AppData\Roaming").join("Textify")
         );
         assert_eq!(
-            textify_data_dir_from(HostPlatform::Unix, environment),
+            textify_data_dir_from(HostPlatform::Unix, false, environment),
             PathBuf::from("/config/textify")
         );
     }
@@ -510,7 +524,37 @@ mod tests {
             HostPlatform::Windows,
             HostPlatform::Unix,
         ] {
-            assert_eq!(textify_data_dir_from(platform, environment), expected);
+            for development in [false, true] {
+                assert_eq!(
+                    textify_data_dir_from(platform, development, environment),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn development_defaults_never_share_the_installed_data_directory() {
+        let environment = |name: &str| match name {
+            "HOME" => Some(OsString::from("/home/textify")),
+            "APPDATA" => Some(OsString::from("/roaming")),
+            "XDG_CONFIG_HOME" => Some(OsString::from("/config")),
+            _ => None,
+        };
+        for (platform, expected) in [
+            (
+                HostPlatform::Macos,
+                "/home/textify/Library/Application Support/Textify Dev",
+            ),
+            (HostPlatform::Windows, "/roaming/Textify Dev"),
+            (HostPlatform::Unix, "/config/textify-dev"),
+        ] {
+            let development = textify_data_dir_from(platform, true, environment);
+            assert_eq!(development, PathBuf::from(expected));
+            assert_ne!(
+                development,
+                textify_data_dir_from(platform, false, environment)
+            );
         }
     }
 
